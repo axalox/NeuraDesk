@@ -9,6 +9,10 @@
 
 ---
 
+<p align="center">
+  <img src="docs/images/apercu.jpg" alt="Le bureau NeuraDesk : dock à gauche, barre du haut, zones d'applets à droite, barre des fenêtres en bas" width="100%">
+</p>
+
 NeuraDesk remplace l'aspect de la barre des tâches de Windows par un
 environnement de bureau complet, **sans modifier Windows** : il se pose
 par-dessus le bureau, et le quitter rend Windows tel qu'il était.
