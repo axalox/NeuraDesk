@@ -1,0 +1,44 @@
+# SONDE D'ÉTAPE 1 — voir `src/lib.rs` pour ce qu'elle fait, et surtout pour ce
+# qu'elle ne fait PAS : elle observe, elle ne modifie rien.
+#
+# Table `[workspace]` VIDE À DESSEIN : sans elle, cargo remonterait l'arbre à la
+# recherche d'un workspace et croirait cette crate rattachée à celui du dépôt.
+# Elle est INDÉPENDANTE — `cargo build` à la racine NE la construit PAS, et rien
+# de ce qu'elle contient n'entre dans le binaire de NeuraDesk.
+[workspace]
+
+[package]
+name = "shell-hook"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "shell_hook"
+crate-type = ["cdylib"]
+
+[[bin]]
+name = "shell-hook-inject"
+path = "src/main.rs"
+
+[dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Diagnostics_Debug",
+    # Capture d'écran GDI de la sonde — c'est la seule mesure qui distingue « la
+    # fenêtre a bougé » de « le dessin a bougé ».
+    "Win32_Graphics_Gdi",
+    # `CreateRemoteThread` n'existe QUE sous cette fonctionnalité (voir la garde
+    # `#[cfg(feature = "Win32_Security")]` dans le crate windows).
+    "Win32_Security",
+    # `CoInitializeEx` : l'abonnement XAML passe par du COM STA.
+    "Win32_System_Com",
+] }
+
+# `panic = "abort"` est DÉLIBÉRÉMENT ABSENT de la DLL : avec lui, une panique dans
+# notre code TUE explorer. Le proc de sous-classe attrape donc les paniques
+# (`catch_unwind`) et transmet toujours au proc d'origine — voir `subclass_proc`.

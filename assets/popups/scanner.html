@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<!--
+  L'APPLET SCANNER — deux onglets : « Réglages » (ce qui règle une numérisation)
+  et « Scan » (les commandes et LA LISTE DES PAGES, qui fait le multipage Voir
+  `win32::cef_scanner`, qui porte la liste complète des actions, et
+  `win32::scanner`, qui porte les réglages, la ligne de commande, la session de
+  pages et l'assemblage).
+
+  ÉTAT REÇU (window.setState) :
+    { contentScale, naps2: bool,
+      profils: [nom], profil,
+      source, sources: [[nom, libellé, actif]],
+      dpi, resolutions: [200, 300, 600],
+      couleur, couleurs: [[nom, libellé, actif]],
+      format, formats: ["A4", …],
+      extension, extensions: [[nom, libellé, actif]],
+      deskew, ocr,
+      pages: [{ rang, nom }],        <-- la LISTE de la session. `nom` est le nom
+                                         du FICHIER : c'est la clé des vignettes,
+                                         et le rang seul ne suffit PAS (voir
+                                         `setPageVignette`).
+      destination, destinationDefaut,
+      enCours, dernier: { ok, message, fichier } | null }
+
+  CANAL SÉPARÉ — les vignettes NE PASSENT PAS par `setState` : une `data:` URI
+  pèse des dizaines de Ko et l'état est re-sérialisé à chaque frame. Rust appelle
+  `window.setPageVignette(nom, dataUri)`, quelques-unes par frame. ⚠️ `dataUri`
+  vaut `null` quand la page n'a pas pu être lue — et la page le MONTRE.
+
+  ⚠️ **LE CHANGEMENT D'ONGLET NE REMONTE PAS À RUST** : c'est un affichage, la
+  page le fait seule. Un verbe de plus serait un verbe à tenir des deux côtés
+  (voir le test de parité) pour rien.
+
+  ⚠️ **PAS DE <select>** : il ne s'ouvre jamais dans une page CEF rendue hors
+  écran (règle du dépôt). Tous les choix sont des BOUTONS.
+
+  ⚠️ **LES BOUTONS SONT RECONSTRUITS À CHAQUE ÉTAT, ET C'EST SANS DANGER ICI** :
+  `setState` n'est appelé que lorsque l'état CHANGE vraiment (la clé de cache de
+  Rust filtre les frames identiques, voir `cef_scanner::push_state`). Un clic
+  commence et finit donc sur le même nœud.
+
+  ⛔ **LA PAGE NE DIT JAMAIS QU'ELLE A SCANNÉ.** Elle affiche le message que Rust
+  lui donne — c'est lui qui a vu le code de sortie et le fichier.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<!-- LE CORPS D'UNE PAGE EN GRAND — partagé avec la fenêtre de page
+     (`page_scan.html`). Voir `page_vue.css` / `page_vue.js`, qui portent le
+     pourquoi : la page se regarde à DEUX endroits, et recopier ferait diverger
+     l'apparence d'un côté et pas de l'autre. -->
+<link rel="stylesheet" href="page_vue.css">
+<style>
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  /* ⛔ **SANS CETTE RÈGLE, `class="cache"` NE MASQUE RIEN.** Elle n'est définie
+     NI dans `style.css` NI ici par défaut : le bandeau « NAPS2 est introuvable »
+     s'affichait donc alors que NAPS2 EST installé — mesuré par capture, et le
+     journal disait le contraire. Chaque page qui utilise `cache` la définit chez
+     elle ; c'est la deuxième fois que ce dépôt paie cet oubli (voir
+     `bandeau.html`, qui porte le même avertissement). */
+  .cache { display: none !important; }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    overflow-y: auto;
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    min-height: calc(100vh / var(--text-scale));
+  }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 6px; }
+  h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  h2 { margin: 12px 0 6px; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; opacity: calc(.65 * max(1, var(--popup-alpha, 1))); }
+  section { padding: 0 16px 10px; }
+  button {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    color: inherit; border: none; border-radius: var(--nd-rayon-controle);
+    padding: 5px 10px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  button:hover { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  button.actif {
+    background: rgba(var(--popup-accent-solid-rgb, 59, 130, 246), calc(0.85 * var(--popup-fond-alpha, 1)));
+    color: rgba(var(--popup-on-accent-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-weight: 600;
+  }
+  button:disabled { opacity: calc(.4 * max(1, var(--popup-alpha, 1))); cursor: default; }
+  button:disabled:hover { background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1))); }
+  .rangee { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .croix { background: none; font-size: 15px; opacity: calc(.75 * max(1, var(--popup-alpha, 1))); padding: 2px 6px; }
+  .croix:hover { background: none; opacity: 1; }
+  /* LES ONGLETS — des boutons, comme tout le reste. */
+  #onglets { display: flex; gap: 6px; padding: 0 16px 4px; }
+  #destination {
+    font-size: 12px; opacity: calc(.85 * max(1, var(--popup-alpha, 1))); word-break: break-all;
+    padding: 4px 8px; border-radius: var(--nd-rayon-petit, 4px);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.08 * var(--popup-fond-alpha, 1)));
+    min-width: 220px; flex: 1 1 auto;
+  }
+  /* LA LISTE DES PAGES ET SES VIGNETTES */
+  .page {
+    display: flex; align-items: center; gap: 10px;
+    padding: 4px 8px; margin-bottom: 4px;
+    border-radius: var(--nd-rayon-petit, 4px);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.07 * var(--popup-fond-alpha, 1)));
+  }
+  /* LE BOUTON QUI OUVRE LA PAGE EN GRAND — il porte la vignette et l'étiquette. */
+  .page .ouvrir {
+    flex: 1 1 auto; display: flex; align-items: center; gap: 10px;
+    background: none; padding: 2px; text-align: left; cursor: pointer;
+  }
+  .page .ouvrir:hover { background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1))); }
+  .page .etiquette { flex: 1 1 auto; }
+  img.vignette {
+    width: 64px; height: 64px; flex: 0 0 auto;
+    object-fit: contain; border-radius: var(--nd-rayon-petit, 4px);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.10 * var(--popup-fond-alpha, 1)));
+  }
+  /* ⛔ **UNE VIGNETTE ILLISIBLE SE VOIT.** Rust envoie `null` quand le fichier
+     n'a pas pu être lu ; une case vide sans un mot serait exactement le silence
+     que ce dépôt refuse. */
+  img.vignette.illisible { opacity: calc(.35 * max(1, var(--popup-alpha, 1))); outline: 1px solid rgba(255, 100, 100, .8); }
+  #avertissement, #etat { padding: 8px 16px; font-size: 13px; line-height: 1.45; }
+  #avertissement { color: rgba(var(--popup-accent-solid-rgb, 255, 200, 120), min(1, var(--popup-alpha, 1))); opacity: calc(.95 * max(1, var(--popup-alpha, 1))); }
+  #etat.ok { opacity: calc(.95 * max(1, var(--popup-alpha, 1))); }
+  #etat.echec { color: #ff9d9d; }
+  #absent { padding: 10px 16px; font-size: 13px; color: #ff9d9d; }
+  .vide { opacity: calc(.6 * max(1, var(--popup-alpha, 1))); font-size: 13px; margin: 2px 0; }
+  footer { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 6px 16px 16px; }
+  #lancer { padding: 7px 18px; font-size: 14px; font-weight: 600; }
+
+  /* ---- LA VUE D'UNE PAGE EN GRAND --------------------------------------
+     Elle occupe le panneau ENTIER : la liste et les réglages disparaissent. Le
+     corps suit `page_vue.css` (partagé avec la fenêtre) ; ici on ne fait que la
+     mettre en colonne et lui donner la hauteur du panneau, pour que ce soit
+     l'IMAGE qui défile et pas le panneau entier. */
+  /* ⛔ **EN MODE PAGE, LE PANNEAU NE DÉFILE PLUS** — sinon deux barres de
+     défilement se disputeraient le geste : celle du panneau et celle de l'image.
+     ⚠️ **ET LE CORPS DEVIENT UNE COLONNE FLEX, PAS UNE HAUTEUR FIXE** : avec
+     `height: 100vh` sur `#vue-page`, la ligne d'état — qui la suit — était
+     repoussée HORS du panneau. Les messages d'OCR (« le presse-papiers est tenu
+     par une autre application ») devenaient invisibles, et on aurait cherché
+     pourquoi le bouton « ne dit rien ». En colonne flexible, `#etat` garde sa
+     place en bas. */
+  body.mode-page {
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh / var(--text-scale));
+  }
+  #vue-page { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+  #page-entete { flex: 0 0 auto; }
+  #page-entete { display: flex; align-items: center; gap: 8px; padding: 0 16px 8px; }
+  #page-nom { flex: 1 1 auto; font-size: 13px; opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #page-place { flex: 0 0 auto; font-size: 12px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Scanner</h1>
+  <button class="croix" onclick="go('close')" title="Fermer"><span class="ico ico-x"></span></button>
+</header>
+
+<div id="absent" class="cache">
+  NAPS2 est introuvable sur cet ordinateur (<code>NAPS2.Console.exe</code>).
+  Installez-le, ou lancez-le une fois depuis le menu Démarrer.
+</div>
+
+<nav id="onglets">
+  <button id="onglet-scan" class="actif" onclick="montrer('scan')">Scan</button>
+  <button id="onglet-reglages" onclick="montrer('reglages')">Réglages</button>
+</nav>
+
+<!-- **LA PAGE EN GRAND — LE MÊME CORPS QUE LA FENÊTRE DE PAGE.**
+     ⚠️ Elle vit dans le panneau, et c'est le correctif d'un vrai défaut : ouvrir
+     la fenêtre faisait perdre le focus au panneau, qui se referme — il fallait
+     donc rouvrir l'applet pour rescanner. Ici « Retour » ramène à la liste sans
+     rien rouvrir, et ⧉ détache la page si on veut la garder sous les yeux. -->
+<div id="vue-page" class="cache">
+  <div id="page-entete">
+    <button onclick="go('retour')" title="Revenir à la liste des pages"><span class="ico ico-caret-left"></span> Retour</button>
+    <span id="page-nom"></span>
+    <span id="page-place"></span>
+    <!-- LE ZOOM — les boutons sont ici, la logique est dans `page_vue.js`. -->
+    <span class="zoom">
+      <button id="page-zoom-moins" title="Réduire">−</button>
+      <button id="page-zoom-ajuster" class="zoom-ajuster" title="Ajuster la page entière">100 %</button>
+      <button id="page-zoom-plus" title="Agrandir">+</button>
+    </span>
+    <!-- LA ROTATION — le FICHIER est tourne, pas l'affichage : la correction
+         survit jusqu'au document. -->
+    <button id="page-tourner-gauche" title="Quart de tour à gauche"
+            onclick="go('tourner', 'antihoraire')"><span class="ico ico-arrow-counter-clockwise"></span></button>
+    <button id="page-tourner-droite" title="Quart de tour à droite"
+            onclick="go('tourner', 'horaire')"><span class="ico ico-arrow-clockwise"></span></button>
+    <button id="page-precedente" title="Page précédente" onclick="go('precedente')"><span class="ico ico-caret-left"></span></button>
+    <button id="page-suivante" title="Page suivante" onclick="go('suivante')"><span class="ico ico-caret-right"></span></button>
+    <button id="page-bascule-ocr" title="Afficher ou masquer la reconnaissance de caractères"
+            onclick="basculeOCR()">OCR</button>
+    <button title="Détacher cette page dans une fenêtre" onclick="go('fenetre')"><span class="ico ico-arrow-square-out"></span></button>
+  </div>
+
+  <!-- **LA BARRE D'AMÉLIORATION DE L'IMAGE** — les trois curseurs et les trois
+       boutons sont posés par `PageVue.amelioration`, la même barre que dans la
+       fenêtre détachée. Les VERBES restent écrits ici, littéraux (en bas du
+       `ACTIONS` de cette page), parce que c'est ce fichier que lit le test de
+       parité : un verbe caché dans le fichier partagé serait un bouton muet. -->
+  <div id="page-outils" class="outils"></div>
+
+  <div class="page-corps">
+    <div id="page-zone" class="page-image">
+      <img id="page-image" alt="">
+      <div id="page-absente" class="page-absente cache"></div>
+    </div>
+    <aside id="page-volet" class="page-volet cache">
+      <div class="rangee" style="margin-bottom:6px">
+        <button title="Lancer les deux moteurs et comparer"
+                onclick="go('comparer')">Comparer les deux</button>
+      </div>
+      <div id="page-colonnes"></div>
+    </aside>
+  </div>
+</div>
+
+<div id="vue-scan">
+  <section>
+    <h2>Pages <span id="compte"></span></h2>
+    <div id="liste-pages"></div>
+    <p id="pages-vide" class="vide">Aucune page numérisée pour l'instant.</p>
+    <p id="rappel-destination" class="vide"></p>
+  </section>
+
+  <div id="avertissement" class="cache"></div>
+
+  <footer>
+    <button id="lancer" onclick="go('page')">Scanner une page</button>
+    <button id="annuler" class="cache" onclick="go('annuler')">Annuler</button>
+    <button id="terminer" onclick="go('terminer')">Terminer</button>
+    <!-- LE MÊME DOCUMENT, MAIS NOMMÉ ET PLACÉ PAR L'UTILISATEUR — « Terminer »
+         compose le nom dans le dossier de destination. -->
+    <button id="enregistrer-sous" onclick="go('enregistrer-sous')">Enregistrer sous…</button>
+    <button id="abandonner" class="cache" onclick="go('abandonner')">Abandonner</button>
+    <button id="ouvrir" class="cache" onclick="go('ouvrir-dossier')">Ouvrir le dossier</button>
+  </footer>
+</div>
+
+<div id="vue-reglages" class="cache">
+  <section>
+    <h2>Destination</h2>
+    <div class="rangee">
+      <span id="destination"></span>
+      <button onclick="go('destination')">Choisir…</button>
+      <button onclick="go('destination-defaut')" title="Revenir au dossier proposé">Par défaut</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Profil NAPS2</h2>
+    <div class="rangee" id="profils"></div>
+  </section>
+
+  <section>
+    <h2>Source</h2>
+    <div class="rangee" id="sources"></div>
+  </section>
+
+  <section>
+    <h2>Résolution</h2>
+    <div class="rangee" id="resolutions"></div>
+  </section>
+
+  <section>
+    <h2>Couleur</h2>
+    <div class="rangee" id="couleurs"></div>
+  </section>
+
+  <section>
+    <h2>Format de page</h2>
+    <div class="rangee" id="formats"></div>
+  </section>
+
+  <section>
+    <h2>Document produit</h2>
+    <div class="rangee" id="extensions"></div>
+    <p id="format-note" class="vide"></p>
+  </section>
+
+  <section>
+    <h2>Options</h2>
+    <div class="rangee">
+      <button id="deskew" onclick="go('deskew', courant.deskew ? '0' : '1')">Redresser</button>
+      <button id="ocr" title="Ajoute une couche de texte au PDF produit — sans effet sur un document JPEG"
+              onclick="go('ocr', courant.ocr ? '0' : '1')">OCR français</button>
+    </div>
+  </section>
+</div>
+
+<div id="etat"></div>
+
+<!-- ⚠️ **AVANT le script de la page** : `setState` et `setImage` appellent
+     `PageVue`, et un chargement dans l'autre ordre ne marcherait que tant que
+     personne n'appelle ces fonctions — c'est-à-dire jusqu'au premier état. -->
+<script src="page_vue.js"></script>
+<script>
+  function go(...segments) {
+    location.href = "neuradesk://scanner/" + segments.map(encodeURIComponent).join("/");
+  }
+
+  const el = (id) => document.getElementById(id);
+  let courant = {};
+  /** Les vignettes reçues, par nom de fichier — voir `setPageVignette`. */
+  let vignettes = {};
+
+  /* ⛔ **UNE EXCEPTION DANS CETTE PAGE EST INVISIBLE, ET C'EST LE PIRE DES DÉFAUTS.**
+     `setState` est appelé par RUST (`execute_js`), qui **ne signale jamais son
+     échec** : si la fonction lève, rien ne le dit — ni le journal, ni un bandeau,
+     ni un changement d'apparence. Le 2026-10-09, un `rangs` renommé en `entrees`
+     à moitié (deux références oubliées plus bas) a fait mourir `setState` **avant
+     `afficher()`** : les onglets ET la vue de page cessaient de basculer, et le
+     symptôme rapporté était « le clic sur une vignette ne fait rien » — à des
+     kilomètres de la cause. Il a fallu une sonde injectée pour lire l'erreur.
+     Ce filet la montre à l'écran, tout de suite. */
+  window.addEventListener("error", (ev) => {
+    // ⛔ **TOUT N'EST PAS UNE ERREUR DE CE CODE, ET TOUT CRIER ÉCRASE L'UTILE.**
+    // « ResizeObserver loop completed with undelivered notifications » est un
+    // SIGNALEMENT de Chromium — une observation qui n'a pas rendu ses
+    // notifications dans la même tâche —, pas une exception. Le crier dans la
+    // ligne d'état la REMPLAÇAIT en boucle, et les messages d'OCR (« rien à
+    // copier », « le presse-papiers est tenu… ») disparaissaient aussitôt : le
+    // défaut rapporté était « la page OCR semble buggée ». Un filet qui crie au
+    // loup cache précisément ce qu'il devait montrer.
+    if (String(ev.message || "").indexOf("ResizeObserver") === 0) return;
+    el("etat").textContent = "Erreur dans la page du panneau : " + ev.message;
+  });
+
+  /** **LES ONGLETS — RIEN NE REMONTE À RUST.** Le choix de l'onglet est un
+      affichage : le garder côté Rust en ferait un état à pousser à chaque frame
+      pour une information que personne d'autre ne lit. */
+  let onglet = "scan";
+
+  function montrer(vue) {
+    onglet = vue;
+    afficher();
+  }
+
+  /** **CE QUI EST VISIBLE, EN UN SEUL ENDROIT.**
+      ⚠️ **LA VUE DE PAGE PRIME SUR TOUT LE RESTE** : quand une page est ouverte,
+      elle occupe le panneau entier, onglets compris — sinon « Retour » et les
+      onglets se disputeraient l'écran, et on ne saurait plus où on est.
+      Un seul endroit décide, parce que trois fonctions qui touchent aux mêmes
+      `class` finissent par se contredire. */
+  function afficher() {
+    const page = courant.page;
+    el("vue-page").classList.toggle("cache", !page);
+    el("vue-scan").classList.toggle("cache", !!page || onglet !== "scan");
+    el("vue-reglages").classList.toggle("cache", !!page || onglet !== "reglages");
+    el("onglets").classList.toggle("cache", !!page);
+    el("onglet-scan").classList.toggle("actif", onglet === "scan");
+    el("onglet-reglages").classList.toggle("actif", onglet === "reglages");
+    document.body.classList.toggle("mode-page", !!page);
+  }
+
+  /** Les verbes de CET hôte — même contrat que dans `page_scan.html`, et
+      volontairement écrits ici : le test de parité lit les `.html`. */
+  const ACTIONS = {
+    reconnaitre: (nom) => go("reconnaitre", nom),
+    copier: (nom) => go("copier", nom),
+    enregistrer: (nom) => go("enregistrer", nom),
+    // L'AMÉLIORATION D'IMAGE — le réglage est envoyé à Rust, qui le renvoie dans
+    // `etat.page.amelioration` avec le filtre déjà calculé. `copie` et non
+    // `enregistrer` : ce nom est pris par le texte d'OCR juste au-dessus.
+    auto: () => go("ameliorer-auto"),
+    regler: (l, c, s) => go("ameliorer-regler", String(l), String(c), String(s)),
+    zero: () => go("ameliorer-zero"),
+    copie: () => go("ameliorer-enregistrer"),
+  };
+
+  /** Le volet d'OCR de la vue de page est-il ouvert ? — un affichage, donc rien
+      ne remonte à Rust : c'est la page qui décide, et elle le garde pour elle. */
+  let voletOCR = false;
+
+  function basculeOCR() {
+    voletOCR = !voletOCR;
+    el("page-volet").classList.toggle("cache", !voletOCR);
+    el("page-bascule-ocr").classList.toggle("actif", voletOCR);
+  }
+
+  /** **L'IMAGE DE LA PAGE** — appel séparé de l'état, comme dans la fenêtre :
+      une `data:` URI pèse des mégaoctets, et l'état est sérialisé à chaque frame
+      pour calculer sa clé de cache. */
+  window.setImage = function (uri) {
+    PageVue.appliquerImage(el("page-image"), el("page-absente"), uri,
+      "Cette page n'a pas pu être lue — elle a peut-être été retirée du panneau.");
+  };
+
+  // **LE ZOOM DE LA PAGE** — les boutons sont ici, la logique est partagée.
+  // ⚠️ **PAS UN VERBE, DONC RIEN À CÂBLER CÔTÉ RUST** : le zoom est un affichage,
+  // comme le volet d'OCR. Chaque hôte a le sien, et c'est voulu — on peut regarder
+  // la page entière dans le panneau et un détail dans la fenêtre détachée.
+  PageVue.zoomer(el("page-image"), el("page-zone"), {
+    moins: el("page-zoom-moins"),
+    ajuster: el("page-zoom-ajuster"),
+    plus: el("page-zoom-plus"),
+  });
+
+  /** **LA BARRE D'AMÉLIORATION** — la même que dans la fenêtre, avec les verbes de
+      CET hôte. ⚠️ **CE N'EST PAS UN AFFICHAGE LOCAL, À LA DIFFÉRENCE DU ZOOM** : le
+      réglage vit côté Rust et revient dans l'état, donc détacher la page la montre
+      déjà éclaircie — deux hôtes, une seule image. Le zoom, lui, reste propre à
+      chaque fenêtre, et c'est voulu. */
+  const outils = PageVue.amelioration(el("page-outils"), el("page-image"), ACTIONS);
+
+  /** Une rangée de boutons — `[[nom, libellé, actif]]`, ou une liste simple.
+      ⚠️ **`emettre` EST UNE FONCTION, PAS UN NOM DE VERBE** : le contrat
+      page↔Rust se lit dans le source par les appels `go` LITTÉRAUX (voir
+      `cef_scanner::tests::la_page_et_le_dispatch_acceptent_les_memes_verbes`),
+      et un verbe passé en chaîne à cet utilitaire échapperait au test.
+      ⛔ **ET CE COMMENTAIRE N'ÉCRIT PAS D'APPEL EN EXEMPLE** : le lecteur du test
+      cherche la séquence `go` suivie d'un guillemet, dans TOUT le fichier —
+      commentaires compris. Citer un exemple ici ajouterait un verbe fantôme, et
+      le test nommerait « … » comme un verbe inconnu. */
+  function boutons(conteneur, choix, emettre, actif) {
+    conteneur.replaceChildren();
+    for (const entree of choix) {
+      const [nom, libelle, choisi] = Array.isArray(entree) ? entree : [String(entree), String(entree), false];
+      const b = document.createElement("button");
+      b.textContent = libelle;
+      if (choisi === true || nom === actif) b.className = "actif";
+      b.addEventListener("click", () => emettre(nom));
+      conteneur.appendChild(b);
+    }
+  }
+
+  /** **LA LISTE DES PAGES — LA SEULE CHOSE QUI SE RECONSTRUISE ICI.**
+      ⚠️ `replaceChildren` VIDE avant d'ajouter : `appendChild` seul empilerait
+      une copie de la liste à chaque état (piège déjà payé dans ce dépôt).
+      Le rang envoyé est celui AFFICHÉ ; Rust refuse un rang hors bornes plutôt
+      que de retirer la mauvaise page si la liste a bougé entre-temps.
+      ⛔ **LES CROIX SONT GRISÉES PENDANT UNE NUMÉRISATION OU UN ASSEMBLAGE** :
+      NAPS2 lit ces fichiers-là — l'assemblage les relit un par un — donc en
+      effacer un sous ses pieds ferait échouer le document. Rust refuse aussi
+      (deuxième barrière), mais un bouton qui ne dit rien est ce qu'on évite. */
+  function pages(conteneur, entrees, gele) {
+    conteneur.replaceChildren();
+    for (const entree of entrees) {
+      const ligne = document.createElement("div");
+      ligne.className = "page";
+
+      // ⚠️ **LA VIGNETTE ARRIVE APRÈS CETTE CONSTRUCTION**, poussée par Rust
+      // quelques-unes par frame (voir `setPageVignette`). On repose tout de suite
+      // celles qu'on connaît déjà, sinon chaque `setState` ferait clignoter la
+      // liste — `replaceChildren` recrée les `<img>`.
+      const image = document.createElement("img");
+      image.className = "vignette";
+      image.dataset.nom = entree.nom;
+      image.alt = "page " + entree.rang;
+      if (entree.nom in vignettes) appliquerLaVignette(image, vignettes[entree.nom]);
+
+      // **LA VIGNETTE ET L'ÉTIQUETTE SONT UN BOUTON** — c'est ce qui ouvre la
+      // page en grand. Un `<button>` et pas un `<div>` cliquable : le clavier et
+      // le survol suivent tout seuls.
+      const ouvrir = document.createElement("button");
+      ouvrir.className = "ouvrir";
+      ouvrir.title = "Afficher cette page en grand";
+      const etiquette = document.createElement("span");
+      etiquette.className = "etiquette";
+      etiquette.textContent = "page " + entree.rang;
+      ouvrir.append(image, etiquette);
+      // ⭐ **LE GESTE PAR DÉFAUT : LA PAGE S'AFFICHE ICI, DANS LE PANNEAU.**
+      ouvrir.addEventListener("click", () => go("voir", String(entree.rang)));
+
+      const croix = document.createElement("button");
+      croix.className = "croix";
+      croix.innerHTML = '<span class="ico ico-x"></span>';
+      croix.disabled = gele === true;
+      croix.title = gele === true ? "Une numérisation est en cours" : "Retirer cette page";
+      croix.addEventListener("click", () => go("retirer", String(entree.rang)));
+
+      ligne.append(ouvrir, croix);
+      conteneur.appendChild(ligne);
+    }
+  }
+
+  /** ⛔ **UNE VIGNETTE ILLISIBLE SE DIT.** Rust envoie `null` quand le fichier
+      n'a pas pu être lu : la case le montre, au lieu de rester vide en silence. */
+  function appliquerLaVignette(image, uri) {
+    if (uri) {
+      image.src = uri;
+      image.classList.remove("illisible");
+      image.title = "";
+    } else {
+      image.removeAttribute("src");
+      image.classList.add("illisible");
+      image.title = "Cette page n'a pas pu être lue pour la vignette.";
+    }
+  }
+
+  /** **LES VIGNETTES REÇUES, PAR NOM DE FICHIER — JAMAIS PAR RANG.** Après un
+      retrait au milieu de la liste, le rang 2 porte une AUTRE page qu'avant :
+      indexer par rang afficherait la vignette de la page retirée. */
+  window.setPageVignette = function (nom, uri) {
+    vignettes[nom] = uri;
+    for (const image of document.querySelectorAll("img.vignette")) {
+      if (image.dataset.nom === nom) appliquerLaVignette(image, uri);
+    }
+  };
+
+  window.setState = function (next) {
+    courant = next;
+    document.documentElement.style.setProperty("--text-scale", next.contentScale || 1);
+    el("absent").classList.toggle("cache", next.naps2 === true);
+
+    el("destination").textContent = next.destination || "(aucun)";
+    // ⭐ **OÙ LE DOCUMENT VA SE POSER, DIT DANS L'ONGLET QUI LE PRODUIT** : sans
+    // ça il faudrait changer d'onglet pour savoir ce que « Terminer » va faire.
+    el("rappel-destination").textContent = next.destination
+      ? "Le document ira dans : " + next.destination
+      : "Aucun dossier de destination n'est choisi.";
+
+    // ⚠️ **LE PROFIL SE CHOISIT PAR BOUTONS, LUI AUSSI** — et il y a toujours le
+    // choix « le plus récent », qui est ce que fait NAPS2 quand on ne lui passe
+    // pas `-p`.
+    boutons(el("profils"), [["", "Le plus récent"]].concat((next.profils || []).map((n) => [n, n, false])), (nom) => go("profil", nom), next.profil);
+
+    boutons(el("sources"), next.sources || [], (nom) => go("source", nom), null);
+    boutons(el("resolutions"), (next.resolutions || []).map((d) => [String(d), d + " dpi", d === next.dpi]), (nom) => go("dpi", nom), null);
+    boutons(el("couleurs"), next.couleurs || [], (nom) => go("couleur", nom), null);
+    boutons(el("formats"), (next.formats || []).map((f) => [f, f, f === next.format]), (nom) => go("format", nom), null);
+    boutons(el("extensions"), next.extensions || [], (nom) => go("extension", nom), null);
+
+    // ⭐ **CE BOUTON NE FIGE PLUS RIEN** : les pages de la session sont des images,
+    // donc le format ne décide que du DOCUMENT produit à « Terminer » — et il peut
+    // changer jusqu'au dernier moment. La règle « figé par la première page » a
+    // disparu avec la raison qui la justifiait.
+    el("format-note").textContent = next.extension === "jpg"
+      ? "Les pages seront écrites une à une, dans le dossier de destination."
+      : "Les pages seront assemblées en un seul PDF (cherchable si « OCR français » est coché).";
+
+    el("deskew").classList.toggle("actif", next.deskew === true);
+    el("ocr").classList.toggle("actif", next.ocr === true);
+
+    const entrees = next.pages || [];
+    pages(el("liste-pages"), entrees, next.enCours === true);
+    el("compte").textContent = entrees.length ? "(" + entrees.length + ")" : "";
+    el("pages-vide").classList.toggle("cache", entrees.length > 0);
+
+    // ⛔ **LES PIÈGES DE LA NUMÉRISATION PAGE À PAGE, DITS À L'ÉCRAN.**
+    const avis = [];
+    if (next.source === "glass") {
+      avis.push("Sur la vitre, chaque page est une nouvelle numérisation de la même feuille — changez la feuille entre deux, ou passez au chargeur.");
+    }
+    if (entrees.length > 0 && next.extension === "jpg") {
+      avis.push("En JPEG, « Terminer » ne peut pas assembler : les pages seront écrites une à une dans le dossier de destination.");
+    }
+    el("avertissement").classList.toggle("cache", avis.length === 0);
+    el("avertissement").textContent = avis.join(" ");
+
+    el("lancer").disabled = next.enCours === true;
+    el("lancer").textContent = next.enCours === true ? "Scan en cours…" : "Scanner une page";
+    el("annuler").classList.toggle("cache", next.enCours !== true);
+    el("terminer").disabled = next.enCours === true || entrees.length === 0;
+    el("enregistrer-sous").disabled = el("terminer").disabled;
+    el("abandonner").classList.toggle("cache", entrees.length === 0 || next.enCours === true);
+
+    // ---- LA VUE DE PAGE ------------------------------------------------
+    // `page` vaut `null` quand on est sur la liste : c'est LUI qui décide.
+    const page = next.page;
+    if (page) {
+      el("page-nom").textContent = page.nom || "(aucune page)";
+      el("page-place").textContent = page.total > 0 && page.rang > 0 ? page.rang + " / " + page.total : "";
+      // ⚠️ **SANS BOUCLAGE** — même règle que dans la fenêtre : depuis la
+      // première page, « précédente » ne fait rien plutôt que de sauter à la
+      // dernière, sinon on perd le compte de ce qu'on regarde.
+      el("page-precedente").disabled = !(page.rang > 1);
+      el("page-suivante").disabled = !(page.rang > 0 && page.rang < page.total);
+      PageVue.colonnes(el("page-colonnes"), page.ocr || [], ACTIONS);
+      // ⚠️ **LES CURSEURS VIENNENT DE RUST, PAS DE LA PAGE** : c'est ce qui fait que
+      // le panneau et la fenêtre détachée montrent le même réglage de la même page.
+      outils.regler(page.amelioration);
+    }
+    afficher();
+
+    // ⚠️ **EN MODE PAGE, LA LIGNE D'ÉTAT EST CELLE DE LA PAGE** : c'est elle qui
+    // porte les refus d'OCR (« le presse-papiers est tenu… »). Montrer le verdict
+    // du dernier scan à la place ferait disparaître la réponse à ce qu'on vient
+    // de demander.
+    const d = next.dernier;
+    el("etat").textContent = page ? (page.message || "") : (d ? d.message : "");
+    el("etat").className = page ? "" : (d && d.ok ? "ok" : (d ? "echec" : ""));
+    el("ouvrir").classList.toggle("cache", !(d && d.fichier));
+  };
+
+  go("ready");
+</script>
+</body>
+</html>

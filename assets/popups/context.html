@@ -1,0 +1,216 @@
+<!doctype html>
+<!--
+  win32::cef_context (clic droit sur l'icône NeuraDesk) — reproduit en CSS
+  le contenu de win32::popup_menu::render_context (un seul bouton, à
+  l'origine). Même canal IPC que assets/popups/power.html : `location.href =
+  "neuradesk://..."`, intercepté côté Rust AVANT toute navigation réelle
+  (voir win32::cef_app::NeuraDeskRequestHandler). "app/quit" est déjà géré
+  par app::run (voir la boucle de dispatch des actions Power) — ce popup
+  réutilise LA MÊME action, pas une nouvelle.
+
+  Liste des fréquences ajoutée ensuite, DEMANDE EXPLICITE ("une option...
+  qui permette de choisir la fréquence de rafraîchissement de l'app pour
+  les fréquences les plus courantes") — même schéma Rust→JS que
+  assets/popups/network.html : `window.setState({cap, native, expanded})`
+  (voir win32::cef_context::push_state), `cap` étant `null` pour
+  "Automatique" (calé sur `native`, la fréquence RÉELLE de l'écran sous la
+  barre). Choisir une entrée envoie `neuradesk://app/refresh_rate/<hz>` ou
+  `.../auto`.
+
+  Sous-menu ajouté ensuite, DEMANDE EXPLICITE ("mets le choix des
+  fréquences dans un sous-menu") : la liste de fréquences est repliée par
+  défaut derrière la ligne "Fréquence de rafraîchissement", qui envoie
+  `neuradesk://app/refresh_rate_menu/toggle` à chaque clic. `expanded`
+  N'EST PAS un état LOCAL à cette page (pas de `let expanded` géré ici) —
+  Rust en reste seul propriétaire (voir `win32::cef_context::
+  FREQUENCY_MENU_EXPANDED`), pour la même raison que `cap`/`native` :
+  c'est aussi lui qui redimensionne la fenêtre en fonction (voir
+  `win32::cef_popup::resize_height_to_content`), un aller-retour JS pour
+  la hauteur n'étant pas fiable dans ce contexte (voir sa doc). Repart
+  TOUJOURS replié à chaque ouverture fraîche du menu, jamais restauré
+  d'une fois sur l'autre, même si cette fenêtre CEF persiste entre deux
+  clics sur l'icône (voir `win32::cef_popup::toggle_with`).
+
+  PAS de `background` sur `<html>`/`<body>` : transparent par défaut en
+  rendu hors-écran CEF (alpha=0 vérifié octet par octet, voir le spike de
+  cette migration).
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="menu.css">
+<style>
+  .menu {
+    display: flex;
+    flex-direction: column;
+    padding: 12px;
+    box-sizing: border-box;
+    height: auto;
+    width: fit-content;
+    max-width: 100vw;
+    max-height: 100vh;
+    /* Voir power.html — même rail de défilement fantôme sans ça. */
+    overflow-y: auto;
+  }
+  button {
+    all: unset;
+    display: block;
+    padding: 10px 14px;
+    border-radius: var(--nd-rayon-surface);
+    cursor: pointer;
+    /* PAS de `color` ici : hérite de `menu.css` (`--menu-text-rgb`, voir sa
+       doc) — `all: unset` remet `color` à sa valeur héritée, pas besoin de
+       la répéter. */
+    font: inherit;
+  }
+  button:hover {
+    /* 0.15 → 0.26 → 0.36 → 0.46 — voir assets/popups/clipboard_menu.html,
+       `.row:hover`, pour le pourquoi (DEMANDE EXPLICITE, répétée après le
+       premier passage à 0.26 encore jugé insuffisant, puis de nouveau après
+       0.36). */
+    background: rgba(var(--menu-zone-rgb, 255, 255, 255), calc(0.46 * var(--popup-fond-alpha, 1)));
+  }
+  /* Ligne qui déplie/replie le sous-menu des fréquences — un vrai bouton
+     (hover/clic identiques aux autres), juste mis en gras comme l'était
+     l'ancien `.section-title` non interactif qu'il remplace. */
+  .submenu-toggle {
+    font-weight: 600;
+  }
+  /* Replié par défaut — voir `render`, seul endroit qui bascule
+     `.expanded` (jamais recréé/détruit, voir le commentaire sur `buttons`
+     plus bas : un sous-menu qui disparaîtrait sous la souris pendant un
+     clic reproduirait EXACTEMENT le bug déjà corrigé une fois). Indenté
+     (`padding-left`) pour se lire comme un sous-niveau, pas une deuxième
+     liste de boutons au même rang. */
+  #rates {
+    display: none;
+    flex-direction: column;
+  }
+  #rates.expanded {
+    display: flex;
+  }
+  #rates button {
+    padding-left: 28px;
+  }
+  .separator {
+    border: none;
+    border-top: 1px solid rgba(var(--menu-zone-rgb, 255, 255, 255), calc(0.3 * var(--popup-fond-alpha, 1)));
+    margin: 6px 0;
+  }
+</style>
+</head>
+<body>
+  <div class="menu">
+    <!-- « Fermer NeuraDesk » a été RETIRÉ D'ICI (DEMANDE EXPLICITE : « au clic
+         droit sur l'icône NeuraDesk du dock j'ai la possibilité de fermer
+         NeuraDesk, retire cette option »). Le chemin de fermeture reste le menu
+         ALIMENTATION (`assets/popups/power.html`, « Quitter NeuraDesk ») — c'est
+         celui que la doc du projet désigne, et il ne faut PAS le retirer : sans
+         lui il n'y aurait plus aucune façon propre de fermer l'application.
+         ⚠️ Retirer un bouton d'ici oblige à décrémenter
+         `cef_context::COLLAPSED_BUTTON_COUNT`, qui dimensionne la fenêtre à
+         l'ouverture — rien ne les lie automatiquement (voir sa doc). -->
+    <!-- DEMANDE EXPLICITE ("possibilité de recharger l'app depuis le menu
+         du clic droit sur l'icône de l'app") — relance un nouveau processus
+         puis ferme celui-ci (voir win32::cef_app::NeuraDeskRequestHandler,
+         app::dispatch_power_or_quit_action/spawn_replacement_process). -->
+    <!-- DEMANDE EXPLICITE (2026-10-03) : « au clic droit sur l'icône
+         NeuraDesk une commande nommée Paramètres », précisée : « pour
+         ouvrir les paramètres de Windows » — l'application Paramètres de
+         Windows, PAS les Réglages de NeuraDesk (voir `app::run`, action
+         `app/settings`, et `win32::windows_update::ouvrir_parametres`). -->
+    <button onclick="location.href='neuradesk://app/settings'" title="Ouvrir les Paramètres de Windows">Paramètres</button>
+    <button onclick="location.href='neuradesk://app/reload'">Recharger NeuraDesk</button>
+    <!-- DEMANDE (2026-11-08) : « une entrée about … avec des explications, le
+         logo et le numéro de version » — ouvre `win32::cef_apropos` (voir
+         `app::run`, action `app/about`). Compté dans `COLLAPSED_BUTTON_COUNT`. -->
+    <button onclick="location.href='neuradesk://app/about'">À propos de NeuraDesk</button>
+    <hr class="separator">
+    <button id="freqToggle" class="submenu-toggle"></button>
+    <div id="rates"></div>
+  </div>
+  <script>
+    // "Les fréquences les plus courantes" (DEMANDE EXPLICITE) — écrans
+    // 60/75/90 Hz classiques, 120/144/165/240 Hz orientés jeu, et
+    // 1/3/5/8/12/15/25 fps (DEMANDE EXPLICITE suivante) pour économiser
+    // au maximum sur un écran capable de descendre très bas. Compte total
+    // (+ "Automatique") suivi par `win32::cef_context::
+    // EXPANDED_BUTTON_COUNT` — À METTRE À JOUR EN MÊME TEMPS que ce
+    // tableau, voir sa doc.
+    const COMMON_HZ = [1, 3, 5, 8, 12, 15, 25, 30, 60, 75, 90, 120, 144, 165, 240];
+    const state = { cap: null, native: null, expanded: false };
+    const container = document.getElementById("rates");
+    const freqToggle = document.getElementById("freqToggle");
+
+    freqToggle.addEventListener("click", () => {
+      location.href = "neuradesk://app/refresh_rate_menu/toggle";
+    });
+
+    function autoLabel() {
+      return state.native === null
+        ? "Automatique (calée sur l'écran)"
+        : `Automatique (${state.native} Hz)`;
+    }
+
+    // Boutons créés UNE SEULE FOIS — BUG RÉEL SIGNALÉ ("je ne peux
+    // toujours pas sélectionner une fréquence") : `win32::cef_context::
+    // poll` appelle `push_state`/`window.setState` à CHAQUE FRAME tant que
+    // ce popup est visible (voir sa doc), pas seulement à l'ouverture.
+    // `render()` détruisait et recréait tous les boutons (`innerHTML = ""`
+    // + `createElement`) à chaque appel, donc à chaque frame. Un clic
+    // souris réel s'étale sur au moins deux frames (`WM_LBUTTONDOWN` puis
+    // `WM_LBUTTONUP` quelques ms plus tard, voir `win32::cef_popup::
+    // dispatch_input`) : entre les deux, le bouton visé était remplacé par
+    // un élément flambant neuf, donc le `mouseup` n'atterrissait plus
+    // jamais sur l'élément qui avait reçu le `mousedown` — le navigateur
+    // n'émettait alors aucun événement `click`. `assets/popups/
+    // network.html` (qui marche) suit déjà ce schéma : boutons fixes,
+    // `render()` ne touche que leur texte.
+    const entries = [["auto", null], ...COMMON_HZ.map((hz) => [String(hz), hz])];
+    const buttons = entries.map(([value, hz]) => {
+      const btn = document.createElement("button");
+      btn.addEventListener("click", () => {
+        location.href = `neuradesk://app/refresh_rate/${value}`;
+      });
+      container.appendChild(btn);
+      return { value, hz, btn };
+    });
+
+    function render() {
+      container.classList.toggle("expanded", state.expanded);
+      freqToggle.textContent = `Fréquence de rafraîchissement ${state.expanded ? "▾" : "▸"}`;
+      for (const { value, hz, btn } of buttons) {
+        // DEMANDE EXPLICITE ("que les fréquences indisponibles ne soient
+        // pas proposées") : une fréquence au-dessus de `state.native` (la
+        // fréquence RÉELLE de l'écran, voir son commentaire plus haut)
+        // n'a aucun effet — l'affichage reste de toute façon plafonné au
+        // natif de l'écran — donc inutile, voire trompeuse, à proposer.
+        // "Automatique" reste toujours affichée (jamais "indisponible").
+        // `state.native === null` (fréquence indéterminable, voir
+        // `win32::display::refresh_rate_hz`) : on ne masque rien plutôt
+        // que de risquer de cacher une fréquence en fait valide.
+        const unavailable = value !== "auto" && state.native !== null && hz > state.native;
+        btn.style.display = unavailable ? "none" : "";
+        if (unavailable) continue;
+        const active = value === "auto" ? state.cap === null : state.cap === Number(value);
+        const label = value === "auto" ? autoLabel() : `${hz} Hz`;
+        btn.textContent = active ? `✓ ${label}` : label;
+      }
+    }
+
+    // Appelée depuis Rust (win32::cef_context::push_state) — voir le
+    // commentaire d'en-tête, le SEUL moyen pour cette page de connaître le
+    // choix persisté, la fréquence réelle de l'écran, ET l'état du
+    // sous-menu (`expanded`, voir la doc d'en-tête sur pourquoi Rust en
+    // reste seul propriétaire).
+    window.setState = function (next) {
+      Object.assign(state, next);
+      render();
+    };
+
+    render();
+  </script>
+<script src="menu.js"></script>
+</body>
+</html>

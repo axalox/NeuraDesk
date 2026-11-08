@@ -1,0 +1,29 @@
+# Style « elementary » — DEMANDE EXPLICITE (2026-10-12), avec COSMIC et
+# Cinnamon.
+#
+# Pantheon, le bureau d'elementary OS, proche de macOS : coins moyens (5 px sur
+# les boutons, 8 px sur les fenêtres), des contours fins mais NETS, une ombre
+# douce sous les dashs — PAS sous les barres, décision de l'utilisateur du
+# 2026-10-06 —, la police Inter d'elementary et l'élément actif en aplat. Les
+# couleurs vont avec la famille « elementary ».
+
+nom = "elementary"
+
+[formes]
+rayon_petit = 3
+rayon_controle = 5
+rayon_surface = 6
+rayon_grand = 8
+rayon_icone = 10
+
+[traits]
+bordure_alpha = 0.12
+
+[relief]
+ombre = 0.35
+
+[texte]
+police = "Inter"
+
+[structure]
+indicateur = "point"

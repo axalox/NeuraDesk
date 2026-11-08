@@ -1,0 +1,553 @@
+<!doctype html>
+<!--
+  LA SPHÈRE DES FENÊTRES (voir `win32::cef_fenetres`) — choisir vers quel
+  programme ouvert basculer. Elle occupe la ZONE CENTRALE de l'écran (l'espace
+  libre entre les barres, comme les panneaux Terminal/SSH), par-dessus tout ;
+  ouverte au clic molette sur le bureau ou la barre du bas.
+
+  Les fenêtres du bureau virtuel courant sont posées sur la face intérieure
+  d'une sphère, la caméra au centre. L'APERÇU de chaque carte n'est pas dessiné
+  ici : c'est une vignette DWM, vivante, que Rust pose dans le TROU de la carte
+  aux coordonnées que cette page lui envoie (POST `fenetres/rects`).
+
+  ⛔ Une vignette DWM est un rectangle DROIT : les cartes sont posées sur la
+  sphère FACE À LA CAMÉRA (place et taille en perspective, sans inclinaison),
+  sinon l'aperçu ne coïnciderait plus avec sa carte. La projection est donc
+  calculée ICI, en 2D — pas de 3D CSS, et Chromium trouve les cartes sous le
+  pointeur.
+
+  Gestes : glisser → tourner ; molette → zoomer ; clic → choisir ; CLIC MOLETTE
+  (ou double-clic, ou Entrée) → basculer vers la fenêtre ; clic molette dans le
+  vide, ou Échap → fermer.
+
+  État : { fenetres: [{ hwnd, titre, exe, reduite, icone }], avant, contentScale, sphereZoom }.
+  Actions : ready, basculer/<hwnd>, fermer.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    user-select: none;
+  }
+  #scene { position: relative; flex: 1 1 auto; overflow: hidden; cursor: grab; }
+  #scene.glisse { cursor: grabbing; }
+  .ciel {
+    position: absolute; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), 0.40);
+  }
+  .carte {
+    position: absolute; left: 0; top: 0; box-sizing: border-box; transform-origin: 0 0;
+    display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px;
+    border-radius: 12px; background: rgba(0, 0, 0, 0.42);
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), 0.30);
+    font-size: calc(15px * var(--text-scale));
+  }
+  .carte.survol { border-color: rgba(var(--popup-fg-rgb, 255, 255, 255), 0.65); }
+  .carte.choisie {
+    border: 2px solid rgb(var(--popup-accent-solid-rgb, 96, 160, 255));
+    box-shadow: 0 0 26px rgba(var(--popup-accent-solid-rgb, 96, 160, 255), 0.6);
+  }
+  .tete { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .tete img { flex: 0 0 auto; width: 1.9em; height: 1.9em; }
+  .noms { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .titre { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .exe { font-size: 0.8em; opacity: 0.8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .badge {
+    flex: 0 0 auto; font-size: 0.72em; padding: 1px 6px; border-radius: 4px;
+    background: rgba(0, 0, 0, 0.45); border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), 0.30);
+  }
+  /* Le TROU : Rust y pose la vignette DWM de la fenêtre. */
+  .trou { flex: 1 1 auto; border-radius: 6px; background: rgba(0, 0, 0, 0.30); }
+  #vide[hidden] { display: none; }
+  #vide { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; opacity: 0.8; }
+  #pied {
+    flex: 0 0 auto; padding: 8px 14px 10px; font-size: 12px; opacity: 0.8;
+    zoom: var(--text-scale);
+  }
+</style>
+</head>
+<body>
+<div id="scene"><div id="vide" hidden>Aucune fenêtre sur ce bureau — Échap : revenir.</div></div>
+<div id="pied">Glisser : tourner · Molette : zoomer · Clic : choisir · Clic molette, double-clic ou Entrée : basculer vers la fenêtre · Clic molette dans le vide ou Échap : fermer</div>
+<script>
+  "use strict";
+
+  // Chaque action part dans sa propre tâche (voir `ssh.html`).
+  const actions = [];
+  let actionsPrevues = false;
+  function go(...segments) {
+    actions.push("neuradesk://fenetres/" + segments.map((s) => encodeURIComponent(String(s))).join("/"));
+    if (!actionsPrevues) viderActions();
+  }
+  function viderActions() {
+    const suivante = actions.shift();
+    if (!suivante) { actionsPrevues = false; return; }
+    actionsPrevues = true;
+    location.href = suivante;
+    setTimeout(viderActions, 0);
+  }
+
+  const CANAL = "http://neuradesk-data.invalid/";
+  const encodeur = new TextEncoder();
+  function poster(route, texte) {
+    return fetch(CANAL + route, { method: "POST", body: encodeur.encode(texte) });
+  }
+
+  const DEG = Math.PI / 180;
+  const ECART = 30;           // px CSS entre deux cartes
+  const PITCH_MAX = 70;
+  const DUREE_ARRIVEE = 280;  // ms
+  const ZOOM_AVANT = 0.5, ZOOM_ARRIERE = 0.7; // × rayon
+  const PART_DE_LA_LARGEUR = 0.24;
+  const PROPORTION = 0.62;    // hauteur du trou / largeur de la carte
+
+  let state = { fenetres: [], avant: "0", contentScale: 1, sphereZoom: 100 };
+  const scene = document.getElementById("scene");
+  const vide = document.getElementById("vide");
+  const cartes = new Map();   // hwnd → { el, trou, theta, phi, empreinte, ox, oy, ol, oh }
+  let ordre = [];
+  let choisie = null, survolee = null;
+  let rangs = 1, colonnes = 1;
+  let rayon = 900, largeur = 320, hauteur = 260, hauteurTrou = 200;
+  let ciel = [];
+  const cam = { yaw: 0, pitch: 0, zoom: 0, vYaw: 0, vPitch: 0 };
+  let zoomUtilisateur = 0, cible = null, glisse = null;
+  // Le dernier état connu de la case « Recadrer automatiquement » : un
+  // basculement PENDANT que la sphère est ouverte doit recadrer.
+  let zoomAutoPrecedent = false;
+
+  const vitesseZoom = () => Math.max(0.01, (Number(state.sphereZoom) || 100) / 100);
+
+  // ---- La géométrie ----
+  function dimensions() {
+    const w = scene.clientWidth || innerWidth, h = scene.clientHeight || innerHeight;
+    const avant = rayon;
+    rayon = Math.max(w, h) * 0.85;
+    zoomUtilisateur *= rayon / avant;
+    const echelle = Number(state.contentScale) || 1;
+    largeur = Math.max(240, Math.round(w * PART_DE_LA_LARGEUR));
+    hauteurTrou = Math.round(largeur * PROPORTION);
+    hauteur = hauteurTrou + Math.round(64 * echelle) + 20;
+  }
+  const pasYaw = () => 2 * Math.atan((largeur / 2 + ECART / 2) / rayon) / DEG;
+  const pasPitch = () => 2 * Math.atan((hauteur / 2 + ECART / 2) / rayon) / DEG;
+
+  function disposer() {
+    const n = ordre.length;
+    const parTour = Math.max(1, Math.floor(360 / pasYaw()));
+    colonnes = Math.max(1, n <= 5 ? n : Math.min(parTour, Math.ceil(Math.sqrt(n * 2.2))));
+    rangs = Math.max(1, Math.ceil(n / colonnes));
+    ordre.forEach((cle, i) => {
+      const rang = Math.floor(i / colonnes);
+      const dansLeRang = rang === rangs - 1 ? n - rang * colonnes : colonnes;
+      const c = cartes.get(cle);
+      c.theta = (i % colonnes - (dansLeRang - 1) / 2) * pasYaw();
+      c.phi = (rang - (rangs - 1) / 2) * pasPitch();
+      c.el.style.width = largeur + "px";
+      c.el.style.height = hauteur + "px";
+    });
+    // La place du trou dans sa carte, à l'échelle 1 (les `offset*` ignorent
+    // les transformations).
+    for (const c of cartes.values()) {
+      c.ox = c.trou.offsetLeft; c.oy = c.trou.offsetTop; c.ol = c.trou.offsetWidth; c.oh = c.trou.offsetHeight;
+    }
+    poserLeCiel();
+  }
+
+  function poserLeCiel() {
+    ciel.forEach((p) => p.el.remove());
+    ciel = [];
+    for (let i = 0; i < 160; i++) {
+      const el = document.createElement("div");
+      el.className = "ciel";
+      scene.appendChild(el);
+      ciel.push({ el, theta: Math.random() * 360 - 180, phi: Math.random() * 150 - 75 });
+    }
+  }
+
+  // ---- La caméra ----
+  // La position d'un point de la sphère vue de la caméra (y vers le bas,
+  // z < 0 : devant).
+  function versLaCamera(theta, phi, r) {
+    let x = 0, y = r * Math.sin(phi * DEG), z = -r * Math.cos(phi * DEG);
+    const a = -theta * DEG;
+    [x, z] = [x * Math.cos(a) + z * Math.sin(a), -x * Math.sin(a) + z * Math.cos(a)];
+    const b = cam.yaw * DEG;
+    [x, z] = [x * Math.cos(b) + z * Math.sin(b), -x * Math.sin(b) + z * Math.cos(b)];
+    const p = -cam.pitch * DEG;
+    [y, z] = [y * Math.cos(p) - z * Math.sin(p), y * Math.sin(p) + z * Math.cos(p)];
+    return { x, y, z };
+  }
+
+  // Le centre écran et l'échelle d'un point ; `null` s'il est derrière.
+  function projeter(theta, phi) {
+    return projeterAvec(theta, phi, cam.zoom);
+  }
+
+  // La même projection pour une distance de caméra DONNÉE — c'est ce que
+  // sonde `cadrageAuto` avant de choisir la distance d'ouverture.
+  function projeterAvec(theta, phi, zoom) {
+    const p = versLaCamera(theta, phi, rayon);
+    const profondeur = -(p.z + zoom);
+    if (profondeur < rayon * 0.2) return null;
+    const s = rayon / profondeur;
+    return { x: scene.clientWidth / 2 + p.x * s, y: scene.clientHeight / 2 + p.y * s, s, profondeur };
+  }
+
+  function bornerPitch(p) {
+    const haut = Math.min(PITCH_MAX, (rangs - 1) / 2 * pasPitch() + 20);
+    return Math.max(-haut, Math.min(haut, p));
+  }
+
+  let dernierEnvoi = "", envoiEnCours = false, envoiAttendu = false;
+  function peindre() {
+    const dpr = devicePixelRatio || 1;
+    const W = scene.clientWidth, H = scene.clientHeight;
+    const trous = [];
+    for (const [cle, c] of cartes) {
+      const p = projeter(c.theta, c.phi);
+      if (!p) {
+        c.el.style.visibility = "hidden";
+        trous.push({ hwnd: cle, x: 0, y: 0, l: 0, h: 0, v: false });
+        continue;
+      }
+      const x = p.x - largeur * p.s / 2, y = p.y - hauteur * p.s / 2;
+      c.el.style.visibility = "visible";
+      c.el.style.transform = `translate(${x}px, ${y}px) scale(${p.s})`;
+      c.el.style.zIndex = String(Math.round(100000 / p.profondeur));
+      const t = { x: x + c.ox * p.s, y: y + c.oy * p.s, l: c.ol * p.s, h: c.oh * p.s };
+      const dedans = t.x < W && t.x + t.l > 0 && t.y < H && t.y + t.h > 0;
+      trous.push({ hwnd: cle, x: t.x * dpr, y: t.y * dpr, l: t.l * dpr, h: t.h * dpr, v: dedans });
+    }
+    for (const q of ciel) {
+      const p = projeter(q.theta, q.phi);
+      q.el.style.visibility = p ? "visible" : "hidden";
+      if (p) q.el.style.transform = `translate(${p.x}px, ${p.y}px)`;
+    }
+    // Le rectangle de la SCÈNE part avec les trous : DWM compose les vignettes
+    // PAR-DESSUS la fenêtre, donc il ignore `overflow: hidden` — sans lui, une
+    // carte qui passe sous le pied de page y dessine son aperçu par-dessus le
+    // texte d'aide (voir `Trous` côté Rust). La scène commence au coin de la
+    // fenêtre, comme les trous ci-dessus.
+    envoyer(
+      JSON.stringify({
+        clip: [0, 0, Math.round(W * dpr), Math.round(H * dpr)],
+        trous: trous.map((t) => ({ ...t, x: Math.round(t.x), y: Math.round(t.y), l: Math.round(t.l), h: Math.round(t.h) })),
+      }),
+    );
+  }
+
+  // Les rectangles des aperçus vont à Rust — un envoi à la fois, le dernier gagne.
+  let enAttente = "";
+  function envoyer(texte) {
+    if (texte === dernierEnvoi) return;
+    enAttente = texte;
+    if (envoiEnCours) { envoiAttendu = true; return; }
+    envoiEnCours = true;
+    dernierEnvoi = texte;
+    poster("fenetres/rects", texte).catch(() => {}).finally(() => {
+      envoiEnCours = false;
+      if (envoiAttendu) { envoiAttendu = false; envoyer(enAttente); }
+    });
+  }
+
+  let boucle = 0;
+  const animer = () => { if (!boucle) boucle = requestAnimationFrame(pas); };
+  const adoucir = (t) => 1 - Math.pow(1 - t, 3);
+  function pas(maintenant) {
+    boucle = 0;
+    let encore = false;
+    if (cible) {
+      const t = Math.min(1, (maintenant - cible.debut) / cible.duree);
+      const k = adoucir(t);
+      cam.yaw = cible.depuis.yaw + (cible.yaw - cible.depuis.yaw) * k;
+      cam.pitch = cible.depuis.pitch + (cible.pitch - cible.depuis.pitch) * k;
+      cam.zoom = cible.depuis.zoom + (cible.zoom - cible.depuis.zoom) * k;
+      if (t < 1) encore = true; else cible = null;
+    } else if (!glisse && (Math.abs(cam.vYaw) > 0.01 || Math.abs(cam.vPitch) > 0.01)) {
+      cam.yaw += cam.vYaw;
+      cam.pitch = bornerPitch(cam.pitch + cam.vPitch);
+      cam.vYaw *= 0.92;
+      cam.vPitch *= 0.92;
+      encore = true;
+    }
+    peindre();
+    if (encore) animer();
+  }
+
+  function viser(cle, duree) {
+    const c = cartes.get(cle);
+    if (!c) return;
+    const yaw = cam.yaw + ((((c.theta - cam.yaw) % 360) + 540) % 360 - 180);
+    cam.vYaw = cam.vPitch = 0;
+    cible = { yaw, pitch: c.phi, zoom: zoomUtilisateur, duree, debut: performance.now(), depuis: { ...cam } };
+    animer();
+  }
+
+  function choisir(cle, centrer = true) {
+    if (choisie && cartes.has(choisie)) cartes.get(choisie).el.classList.remove("choisie");
+    choisie = cle;
+    const c = cle && cartes.get(cle);
+    if (!c) return;
+    c.el.classList.add("choisie");
+    if (centrer) viser(cle, 320);
+  }
+
+  // ---- Les cartes ----
+  function carte(f) {
+    const el = document.createElement("div");
+    el.className = "carte";
+    el.dataset.hwnd = f.hwnd;
+    const trou = document.createElement("div");
+    trou.className = "trou";
+    el.append(document.createElement("div"), trou);
+    scene.appendChild(el);
+    return { el, trou, theta: 0, phi: 0, empreinte: "", ox: 0, oy: 0, ol: 0, oh: 0 };
+  }
+
+  function tete(f) {
+    const t = document.createElement("div");
+    t.className = "tete";
+    if (f.icone) {
+      const img = document.createElement("img");
+      img.src = f.icone;
+      img.alt = "";
+      t.appendChild(img);
+    }
+    const noms = document.createElement("div");
+    noms.className = "noms";
+    const titre = document.createElement("div");
+    titre.className = "titre";
+    titre.textContent = f.titre || f.exe;
+    const exe = document.createElement("div");
+    exe.className = "exe";
+    exe.textContent = f.exe;
+    noms.append(titre, exe);
+    t.appendChild(noms);
+    if (f.reduite) {
+      const b = document.createElement("span");
+      b.className = "badge";
+      b.textContent = "réduite";
+      t.appendChild(b);
+    }
+    return t;
+  }
+
+  // Les cartes suivent la liste : une fenêtre neuve entre, une fermée sort.
+  function synchroniser() {
+    const vues = new Set();
+    const nouvelOrdre = [];
+    for (const f of state.fenetres || []) {
+      vues.add(f.hwnd);
+      nouvelOrdre.push(f.hwnd);
+      const c = cartes.get(f.hwnd) || (cartes.set(f.hwnd, carte(f)), cartes.get(f.hwnd));
+      const empreinte = JSON.stringify([f.titre, f.exe, f.reduite, f.icone]);
+      if (empreinte !== c.empreinte) {
+        c.empreinte = empreinte;
+        c.el.firstChild.replaceWith(tete(f));
+      }
+    }
+    for (const [cle, c] of cartes) {
+      if (vues.has(cle)) continue;
+      c.el.remove();
+      cartes.delete(cle);
+    }
+    const change = nouvelOrdre.join("|") !== ordre.join("|");
+    ordre = nouvelOrdre;
+    vide.hidden = ordre.length > 0;
+    if (!cartes.has(choisie)) choisir(ordre[0] || null, false);
+    return change;
+  }
+
+  // ---- Ouvrir ----
+  // Rust l'appelle à chaque ouverture : la caméra part tout près de la fenêtre
+  // qui était au premier plan, et recule.
+  function ouvrir() {
+    dimensions();
+    synchroniser();
+    disposer();
+    const cle = cartes.has(state.avant) ? state.avant : ordre[0];
+    choisir(cle || null, false);
+    const c = cle && cartes.get(cle);
+    // ⭐ LE NIVEAU DE ZOOM PAR DÉFAUT (Réglages) : la distance à laquelle la
+    // caméra se pose. 100 % = la sphère telle qu'elle s'ouvre historiquement
+    // (caméra à sa surface) ; 200 % = au plus près de ce que la molette permet.
+    // La molette repart de là, et la prochaine ouverture y revient.
+    // ⭐ LE ZOOM AUTOMATIQUE (Réglages) : la caméra recule JUSTE ASSEZ pour que
+    // TOUTES les cartes tiennent dans la scène. Le zoom par défaut garde son
+    // rôle de distance normale quand tout tient déjà — l'automatisme ne fait
+    // que reculer, jamais avancer.
+    cam.vYaw = cam.vPitch = 0;
+    cam.yaw = c ? c.theta : 0;
+    cam.pitch = c ? c.phi : 0;
+    zoomUtilisateur = state.sphereZoomAuto && cartes.size
+      ? Math.min(zoomParDefaut(), cadrageAuto())
+      : zoomParDefaut();
+    zoomAutoPrecedent = !!state.sphereZoomAuto;
+    cam.zoom = zoomUtilisateur + rayon * 0.5;
+    cible = { yaw: cam.yaw, pitch: cam.pitch, zoom: zoomUtilisateur, duree: DUREE_ARRIVEE, debut: performance.now(), depuis: { ...cam } };
+    dernierEnvoi = "";
+    peindre();
+    animer();
+    window.focus();
+  }
+
+  /// Le déplacement de caméra du réglage « Zoom par défaut », dans l'unité de
+  /// `zoomUtilisateur` — borné aux limites de la molette.
+  function zoomParDefaut() {
+    const pourcent = Number(state.sphereZoomDefaut) || 100;
+    const part = Math.max(-0.7, Math.min(0.5, ((pourcent - 100) / 100) * 0.5));
+    return part * rayon;
+  }
+
+  // ---- Le zoom automatique ----
+  /// La distance de caméra qui fait tenir TOUTES les cartes dans la scène, dans
+  /// l'unité de `zoomUtilisateur` (négatif : on s'éloigne).
+  ///
+  /// Recherche BINAIRE : la projection est une perspective, donc la taille
+  /// écran d'une carte n'est pas proportionnelle au zoom — une formule fermée
+  /// dépendrait de la profondeur de chaque carte, alors qu'un test « ça tient »
+  /// se lit directement sur la projection qui servira à peindre.
+  function cadrageAuto() {
+    const marge = 12;   // px CSS de respiration entre la carte et le bord
+    const W = scene.clientWidth || innerWidth, H = scene.clientHeight || innerHeight;
+    const tient = (zoom) => {
+      for (const c of cartes.values()) {
+        const p = projeterAvec(c.theta, c.phi, zoom);
+        if (!p) return false;
+        if (p.x - largeur * p.s / 2 < marge || p.x + largeur * p.s / 2 > W - marge) return false;
+        if (p.y - hauteur * p.s / 2 < marge || p.y + hauteur * p.s / 2 > H - marge) return false;
+      }
+      return true;
+    };
+    // Loin : le plus loin que la caméra puisse reculer sans que la projection
+    // dégénère (les cartes deviennent minuscules) ; près : la limite de la
+    // molette, celle du zoom maximal.
+    const loinMax = -rayon * 6, presMax = rayon * ZOOM_AVANT;
+    if (!tient(loinMax)) return loinMax;   // même de très loin : impossible
+    if (tient(presMax)) return presMax;    // tient déjà au plus près
+    let loin = loinMax, pres = presMax;
+    for (let i = 0; i < 60; i++) {
+      const milieu = (loin + pres) / 2;
+      if (tient(milieu)) loin = milieu; else pres = milieu;
+    }
+    return loin;
+  }
+
+  // La scène a changé de taille ou de contenu : en zoom automatique, on
+  // recadre SANS animation — c'est une conséquence du réglage, pas un geste de
+  // l'utilisateur (la molette, elle, reste maîtresse jusqu'au prochain recadrage).
+  function recadrerSiAuto() {
+    if (!state.sphereZoomAuto || !cartes.size) return;
+    zoomUtilisateur = Math.min(zoomParDefaut(), cadrageAuto());
+    cam.zoom = zoomUtilisateur;
+  }
+
+  const carteSous = (el) => {
+    const c = el && el.closest && el.closest(".carte");
+    return c ? c.dataset.hwnd : null;
+  };
+
+  function basculer(cle) {
+    if (cle) go("basculer", cle);
+  }
+
+  // ---- Les gestes ----
+  scene.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    if (e.button === 1) {
+      const cle = carteSous(e.target);
+      if (cle) basculer(cle); else go("fermer");
+      return;
+    }
+    if (e.button !== 0) return;
+    glisse = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, carte: carteSous(e.target) };
+    cible = null;
+    cam.vYaw = cam.vPitch = 0;
+    scene.classList.add("glisse");
+  });
+  scene.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
+  window.addEventListener("mousemove", (e) => {
+    if (!glisse) {
+      const cle = carteSous(e.target);
+      if (cle !== survolee) {
+        if (survolee && cartes.has(survolee)) cartes.get(survolee).el.classList.remove("survol");
+        survolee = cle;
+        if (cle && cartes.has(cle)) cartes.get(cle).el.classList.add("survol");
+      }
+      return;
+    }
+    const k = 1 / (rayon * DEG);
+    const dx = e.clientX - glisse.x, dy = e.clientY - glisse.y;
+    glisse.x = e.clientX;
+    glisse.y = e.clientY;
+    cam.vYaw = -dx * k;
+    cam.vPitch = -dy * k;
+    cam.yaw += cam.vYaw;
+    cam.pitch = bornerPitch(cam.pitch + cam.vPitch);
+    peindre();
+  });
+  window.addEventListener("mouseup", (e) => {
+    if (!glisse || e.button !== 0) return;
+    const immobile = Math.hypot(e.clientX - glisse.x0, e.clientY - glisse.y0) < 5;
+    const cle = glisse.carte;
+    glisse = null;
+    scene.classList.remove("glisse");
+    if (!immobile) { animer(); return; }
+    cam.vYaw = cam.vPitch = 0;
+    if (cle) choisir(cle);
+  });
+  scene.addEventListener("dblclick", (e) => basculer(carteSous(e.target)));
+  scene.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    cible = null;
+    // Le zoom automatique peut avoir posé la caméra PLUS LOIN que la limite de
+    // la molette : on garde cette distance comme fond, sinon le premier cran
+    // ferait sauter la vue de plusieurs rayons, sans pour autant autoriser à
+    // reculer davantage.
+    const fond = Math.min(-rayon * ZOOM_ARRIERE, zoomUtilisateur);
+    zoomUtilisateur = Math.max(fond, Math.min(rayon * ZOOM_AVANT, zoomUtilisateur - e.deltaY * rayon / 1500 * vitesseZoom()));
+    cam.zoom = zoomUtilisateur;
+    peindre();
+  }, { passive: false });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); go("fermer"); return; }
+    if (e.key === "Enter") { e.preventDefault(); basculer(choisie); return; }
+    const pasDeChoix = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -colonnes, ArrowDown: colonnes }[e.key];
+    if (pasDeChoix && ordre.length) {
+      e.preventDefault();
+      const i = Math.max(0, ordre.indexOf(choisie));
+      choisir(ordre[Math.min(ordre.length - 1, Math.max(0, i + pasDeChoix))]);
+    }
+  });
+  new ResizeObserver(() => { dimensions(); disposer(); recadrerSiAuto(); peindre(); }).observe(scene);
+
+  window.setState = function (next) {
+    state = Object.assign(state, next);
+    document.documentElement.style.setProperty("--text-scale", state.contentScale || 1);
+    // La case des Réglages peut basculer PENDANT que la sphère est ouverte :
+    // le recadrage doit suivre, comme pour un changement de liste.
+    const bascule = !!state.sphereZoomAuto !== zoomAutoPrecedent;
+    zoomAutoPrecedent = !!state.sphereZoomAuto;
+    if (synchroniser() || bascule) { dimensions(); disposer(); recadrerSiAuto(); }
+    peindre();
+  };
+
+  window.fenetres = {
+    ouvrir,
+  };
+
+  go("ready");
+</script>
+</body>
+</html>

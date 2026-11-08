@@ -1,0 +1,27 @@
+/* LES POLICES EMBARQUÉES DES TERMINAUX — une seule feuille pour les deux pages
+   qui peignent du texte en xterm.js : `terminal.html` et `ssh.html`.
+
+   ⚠️ **Les `url()` sont RELATIVES À CETTE FEUILLE, pas à la page** qui la
+   charge : nous sommes dans `assets/popups/fonts/`, donc
+   `NordwandMono-Regular.woff2` — et non `fonts/NordwandMono-Regular.woff2`, qui
+   pointerait vers un fichier inexistant. C'est précisément ce qui permet à deux
+   pages voisines de partager la déclaration au lieu de la dupliquer.
+
+   NORDWAND MONO — https://github.com/tywr/Nordwand-Mono, licence SIL OFL 1.1,
+   texte dans `LICENSE-Nordwand-Mono.txt` à côté de ces quatre fichiers.
+   Quatre graisses parce que xterm.js demande normal, gras, italique et
+   gras-italique.
+
+   ⛔ Elle ne couvre PAS les boîtes (┏━┛), les blocs (█▓▒░) ni le braille : la
+   pile de `terminal_theme.js` laisse donc DejaVu Sans Mono derrière elle —
+   mesuré le 2026-10-28, le glyphe de repli est 18 % plus large que la cellule,
+   la grille tient (xterm avance d'une cellule fixe) mais le trait change de
+   graisse et de hauteur.
+
+   `build.rs` copie ce dossier à côté de l'exe (`copy_polices_de_terminal_assets`)
+   parce que `copy_popup_assets` ne copie que les fichiers À PLAT et ignore
+   `.woff2` : sans ce copieur, les pages chargeraient du vide sans rien dire. */
+@font-face { font-family: "Nordwand Mono"; src: url("NordwandMono-Regular.woff2") format("woff2"); font-weight: 400; font-style: normal; }
+@font-face { font-family: "Nordwand Mono"; src: url("NordwandMono-Bold.woff2") format("woff2"); font-weight: 700; font-style: normal; }
+@font-face { font-family: "Nordwand Mono"; src: url("NordwandMono-Italic.woff2") format("woff2"); font-weight: 400; font-style: italic; }
+@font-face { font-family: "Nordwand Mono"; src: url("NordwandMono-BoldItalic.woff2") format("woff2"); font-weight: 700; font-style: italic; }

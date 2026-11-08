@@ -1,0 +1,47 @@
+/target
+Cargo.lock
+*.pdb
+.vs/
+.vscode/
+# Config Claude Code locale/personnelle (permissions accordées dans cette
+# session) — pas du code du projet, ne doit pas être versionnée.
+.claude/settings.local.json
+# Marqué pour suppression par l'utilisateur — pas suivi en attendant.
+/_to_delete/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# Configuration cargo LOCALE A CETTE MACHINE (`[build] target-dir`) — voir
+# `.cargo/config.toml` et la raison dans la mémoire `neuradesk-project-status` :
+# le dépôt vit sous `OneDrive\Documents`, et la synchronisation tient mappés
+# `libcef.dll`/`chrome_elf.dll` dans `target\release\`, ce qui fait échouer le
+# script de compilation de `cef-dll-sys` (os error 1224). La cible est donc
+# redirigée HORS d'OneDrive. Le chemin est ABSOLU et propre à cette machine :
+# versionné, il casserait les builds ailleurs.
+/.cargo/
+
+# Artefacts des outils Python (`tools/`) — jamais versionnés.
+__pycache__/
+*.pyc
+
+# ── Fichiers personnels de la machine de développement ─────────────────────
+# Captures, exports de configuration et notes de travail posés à la racine :
+# ils n'ont pas leur place dans le dépôt public (vie privée, poids).
+/*.png
+/*.jpg
+/*.zip
+/*.bak
+/dist/
+/neuradesk-logo-kit/
+/,n
+/0.*
+# Documentation tierce non redistribuable (ex. le PDF du SDK Voicemeeter) :
+# chacun la récupère chez son éditeur.
+/docs/*.pdf
+# Configurations d'outils/agents propres à la machine.
+/.claude/
+/.mcp.json
+/opencode.json
+/AGENTS.md
+/.ignore

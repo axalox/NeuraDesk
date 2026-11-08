@@ -1,0 +1,873 @@
+<!doctype html>
+<!--
+  win32::cef_dash (icône NeuraDesk, clic gauche) — reproduit en CSS le
+  contenu de win32::dash::build_ui : recherche pleine largeur, grille
+  d'icônes groupée par catégorie (colonne de gauche), barre de catégories
+  (colonne de droite), popup d'assignation de catégories au clic droit sur
+  une tuile.
+
+  Recherche/filtrage/regroupement ENTIÈREMENT côté JS (voir matchesFilter/
+  groupByCategory/categoryPriority ci-dessous, DÉLIBÉRÉMENT dupliqués de
+  win32::dash.rs plutôt que d'aller-retourner par IPC à chaque frappe) —
+  Rust pousse la liste COMPLÈTE une fois (voir win32::cef_dash::push_state)
+  puis seulement les icônes au fur et à mesure (voir window.setIcons,
+  chargées PAR LOTS côté Rust, jamais toutes d'un coup — même raison que
+  win32::dash, doc de module : un scan Shell réel par icône serait trop
+  lent pour tenir dans un budget de frame). Un changement dans la logique
+  de tri/filtre doit être répété DANS LES DEUX FICHIERS (ici et
+  win32::dash.rs, dont c'est la référence) — accepté en connaissance de
+  cause pour la réactivité de la frappe, jamais un round-trip IPC par
+  caractère tapé.
+
+  Canal JS→Rust : `neuradesk://dash/<segments>`, même mécanisme que les
+  autres popups. Canal Rust→JS : `window.setState` (liste complète,
+  poussée à l'ouverture et après un rescan) et `window.setIcons` (lots
+  d'icônes, voir win32::cef_dash::poll).
+
+  PAS de `background` sur `<html>`/`<body>` : transparent par défaut en
+  rendu hors-écran CEF.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<script src="menu_contextuel.js"></script>
+<style>
+  html {
+    /* Réglables en direct par window.setState (voir push_state côté Rust,
+       curseurs "Icônes"/"Texte" — section "Taille du contenu des dashs" du
+       panneau de réglages) — DEUX variables séparées, réglables
+       indépendamment (DEMANDE EXPLICITE), pas un seul facteur commun :
+       --icon-scale pour .tile .icon, --label-scale pour .tile .label.
+       --tile-scale (calculée en JS, voir window.setState) est le plus
+       grand des deux : la tuile elle-même doit rester assez grande pour
+       loger le PLUS gros des deux éléments, sinon l'un déborderait de son
+       propre conteneur. Ne change QUE la taille du CONTENU des tuiles, pas
+       la fenêtre elle-même (contrairement au zoom CEF, fixé à la création,
+       voir win32::cef_dash::render_if_visible). */
+    --icon-scale: 1;
+    --label-scale: 1;
+    --tile-scale: 1;
+    /* BUG RÉEL SIGNALÉ : le panneau de catégories (colonne de droite,
+       `.categories-pane`) et les en-têtes de groupe dans la grille
+       (`.category-title`) n'avaient aucun réglage de taille, alors que le
+       contenu des tuiles en a deux — voir curseur "Catégories" (section
+       "Taille du contenu des dashs" du panneau de réglages), `win32::
+       cef_dash::category_scale`. Pas de variante `--tile-scale` ici : ni
+       `.categories-pane` (`overflow-y: auto`, se contente de rétrécir sans
+       rien couper) ni `.category-title` (dans `.grid-pane`, qui a sa
+       propre largeur) ne risquent le débordement qui a motivé
+       `--tile-scale` pour les tuiles. */
+    --category-scale: 1;
+    /* Palette du CONTENU, dérivée de l'accent de CETTE fenêtre — poussée par
+       win32::cef_popup::push_window_palette (variante `Window` de
+       `PopupPalette`) à chaque frame où le panneau est visible. Mêmes variables
+       et même doctrine que les autres panneaux : voir la doc de cette fonction
+       pour le pourquoi des DEUX familles.
+       Les valeurs par défaut sont EXACTEMENT les littéraux qu'elles
+       remplacent : tant que Rust n'a rien poussé — et il ne pousse qu'une fois
+       la fenêtre visible — le rendu est identique à avant. Ce n'est pas une
+       précaution de style : un `var()` non déclaré rend la déclaration ENTIÈRE
+       invalide, donc `rgba(var(--popup-accent-rgb), calc(0.15 * var(--popup-alpha)))` ne donnerait pas un
+       fond légèrement différent mais AUCUN fond.
+       Les deux dernières ne servent qu'aux aplats PLEINS portant du texte, et
+       vont toujours PAR PAIRE (voir `push_window_palette`) — déclarées ici même
+       si cette page n'en a pas encore, pour qu'une règle recopiée d'une autre
+       page ne produise pas une valeur invalide. */
+    --popup-fg-rgb: 255, 255, 255;
+    --popup-accent-rgb: 255, 255, 255;
+    --popup-accent-solid-rgb: 255, 255, 255;
+    --popup-on-accent-rgb: 0, 0, 0;
+    /* Multiplicateur de TRANSPARENCE des éléments — un SEUL réglage pour les
+       quatre panneaux (curseur "Opacité des éléments" de la section
+       "Transparence et flou" des Réglages, voir
+       win32::cef_popup::set_popup_alpha). Chaque alpha de ce fichier s'écrit
+       `calc(<valeur> * var(--popup-alpha))`, donc 1 = tel que conçu, et la
+       hiérarchie entre les éléments (un survol plus marqué qu'un repos) est
+       PRÉSERVÉE quel que soit le réglage. */
+    --popup-alpha: 1;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    font-family: var(--nd-police);
+    /* ⛔ LE TEXTE PLEIN SUIT AUSSI LE CURSEUR — BUG RÉEL SIGNALÉ (2026-10-23) :
+       « opacité des éléments n'agit pas sur tous les niveaux de textes ». La
+       couleur de base était un `rgb()` OPAQUE : titres, libellés et contenu
+       restaient à 100 % quand on descendait, seuls les textes déjà atténués
+       bougeaient. Elle porte maintenant `min(1, a)` ; et comme une `opacity`
+       se MULTIPLIE avec la couleur héritée, les textes atténués s'écrivent
+       `calc(k * max(1, a))` : sous 100 %, c'est la couleur qui apporte le
+       facteur (k·a, pas k·a²) ; au-dessus, l'opacité monte seule (min(1, k·a)). */
+    color: rgba(var(--popup-fg-rgb), min(1, var(--popup-alpha)));
+  }
+  .root {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    box-sizing: border-box;
+  }
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px;
+    flex-shrink: 0;
+  }
+  /* Suit --category-scale (BUG RÉEL SIGNALÉ : "la ligne de recherche ne
+     suit pas la taille du reste des éléments du dash") — même variable que
+     `.categories-pane`/`.category-title` ci-dessous plutôt qu'une nouvelle
+     dédiée : ni élément de tuile (--icon-scale/--label-scale/--tile-scale),
+     ni catégorie à proprement parler, mais LE seul autre texte de "chrome"
+     général du dash, déjà régi par --category-scale par convention (voir sa
+     doc plus haut : "le panneau de catégories... et les en-têtes de
+     groupe"). Les boutons d'icône (Actualiser/Fermer) suivent pour rester
+     visuellement alignés avec le champ à leur gauche.
+  */
+  #search {
+    flex: 1;
+    font-size: calc(22px * var(--category-scale));
+    padding: calc(12px * var(--category-scale)) calc(16px * var(--category-scale));
+    border-radius: var(--nd-rayon-surface);
+    border: 2px solid rgba(var(--popup-accent-rgb), calc(0.35 * var(--popup-fond-alpha, 1)));
+    background: rgba(var(--popup-accent-rgb), calc(0.17 * var(--popup-fond-alpha, 1)));
+    color: rgba(var(--popup-fg-rgb), min(1, var(--popup-alpha)));
+    outline: none;
+    box-sizing: border-box;
+  }
+  #search:focus {
+    border-color: rgba(var(--popup-accent-rgb), calc(0.7 * var(--popup-fond-alpha, 1)));
+  }
+  #search::placeholder {
+    color: rgba(var(--popup-fg-rgb), calc(0.55 * var(--popup-alpha)));
+  }
+  .icon-btn {
+    all: unset;
+    cursor: pointer;
+    font-size: calc(20px * var(--category-scale));
+    padding: calc(8px * var(--category-scale)) calc(12px * var(--category-scale));
+    border-radius: var(--nd-rayon-surface);
+  }
+  .icon-btn:hover {
+    background: rgba(var(--popup-accent-rgb), calc(0.23 * var(--popup-fond-alpha, 1)));
+  }
+  .body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    padding: 0 12px 12px;
+    box-sizing: border-box;
+    gap: 16px;
+  }
+  .grid-pane {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+  }
+  .category-title {
+    font-size: calc(28px * var(--category-scale));
+    font-weight: 700;
+    margin: 12px 0 4px;
+  }
+  .tiles {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .tile {
+    all: unset;
+    width: calc(168px * var(--tile-scale));
+    height: calc(168px * var(--tile-scale));
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    border-radius: var(--nd-rayon-surface);
+    cursor: pointer;
+    box-sizing: border-box;
+    text-align: center;
+  }
+  .tile:hover {
+    background: rgba(var(--popup-accent-rgb), calc(0.2 * var(--popup-fond-alpha, 1)));
+  }
+  .tile .icon {
+    width: calc(96px * var(--icon-scale));
+    height: calc(96px * var(--icon-scale));
+    margin-bottom: 12px;
+    object-fit: contain;
+    border-radius: var(--nd-rayon-controle);
+  }
+  .tile .icon.placeholder {
+    background: rgba(var(--popup-accent-rgb), calc(0.18 * var(--popup-fond-alpha, 1)));
+  }
+  .tile .label {
+    font-size: calc(15px * var(--label-scale));
+    padding-bottom: 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    /* Liée à --tile-scale (la tuile), pas --label-scale : sinon un texte
+       agrandi déborderait de la tuile elle-même plutôt que d'être tronqué
+       par l'ellipse ci-dessus — voir la doc de --tile-scale plus haut. */
+    max-width: calc(150px * var(--tile-scale));
+  }
+  .categories-pane {
+    width: calc(360px * var(--category-scale));
+    flex-shrink: 0;
+    overflow-y: auto;
+    padding: 10px 14px;
+    border-radius: var(--nd-rayon-surface);
+    background: rgba(var(--popup-accent-rgb), calc(0.23 * var(--popup-fond-alpha, 1)));
+  }
+  .categories-pane h2 {
+    font-size: calc(22px * var(--category-scale));
+    margin: 4px 0 12px;
+  }
+  .category-item {
+    all: unset;
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 10px;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    font-size: calc(16px * var(--category-scale));
+    margin-bottom: 2px;
+  }
+  .category-item:hover {
+    background: rgba(var(--popup-accent-rgb), calc(0.2 * var(--popup-fond-alpha, 1)));
+  }
+  .category-item.active {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    font-weight: 600;
+  }
+  .overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, calc(0.45 * var(--popup-fond-alpha, 1)));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .overlay[hidden] {
+    display: none;
+  }
+  .category-popup {
+    /* Ses textes sont en px fixes : sans ce zoom, ils ignoraient le curseur
+       « Catégories » ET la taille des textes globale (portée par lui). */
+    zoom: var(--category-scale);
+    background: rgba(30, 20, 35, calc(0.96 * var(--popup-fond-alpha, 1)));
+    border-radius: var(--nd-rayon-grand);
+    padding: 18px 22px;
+    min-width: 320px;
+    max-width: 420px;
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+  .category-popup h3 {
+    margin: 0 0 12px;
+    font-size: 18px;
+  }
+  .category-popup label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    font-size: 15px;
+  }
+  .category-popup .row {
+    display: flex;
+    /* ⚠️ **À LA LIGNE, SINON LE BOUTON DE TROP EST COUPÉ** — mesuré : trois
+       boutons de zone ne tiennent pas dans les 420 px du panneau, et le
+       troisième (« Retirer du dock ») sortait à droite, invisible. */
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .category-popup input[type="text"] {
+    flex: 1;
+    padding: 6px 8px;
+    border-radius: var(--nd-rayon-controle);
+    border: 1px solid rgba(var(--popup-accent-rgb), calc(0.3 * var(--popup-fond-alpha, 1)));
+    background: rgba(var(--popup-accent-rgb), calc(0.17 * var(--popup-fond-alpha, 1)));
+    color: rgba(var(--popup-fg-rgb), min(1, var(--popup-alpha)));
+  }
+  .category-popup button.small {
+    all: unset;
+    cursor: pointer;
+    padding: 6px 12px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-accent-rgb), calc(0.23 * var(--popup-fond-alpha, 1)));
+  }
+  .category-popup button.small:hover {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+  }
+  .category-popup .footer {
+    margin-top: 14px;
+    display: flex;
+    justify-content: space-between;
+  }
+  /* Lignes du panneau « Gérer les catégories » — voir renderManagePopup. Le
+     bouton part à DROITE quel que soit le nom de la catégorie, sinon une longue
+     catégorie pousserait « Supprimer » hors du panneau. */
+  .category-popup .actions {
+    margin-left: auto;
+    display: flex;
+    gap: 6px;
+  }
+  .category-popup .note {
+    margin-left: auto;
+    font-size: 13px;
+    opacity: calc(0.55 * max(1, var(--popup-alpha)));
+  }
+  /* Séparateur entre les catégories et l'action « ranger dans une zone » —
+     deux sujets distincts, une seule provenance (voir renderCategoryPopup). */
+  .category-popup .sep {
+    border-top: 1px solid rgba(var(--popup-accent-rgb), calc(0.3 * var(--popup-fond-alpha, 1)));
+    margin: 12px 0;
+  }
+  /* Texte d'explication ou de retour, sur toute la largeur — SANS le
+     `margin-left: auto` de `.note`, qui le collerait à droite. */
+  .category-popup .hint {
+    padding: 6px 0;
+    font-size: 13px;
+    opacity: calc(0.8 * max(1, var(--popup-alpha)));
+  }
+  /* Repère « catégorie choisie à la main » — voir `app.overridden`, transmis par
+     cef_dash::push_state. Un point discret, comme l'ancien dash
+     (`.tile.overridden` de dash_template.html, perdu au portage CEF). Il ne dit
+     pas QUELLE catégorie est manuelle — le clic droit le montre — il dit qu'il y
+     en a une : sans lui, un classement manuel est indiscernable d'un automatique,
+     et rien n'indique qu'on peut le défaire. */
+  .tile.overridden {
+    position: relative;
+  }
+  .tile.overridden::after {
+    content: "";
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: rgb(var(--popup-accent-rgb));
+  }
+</style>
+</head>
+<body>
+  <div class="root">
+    <div class="topbar">
+      <input type="text" id="search" placeholder="Rechercher une application…" autocomplete="off">
+      <button class="icon-btn" title="Gérer les catégories" onclick="openManagePopup()"><span class="ico ico-gear"></span></button>
+      <button class="icon-btn" title="Ajouter un programme portable (un .exe sans installation)" onclick="go('portable-ajouter')"><span class="ico ico-plus"></span></button>
+      <button class="icon-btn" title="Actualiser" onclick="go('rescan')"><span class="ico ico-arrows-clockwise"></span></button>
+      <button class="icon-btn" title="Fermer" onclick="go('close')"><span class="ico ico-x"></span></button>
+    </div>
+    <div class="body">
+      <div class="grid-pane" id="grid"></div>
+      <div class="categories-pane" id="categories"></div>
+    </div>
+  </div>
+  <div class="overlay" id="category-overlay" hidden>
+    <div class="category-popup" id="category-popup"></div>
+  </div>
+  <!-- Panneau « Gérer les catégories » (voir openManagePopup) — réutilise la
+       mise en forme de `.category-popup` : même forme, même besoin. -->
+  <div class="overlay" id="manage-overlay" hidden>
+    <div class="category-popup" id="manage-popup"></div>
+  </div>
+  <script>
+    function go(...segments) {
+      location.href = "neuradesk://dash/" + segments.map(encodeURIComponent).join("/");
+    }
+
+    function el(tag, attrs, children) {
+      const node = document.createElement(tag);
+      for (const [key, value] of Object.entries(attrs || {})) {
+        if (key === "class") node.className = value;
+        // ⛔ **TOUT `on…` PASSE PAR `addEventListener`.** Ce helper ne traitait que
+        // `onclick` et `oncontextmenu`, eux aussi nommés en dur, et renvoyait tout le reste à `setAttribute` — donc
+        // `onchange: (e) => …` devenait une CHAÎNE jamais exécutée. Corrigé ici AVANT
+        // d'en avoir besoin : ce défaut a frappé deux fois le 2026-09-24 (`notes.html`,
+        // puis `settings.html` où il a tué les deux sélecteurs de son des rappels), et
+        // chaque fois parce que le correctif avait été appliqué LÀ OÙ IL S'ÉTAIT
+        // MANIFESTÉ, pas à la classe.
+        else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+        else node.setAttribute(key, value);
+      }
+      for (const child of children || []) {
+        node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+      }
+      return node;
+    }
+
+    // Voir win32::app_categories::FREQUENT/UNINSTALL — mêmes chaînes,
+    // dupliquées ici (voir le commentaire d'en-tête).
+    const FREQUENT = "Fréquemment utilisés";
+    const UNINSTALL = "Désinstallation";
+
+    let apps = [];
+    let allCategories = [];
+    const icons = {}; // index -> data URI
+    let search = "";
+    let activeCategory = null;
+    let categoryPopupIndex = null;
+    // Panneau « Gérer les catégories ». `customCategories` vient de Rust (voir
+    // `cef_dash::push_state`) : seules ces catégories-là sont supprimables, les
+    // fixes étant du classement intégré au code.
+    let customCategories = [];
+    let manageOpen = false;
+    let pendingDelete = null;
+    // Épingler une application au dock, dans une zone CHOISIE (voir Rust,
+    // `cef_dash::handle_add_to_zone`). `zones` est la liste `{cle, nom}` des
+    // zones nommées de la barre de droite ; `choixZone` dit si la liste est
+    // dépliée, et `addZoneMessage` porte le compte rendu de l'hôte.
+    let zones = [];
+    let choixZone = false;
+    let addZoneMessage = null;
+
+    function truncateLabel(name) {
+      const MAX = 14;
+      const chars = [...name];
+      if (chars.length <= MAX) return name;
+      return chars.slice(0, MAX - 1).join("") + "…";
+    }
+
+    function matchesFilter(app) {
+      if (activeCategory !== null && !app.categories.some((c) => c.toLowerCase() === activeCategory.toLowerCase())) {
+        return false;
+      }
+      const needle = search.trim().toLowerCase();
+      if (needle === "") return true;
+      return app.name.toLowerCase().includes(needle) || app.description.toLowerCase().includes(needle);
+    }
+
+    function categoryPriority(name) {
+      if (name.toLowerCase() === FREQUENT.toLowerCase()) return 0;
+      if (name.toLowerCase() === UNINSTALL.toLowerCase()) return 2;
+      return 1;
+    }
+
+    function populatedCategories() {
+      const seen = new Set();
+      const order = [];
+      for (const app of apps) {
+        for (const category of app.categories) {
+          const key = category.toLowerCase();
+          if (!seen.has(key)) {
+            seen.add(key);
+            order.push(category);
+          }
+        }
+      }
+      // ⚠️ **LE SECOND CRITÈRE N'EST PAS DÉCORATIF.** `categoryPriority` seul ne
+      // sépare que trois groupes (0 = « Fréquemment utilisés », 2 =
+      // « Désinstallation », 1 = tout le reste) et `sort` est STABLE : dans le
+      // groupe 1, l'ordre restait donc celui d'énumération des applications —
+      // c'est-à-dire aucun ordre lisible. D'où le tri alphabétique par défaut,
+      // qui est ce qu'on attend d'une liste de catégories.
+      order.sort((a, b) => categoryPriority(a) - categoryPriority(b) || a.localeCompare(b));
+      return order;
+    }
+
+    // **CE QUE LA COLONNE DE DROITE MONTRE : les catégories peuplées, PLUS les
+    // catégories PERSONNALISÉES même vides.**
+    //
+    // Elle ne montrait que les catégories peuplées (elle se déduisait des
+    // applications), donc une catégorie créée exprès — par le clic droit ou par
+    // le panneau ⚙️ — restait INVISIBLE ici tant qu'aucune application n'y
+    // était rangée : on la voyait dans les réglages, jamais dans le dash. C'est
+    // le défaut signalé.
+    //
+    // Les catégories FIXES vides restent masquées, à dessein : ce sont des
+    // compartiments de classement intégrés au code (voir `app_categories::
+    // fixed_categories`), l'utilisateur ne peut rien en faire, et les afficher
+    // toutes noierait la liste sous une vingtaine d'entrées mortes.
+    function orderedCategories() {
+      const peuplees = new Set(populatedCategories().map((c) => c.toLowerCase()));
+      const perso = new Set(customCategories.map((c) => c.toLowerCase()));
+      return allCategories
+        .filter((name) => peuplees.has(name.toLowerCase()) || perso.has(name.toLowerCase()))
+        .sort((a, b) => categoryPriority(a) - categoryPriority(b) || a.localeCompare(b));
+    }
+
+    function groupByCategory() {
+      const order = [];
+      const groups = new Map();
+      for (const app of apps) {
+        if (!matchesFilter(app)) continue;
+        // BUG RÉEL SIGNALÉ ("certaines catégories de programme quand elles
+        // sont cliquées font apparaître plusieurs catégories") : une appli
+        // peut appartenir à PLUSIEURS catégories (`app.categories`, voir
+        // win32::app_categories) — en itérant TOUTES ses catégories ici
+        // même quand une seule est sélectionnée (`activeCategory`), ses
+        // AUTRES catégories réapparaissaient comme en-têtes supplémentaires
+        // dès qu'une seule de ses applis y appartenait aussi. `matchesFilter`
+        // a déjà vérifié que l'appli appartient à `activeCategory` : quand
+        // un filtre est actif, un seul groupe (celui sélectionné) est donc
+        // pertinent ici — la liste complète de ses catégories ne sert que
+        // pour la vue "Tous" (`activeCategory === null`).
+        const categories = activeCategory !== null ? [activeCategory] : app.categories;
+        for (const category of categories) {
+          if (!groups.has(category)) {
+            groups.set(category, []);
+            order.push(category);
+          }
+          groups.get(category).push(app.index);
+        }
+      }
+      order.sort((a, b) => categoryPriority(a) - categoryPriority(b) || a.localeCompare(b));
+      return order.map((name) => [name, groups.get(name)]);
+    }
+
+    function firstMatch() {
+      const app = apps.find(matchesFilter);
+      return app ? app.index : null;
+    }
+
+    function tileNode(app) {
+      const iconSrc = icons[app.index];
+      const icon = iconSrc
+        ? el("img", { class: "icon", src: iconSrc })
+        : el("div", { class: "icon placeholder" });
+      const tile = el(
+        "div",
+        {
+          class: "tile" + (app.overridden ? " overridden" : ""),
+          "data-index": app.index,
+          onclick: () => go("launch", app.index),
+        },
+        [icon, el("div", { class: "label" }, [truncateLabel(app.name)])],
+      );
+      const notes = [];
+      if (app.description) notes.push(app.description);
+      if (app.overridden) notes.push("Catégorie choisie à la main");
+      if (notes.length) tile.title = notes.join("\n");
+      return tile;
+    }
+
+    function renderGrid() {
+      const grid = document.getElementById("grid");
+      grid.replaceChildren();
+      for (const [category, indices] of groupByCategory()) {
+        grid.appendChild(el("div", { class: "category-title" }, [category]));
+        const tiles = el("div", { class: "tiles" });
+        for (const index of indices) {
+          const app = apps.find((a) => a.index === index);
+          if (app) tiles.appendChild(tileNode(app));
+        }
+        grid.appendChild(tiles);
+      }
+    }
+
+    function renderCategories() {
+      const pane = document.getElementById("categories");
+      pane.replaceChildren();
+      pane.appendChild(el("h2", {}, ["Catégories"]));
+      const tous = el("button", { class: "category-item" + (activeCategory === null ? " active" : ""), onclick: () => { activeCategory = null; renderGrid(); renderCategories(); } }, ["Tous"]);
+      pane.appendChild(tous);
+      for (const name of orderedCategories()) {
+        const active = activeCategory === name;
+        pane.appendChild(
+          el("button", { class: "category-item" + (active ? " active" : ""), onclick: () => { activeCategory = name; renderGrid(); renderCategories(); } }, [name]),
+        );
+      }
+    }
+
+    function openCategoryPopup(index) {
+      categoryPopupIndex = index;
+      // Le panneau s'ouvre TOUJOURS replié : une liste dépliée ou un compte rendu
+      // laissés sur une autre application ne doivent pas se réappliquer ici.
+      choixZone = false;
+      addZoneMessage = null;
+      renderCategoryPopup();
+      document.getElementById("category-overlay").hidden = false;
+    }
+
+    function closeCategoryPopup() {
+      categoryPopupIndex = null;
+      document.getElementById("category-overlay").hidden = true;
+    }
+
+    function renderCategoryPopup() {
+      const app = apps.find((a) => a.index === categoryPopupIndex);
+      const popup = document.getElementById("category-popup");
+      popup.replaceChildren();
+      if (!app) return;
+      popup.appendChild(el("h3", {}, [`Catégories — ${app.name}`]));
+      // ── Épingler au dock, dans une zone choisie ──────────────────────────
+      // ⚠️ **EN HAUT DU PANNEAU, AVANT LES CATÉGORIES** : leur liste est longue
+      // et le panneau défile (`max-height: 70vh`) — placées dessous, ces actions
+      // n'étaient visibles qu'en défilant, et ont été prises pour absentes.
+      // ⛔ **LA ZONE SE CHOISIT AU CLIC** — DEMANDE EXPLICITE. Une première
+      // version rangeait l'épingle « après la dernière épingle », donc dans
+      // « Applis » sans qu'on l'ait demandé. Le clic sur une zone ANNONCE sa clé
+      // (`add-to-zone`) ; c'est l'hôte qui sait si l'application est déjà
+      // épinglée (elle est alors DÉPLACÉE) ou déjà dans la zone — et il le DIT.
+      // Sans aucune zone nommée, l'entrée n'est pas proposée : elle ne saurait
+      // pas où ranger.
+      if (zones.length) {
+        // ⛔ **LA ZONE DÉSIGNÉE GARDE SON BOUTON DIRECT** — retour de
+        // l'utilisateur : cacher « Ajouter à « Applis » » derrière une liste
+        // l'a privé du geste qu'il fait le plus souvent. Les AUTRES zones sont
+        // un second bouton, qui déplie la liste.
+        // ⚠️ **LA ZONE OÙ L'APPLICATION EST DÉJÀ N'EST PAS PROPOSÉE** — retour de
+        // l'utilisateur : « le programme est déjà dans Applis ». Elle est DITE à
+        // la place (`app.zone`, relevé sur le dock vivant par Rust).
+        const ici = zones.find((z) => z.cle === app.zone);
+        const defaut = zones.find((z) => z.defaut && z !== ici);
+        const autres = zones.filter((z) => !z.defaut && z !== ici);
+        if (ici && !addZoneMessage) {
+          popup.appendChild(el("div", { class: "hint" }, [`Dans « ${ici.nom} »`]));
+        }
+        const versZone = (z, texte) =>
+          el("button", { class: "small", onclick: () => go("add-to-zone", categoryPopupIndex, z.cle) }, [texte]);
+        if (addZoneMessage) {
+          popup.appendChild(el("div", { class: "hint" }, [addZoneMessage]));
+        }
+        const ligne = [];
+        if (defaut) ligne.push(versZone(defaut, `${ici ? "Déplacer vers" : "Ajouter à"} « ${defaut.nom} »`));
+        if (autres.length && !choixZone) {
+          ligne.push(el("button", { class: "small", onclick: () => { choixZone = true; renderCategoryPopup(); } }, [ici ? "Déplacer vers…" : "Autre zone…"]));
+        }
+        // **RETIRER DU DOCK** — seulement si l'application EST une épingle que
+        // NeuraDesk sait retirer (`epinglee`, voir `cef_dash::push_state`).
+        if (app.epinglee) {
+          ligne.push(el("button", { class: "small", onclick: () => go("remove-from-dock", categoryPopupIndex) }, ["Retirer du dock"]));
+        }
+        if (ligne.length) popup.appendChild(el("div", { class: "row" }, ligne));
+        if (choixZone && autres.length) {
+          popup.appendChild(el("div", { class: "row" }, autres.map((z) => versZone(z, z.nom))));
+        }
+      }
+      // **EXÉCUTER EN TANT QU'ADMINISTRATEUR** — DEMANDE EXPLICITE (2026-10-23).
+      // `app.admin` : Rust dit si son mode de lancement le permet (un jeu Steam
+      // lancé par URI, non — voir `AppLaunch::can_run_as_admin`).
+      if (app.admin) {
+        popup.appendChild(el("div", { class: "row" }, [
+          el("button", { class: "small", onclick: () => { go("launch-admin", categoryPopupIndex); closeCategoryPopup(); } }, ["Exécuter en tant qu'administrateur"]),
+        ]));
+      }
+      // **UN PROGRAMME PORTABLE** (ajouté par ➕, voir `win32::portables`) se
+      // retire de la liste d'ici : il n'a pas de raccourci à supprimer ailleurs.
+      if (app.portable) {
+        popup.appendChild(el("div", { class: "row" }, [
+          el("button", { class: "small", onclick: () => { go("portable-retirer", categoryPopupIndex); closeCategoryPopup(); } }, ["Retirer des programmes"]),
+        ]));
+      }
+      popup.appendChild(el("div", { class: "sep" }));
+
+      for (const name of allCategories) {
+        const checked = app.categories.some((c) => c.toLowerCase() === name.toLowerCase());
+        const checkbox = el("input", { type: "checkbox" });
+        checkbox.checked = checked;
+        checkbox.addEventListener("change", () => {
+          go("category-toggle", categoryPopupIndex, name, checkbox.checked ? "1" : "0");
+        });
+        popup.appendChild(el("label", {}, [checkbox, name]));
+      }
+      const newInput = el("input", { type: "text", placeholder: "Nouvelle catégorie…" });
+      const addBtn = el("button", { class: "small", onclick: () => {
+        const value = newInput.value.trim();
+        if (value) {
+          go("category-new", categoryPopupIndex, value);
+          newInput.value = "";
+        }
+      } }, ["Ajouter"]);
+      popup.appendChild(el("div", { class: "row" }, [newInput, addBtn]));
+
+      const footer = el("div", { class: "footer" }, [
+        el("button", { class: "small", onclick: () => go("category-reset", categoryPopupIndex) }, ["Réinitialiser au classement automatique"]),
+        el("button", { class: "small", onclick: closeCategoryPopup }, ["Fermer"]),
+      ]);
+      popup.appendChild(footer);
+    }
+
+    document.getElementById("category-overlay").addEventListener("click", (e) => {
+      if (e.target.id === "category-overlay") closeCategoryPopup();
+    });
+
+    // ── Panneau « Gérer les catégories » ────────────────────────────────────
+    // L'objet même du panneau : SUPPRIMER une catégorie personnalisée. Le
+    // portage CEF l'avait laissé de côté (voir la doc de module de cef_dash :
+    // « PAS le panneau "Gérer les catégories" dédié »), et la page ne pouvait
+    // de toute façon pas décider quoi supprimer tant que Rust ne lui envoyait
+    // qu'une liste de noms — d'où `customCategories` (voir setState).
+    //
+    // Suppression en DEUX TEMPS, sur place : pas de `confirm()`, les boîtes de
+    // dialogue JS étant coupées dans CEF — et une suppression partie d'un clic
+    // mal placé emporterait aussi le choix manuel de TOUTES les applications
+    // qui référencent la catégorie (voir config::delete_custom_category).
+    function openManagePopup() {
+      manageOpen = true;
+      pendingDelete = null;
+      renderManagePopup();
+      document.getElementById("manage-overlay").hidden = false;
+    }
+
+    function closeManagePopup() {
+      manageOpen = false;
+      pendingDelete = null;
+      document.getElementById("manage-overlay").hidden = true;
+    }
+
+    function renderManagePopup() {
+      const popup = document.getElementById("manage-popup");
+      popup.replaceChildren();
+      popup.appendChild(el("h3", {}, ["Gérer les catégories"]));
+      for (const name of allCategories) {
+        const isCustom = customCategories.some((c) => c.toLowerCase() === name.toLowerCase());
+        const row = el("label", {}, [name]);
+        if (!isCustom) {
+          // Une catégorie FIXE n'est pas une donnée : c'est du classement
+          // intégré au code (voir app_categories::fixed_categories). On le DIT
+          // plutôt que d'afficher un bouton qui ne ferait rien.
+          row.appendChild(el("span", { class: "note" }, ["intégrée"]));
+        } else if (pendingDelete === name) {
+          row.appendChild(
+            el("span", { class: "actions" }, [
+              el("button", { class: "small", onclick: () => { go("category-delete", name); pendingDelete = null; } }, ["Confirmer"]),
+              el("button", { class: "small", onclick: () => { pendingDelete = null; renderManagePopup(); } }, ["Annuler"]),
+            ]),
+          );
+        } else {
+          row.appendChild(
+            el("span", { class: "actions" }, [
+              el("button", { class: "small", onclick: () => { pendingDelete = name; renderManagePopup(); } }, ["Supprimer"]),
+            ]),
+          );
+        }
+        popup.appendChild(row);
+      }
+      const input = el("input", { type: "text", placeholder: "Nouvelle catégorie…" });
+      popup.appendChild(
+        el("div", { class: "row" }, [
+          input,
+          el(
+            "button",
+            {
+              class: "small",
+              onclick: () => {
+                const value = input.value.trim();
+                if (value) go("category-create", value);
+              },
+            },
+            ["Créer"],
+          ),
+        ]),
+      );
+      popup.appendChild(
+        el("div", { class: "footer" }, [el("button", { class: "small", onclick: closeManagePopup }, ["Fermer"])]),
+      );
+    }
+
+    document.getElementById("manage-overlay").addEventListener("click", (e) => {
+      if (e.target.id === "manage-overlay") closeManagePopup();
+    });
+
+    // ── Clic droit : le sélecteur de catégories d'une tuile ─────────────────
+    // **C'EST L'HÔTE QUI NOUS L'ANNONCE, PAS L'ÉVÉNEMENT `contextmenu`** — et
+    // la page n'a donc AUCUN gestionnaire `contextmenu` sur ses tuiles : cet
+    // événement ne se déclencherait jamais, il n'aurait été que du code mort.
+    // (Il en existait un, écrit au portage CEF ; il n'a jamais pu se déclencher.)
+    // (Depuis le 2026-09-26 le bouton droit EST transmis à CEF et `contextmenu`
+    // part avec sa cible — voir `cef_popup::dispatch_input`, `WM_RBUTTONDOWN`, et
+    // `menu_contextuel.js` ; ce chemin, validé, est gardé tel quel.) L'appel ne
+    // porte AUCUNE coordonnée, à dessein : `:hover` est tenu par le moteur à
+    // partir des mouvements de souris que CEF reçoit déjà correctement mis à
+    // l'échelle — refaire ce calcul ici (zoom de contenu, DPI) serait le
+    // deviner, et se tromperait.
+    //
+    // Garde : les 12 autres popups n'exposent pas cette fonction, l'appel est
+    // donc inerte chez elles — où le bouton droit ne faisait rien non plus.
+    // **LA TUILE SURVOLÉE, TENUE PAR LES `mousemove` — ET NON PAR `:hover`.**
+    //
+    // MESURÉ : `document.querySelector(".tile:hover")` rend **null** au moment
+    // du clic droit, 121 fois sur 121. CEF ne tient donc pas l'état `:hover` de
+    // la même façon qu'un navigateur à fenêtre — probablement parce qu'il ne
+    // reçoit les mouvements que par notre retransmission, et qu'aucun mouvement
+    // n'est émis entre l'arrêt de la souris et le clic.
+    //
+    // On tient donc nous-mêmes le dernier élément survolé, à partir des
+    // `mousemove` que CEF nous livre **déjà correctement mis à l'échelle** : on
+    // ne refait AUCUN calcul de coordonnées (le zoom de contenu ×3 et le DPI
+    // rendraient ce calcul faux), c'est `e.target` qui porte la réponse.
+    let survol = null;
+    document.addEventListener("mousemove", (e) => {
+      const tile = e.target && e.target.closest ? e.target.closest(".tile") : null;
+      survol = tile ? Number(tile.dataset.index) : null;
+    });
+
+    // Le compte rendu de l'hôte sur « Épingler au dock » — voir
+    // `cef_dash::handle_add_to_zone` : réussite comme refus. Sans ce retour, un
+    // clic sans effet passerait pour une panne.
+    window.setAddZoneFeedback = function (message) {
+      choixZone = false;
+      addZoneMessage = message;
+      if (categoryPopupIndex !== null) renderCategoryPopup();
+    };
+
+    window.neuradeskRightClick = function () {
+      // **DEUX SOURCES, DANS CET ORDRE** — `:hover` d'abord (l'état natif du
+      // moteur, le plus juste quand il est tenu), et à défaut la dernière tuile
+      // vue par les `mousemove`. MESURÉ : `:hover` rendait `null` sur les clics
+      // livrés ré-entrants (121 fois sur 121), là où la seconde source tenait.
+      const parHover = document.querySelector(".tile:hover");
+      const index = parHover ? Number(parHover.dataset.index) : Number.isFinite(survol) ? survol : null;
+      if (index !== null) openCategoryPopup(index);
+    };
+
+    const searchInput = document.getElementById("search");
+    searchInput.addEventListener("input", () => {
+      search = searchInput.value;
+      renderGrid();
+    });
+    searchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        const index = firstMatch();
+        if (index !== null) go("launch", index);
+      }
+    });
+
+    // Appelée depuis Rust (win32::cef_dash::push_state) — liste COMPLÈTE
+    // des applications/catégories, voir le commentaire d'en-tête. Ne
+    // touche PAS `search`/`activeCategory` (préserve le filtre en cours,
+    // même comportement que win32::dash::toggle, qui ne réinitialise que
+    // le FOCUS, pas la recherche elle-même) ; vide `icons` (les anciens
+    // index n'ont plus de sens après un rescan).
+    window.setState = function (state) {
+      apps = state.apps;
+      allCategories = state.allCategories;
+      customCategories = state.customCategories || [];
+      zones = state.zones || [];
+      for (const key of Object.keys(icons)) delete icons[key];
+      // Voir --icon-scale/--label-scale/--tile-scale (en-tête <style>) et
+      // win32::cef_dash::push_state — curseurs "Icônes"/"Texte" du panneau
+      // de réglages. --tile-scale (conteneur) suit le plus grand des deux.
+      const iconScale = state.iconScalePercent / 100;
+      const labelScale = state.labelScalePercent / 100;
+      const root = document.documentElement.style;
+      root.setProperty("--icon-scale", iconScale);
+      root.setProperty("--label-scale", labelScale);
+      root.setProperty("--tile-scale", Math.max(iconScale, labelScale));
+      // --category-scale — voir sa doc (en-tête <style>) et curseur
+      // "Catégories" du panneau de réglages.
+      root.setProperty("--category-scale", state.categoryScalePercent / 100);
+      renderGrid();
+      renderCategories();
+      if (categoryPopupIndex !== null) renderCategoryPopup();
+      if (manageOpen) renderManagePopup();
+      searchInput.focus();
+    };
+
+    // Appelée depuis Rust (win32::cef_dash::poll) — lot d'icônes
+    // `[[index, dataUri], ...]`, voir le commentaire d'en-tête.
+    window.setIcons = function (batch) {
+      for (const [index, uri] of batch) {
+        icons[index] = uri;
+      }
+      renderGrid();
+    };
+  </script>
+</body>
+</html>

@@ -1,0 +1,58 @@
+# Style « Rétro » — DEMANDE EXPLICITE (2026-10-05) : « un style où les barres ont
+# du relief et les dashs aussi ».
+#
+# L'idée : le relief vient de la LUMIÈRE, pas d'une ombre — un bandeau clair sur
+# le bord de la barre collé à l'écran, un liseré clair sur son bord intérieur, et
+# les coins plus francs qu'ailleurs. Les barres latérales sont donc éclairées par
+# le bord de l'écran, comme si elles en sortaient (choix de l'utilisateur).
+#
+# ⚠️ Seuls les DASHS portent une ombre : la fenêtre du dock est découpée par
+# `SetWindowRgn` exactement aux quatre rectangles des barres, et c'est aussi la
+# zone de CLIC — une ombre qui déborderait demanderait d'élargir la région, donc
+# de voler des clics au bureau.
+#
+# Les valeurs de forme (rayons) reprennent celles du style de base là où elles ne
+# sont pas écrites : un style ne dit que ce qu'il change.
+
+nom = "Rétro"
+
+[formes]
+# Des coins plus francs que « NeuraDesk » (3/6/8/10) : le relief se lit mieux sur
+# une arête nette. Les icônes du dock gardent l'arrondi d'origine, elles ne font
+# pas partie du relief.
+rayon_petit = 2
+rayon_controle = 4
+rayon_surface = 6
+rayon_grand = 8
+
+[traits]
+# Un contour net : c'est lui qui fait lire l'arête, avec le liseré du relief.
+bordure_alpha = 0.22
+
+[relief]
+# ⛔ **RIEN SUR LES BARRES** — décision de l'utilisateur (2026-10-06), après les
+# avoir vues : « le relief sur les barres, non ». Les barres redeviennent plates,
+# et ce style ne se distingue plus que par ses FORMES (les rayons ci-dessus).
+#
+# Trois essais ont précédé, et ils sont instructifs : un liseré sur les quatre
+# bords se lisait comme un CADRE ; un biseau à deux tons a été « mieux » ; un
+# relief dessiné (aluminium brossé, d'après le brushed metal d'Aqua) n'a pas plu.
+# Les trois relevaient du même axe, et c'est l'AXE qui a été refusé — pas un
+# dosage.
+#
+# ⚠️ **LE MÉCANISME RESTE, ET CE N'EST PAS DU POIDS MORT** : ces jetons sont lus,
+# bornés et CONSOMMÉS — le shader peint le biseau, `gfx::relief` pose les bandes.
+# Un style UTILISATEUR peut donc s'en servir, et un style qui les mettrait à zéro
+# n'aurait rien d'incohérent. Du vocabulaire que rien ne consomme serait un
+# mensonge : « un réglage dont l'effet n'apparaît pas se lit comme un réglage qui
+# n'a pas marché ».
+degrade = 0.0
+liserel = 0.0
+# L'ombre des dashs — PAS ENCORE CONSOMMÉE (le lot qui la dessine reste à faire).
+# ⚠️ À ZÉRO TANT QU'ELLE NE L'EST PAS : un jeton qui agit sans effet est
+# exactement ce que la note ci-dessus interdit.
+ombre = 0.0
+image = "aucune"
+
+[structure]
+indicateur = "point"

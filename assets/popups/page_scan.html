@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<!--
+  LA FENÊTRE D'UNE PAGE SCANNÉE — voir `win32::cef_page_scan`, qui porte le
+  MODÈLE (la page courante, les deux moteurs d'OCR, la navigation) et le pourquoi
+  de chaque chose.
+
+  ⚠️ **C'EST UN DES DEUX HÔTES DE LA MÊME VUE** : le panneau Scanner
+  (`scanner.html`) l'affiche aussi, dans la zone libre du dock. Le rendu est
+  partagé (`page_vue.js` + `page_vue.css`) ; **seuls les verbes sont propres à
+  chaque hôte**, et ils restent des `go(…)` LITTÉRAUX dans ce fichier, parce que
+  c'est LUI que lit le test de parité.
+
+  ⛔ **CETTE FENÊTRE N'A NI BARRE DE TITRE NI BORDURE.** `fenetre: true` pose
+  `WS_POPUP` : le système ne fournit donc ni le déplacement ni le
+  redimensionnement par les bords — Rust les rend (`WM_NCHITTEST` pour les huit
+  bords, `HTCAPTION` pour le déplacement), et c'est l'en-tête ci-dessous qui
+  déclenche le déplacement.
+
+  ÉTAT REÇU (window.setState) : `{ contentScale, nom, rang, total, message,
+  amelioration: { luminosite, contraste, saturation, filtre },
+  ocr: [{ nom, libelle, etat, texte, message }] }` — voir
+  `cef_page_scan::etat_page`, qui le produit POUR LES DEUX HÔTES.
+
+  ⭐ **L'AMÉLIORATION EST UN RÉGLAGE DE RUST, PAS UN EFFET DE CETTE PAGE** : la
+  barre pose le `filtre` que Rust a calculé (les formules vivent dans
+  `win32::amelioration`), donc le panneau Scanner montre la même image, et le
+  fichier écrit à la demande ressemble à ce qui est à l'écran.
+
+  ⚠️ **L'IMAGE N'EST PAS DANS L'ÉTAT** — elle arrive par `window.setImage(uri)` :
+  une `data:` URI pèse des mégaoctets, et l'état est sérialisé à chaque frame.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="page_vue.css">
+<style>
+  /* ⛔ **SANS CETTE RÈGLE, `class="cache"` NE MASQUE RIEN** — elle n'est définie
+     NI dans `style.css` NI ici par défaut, et ce dépôt l'a payé DEUX fois (voir
+     `bandeau.html` et `scanner.html`). `page_vue.css` la porte aussi ; elle est
+     répétée ici pour que cette page tienne debout seule. */
+  .cache { display: none !important; }
+  html, body { height: 100%; }
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  body {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    height: calc(100vh / var(--text-scale));
+  }
+  /* L'EN-TÊTE EST NOTRE BARRE DE TITRE — celle de Windows n'existe pas.
+     `cursor: default` : ce n'est PAS une zone de texte, c'est une poignée. */
+  header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px; flex: 0 0 auto; cursor: default;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.06 * var(--popup-fond-alpha, 1)));
+  }
+  #nom { flex: 1 1 auto; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #place { flex: 0 0 auto; font-size: 12px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); }
+  button {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    color: inherit; border: none; border-radius: var(--nd-rayon-controle);
+    padding: 4px 9px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  button:hover { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  button:disabled { opacity: calc(.35 * max(1, var(--popup-alpha, 1))); cursor: default; }
+  button:disabled:hover { background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1))); }
+  button.actif {
+    background: rgba(var(--popup-accent-solid-rgb, 59, 130, 246), calc(0.85 * var(--popup-fond-alpha, 1)));
+    color: rgba(var(--popup-on-accent-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-weight: 600;
+  }
+  .croix { background: none; font-size: 15px; opacity: calc(.75 * max(1, var(--popup-alpha, 1))); padding: 2px 6px; }
+  .croix:hover { background: none; opacity: 1; }
+  footer { display: flex; align-items: center; gap: 10px; padding: 6px 10px; flex: 0 0 auto; }
+  #message { flex: 1 1 auto; font-size: 12px; opacity: calc(.85 * max(1, var(--popup-alpha, 1))); }
+</style>
+</head>
+<body>
+<header id="barre">
+  <span id="nom"></span>
+  <span id="place"></span>
+  <!-- LE ZOOM — les boutons sont ici, la logique est dans `page_vue.js`. -->
+  <span class="zoom">
+    <button id="zoom-moins" title="Réduire">−</button>
+    <button id="zoom-ajuster" class="zoom-ajuster" title="Ajuster la page entière">100 %</button>
+    <button id="zoom-plus" title="Agrandir">+</button>
+  </span>
+    <!-- LA ROTATION — le FICHIER est tourne, pas l'affichage : la correction
+         survit jusqu'au document. -->
+    <button id="tourner-gauche" title="Quart de tour à gauche"
+            onclick="go('tourner', 'antihoraire')"><span class="ico ico-arrow-counter-clockwise"></span></button>
+    <button id="tourner-droite" title="Quart de tour à droite"
+            onclick="go('tourner', 'horaire')"><span class="ico ico-arrow-clockwise"></span></button>
+  <button id="bascule-ocr" title="Afficher ou masquer la reconnaissance de caractères"
+          onclick="bascule()">OCR</button>
+  <button id="precedente" title="Page précédente" onclick="go('precedente')"><span class="ico ico-caret-left"></span></button>
+  <button id="suivante" title="Page suivante" onclick="go('suivante')"><span class="ico ico-caret-right"></span></button>
+  <button class="croix" title="Fermer" onclick="go('close')"><span class="ico ico-x"></span></button>
+</header>
+
+<!-- **LA BARRE D'AMÉLIORATION DE L'IMAGE** — posée par `PageVue.amelioration`, la
+     même barre que dans le panneau Scanner. Les VERBES restent écrits ici, dans le
+     `ACTIONS` de cette page, parce que c'est ce fichier que lit le test de parité.
+     ⚠️ Elle est HORS de la barre de déplacement : un clic sur un ascenseur ne doit
+     pas partir en glissement de fenêtre (voir l'écouteur `mousedown` plus bas, qui
+     ne part que si la cible est la barre elle-même). -->
+<div id="outils" class="outils"></div>
+
+<div class="page-corps">
+  <div id="zone" class="page-image">
+    <img id="page" alt="">
+    <div id="absent" class="page-absente cache"></div>
+  </div>
+
+  <aside id="ocr" class="page-volet cache">
+    <div class="rangee" style="margin-bottom:6px">
+      <button title="Lancer les deux moteurs et comparer"
+              onclick="go('comparer')">Comparer les deux</button>
+    </div>
+    <div id="colonnes"></div>
+  </aside>
+</div>
+
+<footer>
+  <span id="message"></span>
+</footer>
+
+<script src="page_vue.js"></script>
+<script>
+  function go(...segments) {
+    location.href = "neuradesk://page-scan/" + segments.map(encodeURIComponent).join("/");
+  }
+
+  const el = (id) => document.getElementById(id);
+  let courant = {};
+
+  /* ⛔ **UNE EXCEPTION DANS CETTE PAGE EST INVISIBLE** — `setState` est appelé par
+     Rust, qui ne signale jamais son échec. Même filet que dans `scanner.html`,
+     qui porte le récit du défaut que ça a coûté le 2026-10-09. */
+  window.addEventListener("error", (ev) => {
+    // ⛔ **TOUT N'EST PAS UNE ERREUR DE CE CODE, ET TOUT CRIER ÉCRASE L'UTILE.**
+    // « ResizeObserver loop completed with undelivered notifications » est un
+    // SIGNALEMENT de Chromium — une observation qui n'a pas rendu ses
+    // notifications dans la même tâche —, pas une exception. Le crier dans la
+    // ligne d'état la REMPLAÇAIT en boucle, et les messages d'OCR (« rien à
+    // copier », « le presse-papiers est tenu… ») disparaissaient aussitôt : le
+    // défaut rapporté était « la page OCR semble buggée ». Un filet qui crie au
+    // loup cache précisément ce qu'il devait montrer.
+    if (String(ev.message || "").indexOf("ResizeObserver") === 0) return;
+    el("message").textContent = "Erreur dans la page : " + ev.message;
+  });
+  /** Le volet de reconnaissance est-il ouvert ? — un affichage, donc rien ne
+      remonte à Rust : c'est la page qui décide, et elle le garde pour elle. */
+  let volet = false;
+
+  function bascule() {
+    volet = !volet;
+    el("ocr").classList.toggle("cache", !volet);
+    el("bascule-ocr").classList.toggle("actif", volet);
+  }
+
+  /** **LES VERBES DE CET HÔTE.** Le rendu est partagé (`page_vue.js`), les verbes
+      ne le sont pas — et c'est voulu : le test de parité lit les `.html`, donc un
+      verbe caché dans le fichier partagé lui échapperait, et un bouton muet
+      passerait inaperçu. */
+  const ACTIONS = {
+    reconnaitre: (nom) => go("reconnaitre", nom),
+    copier: (nom) => go("copier", nom),
+    enregistrer: (nom) => go("enregistrer", nom),
+    // L'AMÉLIORATION D'IMAGE — envoyée à Rust, qui la renvoie dans
+    // `etat.amelioration` avec le filtre déjà calculé. `copie` et non
+    // `enregistrer` : ce nom est pris par le texte d'OCR juste au-dessus.
+    auto: () => go("ameliorer-auto"),
+    regler: (l, c, s) => go("ameliorer-regler", String(l), String(c), String(s)),
+    zero: () => go("ameliorer-zero"),
+    copie: () => go("ameliorer-enregistrer"),
+  };
+
+  /** **L'IMAGE DE LA PAGE** — un appel séparé de l'état (voir l'en-tête). */
+  window.setImage = function (uri) {
+    PageVue.appliquerImage(el("page"), el("absent"), uri,
+      "Cette page n'a pas pu être lue — elle a peut-être été retirée du panneau.");
+  };
+
+  // **LE ZOOM DE LA PAGE** — les boutons sont ici, la logique est partagee.
+  // ⚠️ **PAS UN VERBE, DONC RIEN A CABLER COTE RUST** : le zoom est un affichage,
+  // comme le volet d'OCR.
+  PageVue.zoomer(el("page"), el("zone"), {
+    moins: el("zoom-moins"),
+    ajuster: el("zoom-ajuster"),
+    plus: el("zoom-plus"),
+  });
+
+  /** **LA BARRE D'AMÉLIORATION** — la même que dans le panneau, avec les verbes de
+      CET hôte. ⚠️ **CE N'EST PAS UN AFFICHAGE LOCAL, À LA DIFFÉRENCE DU ZOOM** : le
+      réglage vit côté Rust, donc ouvrir cette fenêtre sur une page réglée dans le
+      panneau la montre déjà réglée. */
+  const outils = PageVue.amelioration(el("outils"), el("page"), ACTIONS);
+
+  window.setState = function (next) {
+    courant = next;
+    document.documentElement.style.setProperty("--text-scale", next.contentScale || 1);
+    el("nom").textContent = next.nom || "(aucune page)";
+    el("place").textContent = next.total > 0 && next.rang > 0 ? next.rang + " / " + next.total : "";
+    // ⚠️ **SANS BOUCLAGE** : depuis la première page, « précédente » ne fait rien
+    // plutôt que de sauter à la dernière — sinon on perd le compte de ce qu'on
+    // regarde. Rust refuse aussi ; ceci n'est que l'apparence.
+    el("precedente").disabled = !(next.rang > 1);
+    el("suivante").disabled = !(next.rang > 0 && next.rang < next.total);
+
+    PageVue.colonnes(el("colonnes"), next.ocr || [], ACTIONS);
+    // ⚠️ **LES CURSEURS VIENNENT DE RUST, PAS DE LA PAGE** : c'est ce qui fait que
+    // les deux hôtes montrent le même réglage de la même page.
+    outils.regler(next.amelioration);
+    el("message").textContent = next.message || "";
+  };
+
+  // **LA BARRE EST LA POIGNÉE DE DÉPLACEMENT** — la fenêtre n'a pas de barre de
+  // titre système (voir l'en-tête de ce fichier). Un clic sur un BOUTON de la
+  // barre ne déplace rien : on ne part que si la cible est la barre elle-même.
+  el("barre").addEventListener("mousedown", (ev) => {
+    if (ev.target === el("barre") || ev.target === el("nom") || ev.target === el("place")) {
+      go("deplacer");
+    }
+  });
+
+  go("ready");
+</script>
+</body>
+</html>

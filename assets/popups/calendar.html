@@ -1,0 +1,920 @@
+<!doctype html>
+<!--
+  Phase 1 de docs/plans/cef-web-ui-migration.md — reproduit
+  win32::popup_menu::render_calendar en HTML/CSS/JS, PLUS un panneau
+  d'évènements à droite de la grille (DEMANDE EXPLICITE : « j'aimerais avoir à
+  droite du calendrier dans le menu de droite sur l'horloge, les évènements du
+  jour, fêtes anniversaires, jours fériés »).
+
+  ⚠️ LA DOC DE CE FICHIER A LONGTEMPS DIT « PAS de données envoyées depuis
+  Rust : ce popup n'a besoin d'aucune IPC » — C'ÉTAIT FAUX, et ça l'est
+  doublement aujourd'hui :
+    * la page ÉMET déjà `neuradesk://menu/size/<w>/<h>` (c'est `menu.js`, et
+      c'est ainsi que la fenêtre prend sa taille) ;
+    * elle REÇOIT désormais `window.setState(...)` de `win32::cef_calendar`,
+      qui lui pousse les évènements du mois affiché.
+
+  ⛔ **ET ELLE N'ÉMET RIEN PENDANT UN GESTE QUI CHANGE SON CONTENU.** `menu.js`
+  mesure la boîte par un `MutationObserver` : chaque changement de contenu
+  déclenche une mesure, donc un `location.href` — et deux `location.href` émis
+  dans la MÊME TÂCHE se télescopent, l'un des deux étant perdu en silence.
+  Cliquer un jour change le contenu : si la page demandait quoi que ce soit à ce
+  moment-là, l'une des deux navigations disparaîtrait. **Toute la donnée arrive
+  donc d'avance** (le MOIS ENTIER), et choisir un jour est purement local.
+
+  ⭐ **LA CROIX D'UNE NOTIFICATION EST LA SEULE EXCEPTION, ET ELLE EST SÛRE**
+  (2026-10-09) : elle ÉMET `neuradesk://bandeau/supprimer/<id>`, mais elle **ne
+  touche PAS au DOM** — elle navigue, un point c'est tout. Le contenu ne change
+  qu'une frame plus tard, quand Rust repousse l'état, et la mesure de `menu.js`
+  part alors dans une AUTRE tâche. La règle à ne pas enfreindre est donc bien
+  « pas de navigation pendant une mutation », pas « pas de navigation du tout ».
+
+  ⛔ ET LA TAILLE DE LA FENÊTRE EST CONSTANTE, quel que soit le jour choisi :
+  panneau à largeur ET hauteur fixes. C'est ce qui rend le clic SÛR — sans ça,
+  le panneau changerait la taille du menu au `mousedown`, la fenêtre se
+  redimensionnerait pendant que le bouton est enfoncé (un clic dure 50 à
+  150 ms, soit 3 à 9 frames), et le `mouseup` tomberait sur une AUTRE cellule.
+  C'est la leçon déjà payée sur `sound.html`, où une liste reconstruite à
+  chaque frame rendait les boutons incliquables.
+
+  ⚠️ **ET LA NAVIGATION DE MOIS EST DU MÊME PROBLÈME, EN PIRE** (2026-09-24,
+  demande explicite : « je voudrais pouvoir changer de mois dans le calendrier »).
+  Changer de mois change le nombre de RANGÉES (5 ou 6) — donc la hauteur mesurée
+  change, donc le `MutationObserver` de `menu.js` émet un `menu/size` frais.
+  C'est le SEUL geste de cette page dans ce cas : une flèche qui émettrait sa
+  propre action à ce moment-là la verrait perdue, en silence.
+  ⇒ Les flèches ◀ ▶ sont **purement locales** : elles déplacent un curseur
+  `(annee, mois)` qui vit dans la page, et Rust pousse **~25 mois d'avance**
+  (voir `cef_calendar::MOIS_DE_CHAQUE_COTE`) pour qu'elles aient toujours de
+  quoi avancer. Le `menu/size` émis au passage, lui, est **souhaitable** : c'est
+  lui qui redimensionne la fenêtre à la bonne hauteur.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="menu.css">
+<style>
+  .cal {
+    padding: 16px;
+    box-sizing: border-box;
+    width: fit-content;
+    max-width: 100vw;
+    max-height: 100vh;
+    overflow-y: auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 20px;
+  }
+  .grille {
+    flex: 0 0 auto;
+  }
+  /* ⚠️ **LE PANNEAU N'AVAIT AUCUNE RÈGLE DU TOUT** — il était donc dimensionné
+     par son contenu, et un nom long le comprimait (`flex-shrink: 1` par défaut),
+     ce qui est exactement le symptôme signalé.
+     ⚠️ **ET UN `min-width` N'AURAIT PAS SUFFI** : `.cal` porte `max-width: 100vw`,
+     donc un panneau plus large aurait été ÉCRASÉ de la même façon. C'est une
+     largeur FIXE qui achète la place.
+     ⭐ Bénéfice annexe : la largeur ne dépend plus du CONTENU DU JOUR SÉLECTIONNÉ.
+     Or elle en dépendait — donc elle changeait au clic, ce que l'en-tête de ce
+     fichier dit être la cause des clics perdus (la fenêtre se redimensionne
+     pendant que le bouton est enfoncé, et le `mouseup` tombe ailleurs).
+     ⚠️ Le sélecteur DOIT être `.cal > .jour` : un `.jour` nu atteindrait aussi
+     les cellules de la grille (`td.jour`). */
+  /* ⚠️ **LA COLONNE SE PARTAGE MAINTENANT EN HAUTEUR, ELLE AUSSI.**
+     `align-self: stretch` lui donne la hauteur de la GRILLE (`.cal` vaut
+     `max(grille, panneau)`), donc AJOUTER LES NOTIFICATIONS NE FAIT PAS GRANDIR
+     LE PANNEAU : les deux listes se partagent la place et défilent chacune de son
+     côté. Sans ce `stretch`, la colonne serait dimensionnée par son contenu et le
+     panneau s'allongerait de la hauteur des notifications. */
+  .cal > .jour {
+    flex: 0 0 380px;
+    width: 380px;
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  /* ⭐ **LA COLONNE A BESOIN DE HAUTEUR, ELLE AUSSI** (2026-10-09).
+     Elle était dimensionnée par la GRILLE — `align-self: stretch` la met à la
+     hauteur de la ligne, et la ligne fait la hauteur de la grille, soit ~300
+     unités. C'était juste tant qu'elle ne portait qu'une liste ; elle en porte
+     DEUX depuis les notifications, et 300 unités ne suffisent à aucune des deux.
+     ⚠️ **CE N'EST PAS UN RETOUR AU « panneau qui grandit avec son contenu »** :
+     c'est un PLANCHER fixe, pas une conséquence du nombre de lignes. Les deux
+     listes gardent `overflow-y: auto` et défilent ; seule la place qui leur est
+     OFFERTE change. Sur la grille de 6 rangées (271 unités), la colonne gagne
+     ~130 unités, et chacune des deux listes y trouve de quoi montrer 3-4 lignes
+     au lieu d'une et demie. */
+  .cal > .jour {
+    min-height: 400px;
+  }
+  /* ⚠️ **MÊME DANGER QUE LA LARGEUR, POUR LA HAUTEUR.** Une liste d'évènements
+     plus longue que sa part ferait varier la hauteur au clic : elle défile.
+     `min-height: 0` est OBLIGATOIRE — sans lui un enfant flex refuse de descendre
+     sous sa taille de contenu, et `overflow` ne s'applique jamais. */
+  /* ⛔ **DEUX `flex: 1 1 auto` SE PARTAGENT LA HAUTEUR AU PRORATA DU CONTENU, ET
+     C'EST CE QUI ÉCRASAIT LES ÉVÈNEMENTS** (défaut signalé le 2026-10-09 : « la
+     zone avec les fêtes et les alarmes est écrasée et inutilisable »).
+     Le raisonnement, parce qu'il n'est pas intuitif : le déficit est réparti au
+     prorata de `base × facteur de retrait`. La liste du jour pèse ~40 px (un
+     saint, un anniversaire), celle des notifications ~2200 px — elle absorbe donc
+     ~98 % du déficit, mais sa part de 2 % porte sur un déficit de 2200 px, soit
+     ~40 px : **exactement sa taille**. MESURÉ : elle tombait à ZÉRO, « 9 Octobre »
+     suivi directement de « Notifications ».
+     ⭐ **DEUX GARDES, CHACUNE POUR UNE MOITIÉ DU PROBLÈME** :
+     - la liste du jour ne descend plus sous une hauteur UTILISABLE ;
+     - celle des notifications ne prend plus la moitié de la colonne, et surtout
+       elle ne GRANDIT pas (`flex: 0 1 auto`) — sans quoi elle réclamerait la
+       moitié de la place même vide, et « Aucune notification pour l'instant »
+       occuperait la moitié du panneau. */
+  #jour-liste {
+    flex: 1 1 auto;
+    min-height: 120px;
+    overflow-y: auto;
+  }
+  #jour-titre {
+    flex: 0 0 auto;
+  }
+
+  /* ---- LES NOTIFICATIONS, DANS LE MÊME PANNEAU (voir le bloc HTML) ---- */
+  .separateur {
+    flex: 0 0 auto;
+    border-top: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    margin: 10px 0 6px;
+  }
+  #notif-titre {
+    flex: 0 0 auto;
+    margin: 0 0 6px;
+    font-size: 14px;
+    font-weight: 600;
+    opacity: calc(.8 * max(1, var(--popup-alpha, 1)));
+  }
+  #notif-liste {
+    flex: 0 1 auto;
+    min-height: 0;
+    max-height: 50%;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
+  /* La mise en page d'un message — **RECOPIÉE de `bandeau.html`**, qui la porte
+     dans son historique du clic droit. Les deux pages sont autonomes (aucun
+     import possible entre elles), donc la recopie est le moindre mal — mais si
+     l'une bouge, l'autre doit suivre. */
+  #notif-liste .message { padding: 6px 8px; border-radius: 4px; }
+  #notif-liste .message + .message { border-top: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.08 * var(--popup-fond-alpha, 1))); }
+  #notif-liste .ligne1 { display: flex; gap: 8px; align-items: baseline; }
+  /* ⚠️ **`min-width: 0` EST OBLIGATOIRE, ET C'EST LA CROIX QUI L'EXIGE** — voir
+     `bandeau.html`, où la raison est écrite : sans lui un titre en `nowrap` ne
+     rétrécit pas, l'ellipse ne s'applique jamais, et la croix sort de la ligne.
+     La colonne fait 380 px ici, donc le défaut y est encore plus prompt. */
+  #notif-liste .titre { min-width: 0; font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #notif-liste .quand { font-size: 11px; opacity: calc(.5 * max(1, var(--popup-alpha, 1))); margin-left: auto; white-space: nowrap; }
+  #notif-liste .texte { font-size: 12px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); line-height: 1.4; overflow-wrap: anywhere; }
+  #notif-liste .vide { padding: 10px 8px; font-size: 13px; opacity: calc(.55 * max(1, var(--popup-alpha, 1))); }
+  /* **LA CROIX D'UNE LIGNE** — voir `bandeau.html`, dont celle-ci est la copie. */
+  #notif-liste .retirer {
+    background: none; border: none; color: inherit; cursor: pointer;
+    font: inherit; font-size: 12px; line-height: 1;
+    padding: 1px 5px; border-radius: 3px; opacity: calc(.45 * max(1, var(--popup-alpha, 1)));
+  }
+  #notif-liste .retirer:hover {
+    opacity: 1; background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.14 * var(--popup-fond-alpha, 1)));
+  }
+  h1 {
+    font-size: 24px;
+    font-weight: 400;
+    margin: 0 0 12px 0;
+    text-transform: capitalize;
+  }
+  /* LA BARRE DU MOIS — les flèches ◀ ▶ et le titre, sur la MÊME largeur que la
+     grille (252 px), pour que les trois restent alignés. */
+  .barre {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 280px;
+    margin-bottom: 12px;
+  }
+  .barre h1 { flex: 1 1 auto; margin: 0; font-size: 18px; text-align: center; }
+  .fleche {
+    flex: 0 0 auto;
+    padding: 4px 10px;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--menu-text-rgb, 255, 255, 255), calc(0.08 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .fleche:hover:not(:disabled) { background: rgba(var(--menu-text-rgb, 255, 255, 255), calc(0.18 * var(--popup-fond-alpha, 1))); }
+  /* ⚠️ **DÉSACTIVÉES AUX BORNES DE LA FENÊTRE POUSSÉE** — voir `bornes` dans
+     `cef_calendar::push_state` : au-delà, la page n'a AUCUNE donnée. Une flèche
+     active qui ne ferait rien serait un mensonge, et un mois vide se lirait
+     comme « ce mois n'a pas de fête ». */
+  .fleche:disabled { opacity: calc(.25 * max(1, var(--popup-alpha, 1))); cursor: default; }
+  h2 {
+    font-size: 15px;
+    font-weight: 400;
+    margin: 0 0 10px 0;
+    text-transform: capitalize;
+    color: rgba(var(--menu-text-rgb, 255, 255, 255), calc(0.8 * var(--popup-alpha, 1)));
+  }
+  /* ⚠️ **LA GRILLE A UNE LARGEUR EXPLICITE, ET C'EST LA CORRECTION DÉCISIVE.**
+     Elle était en `width: 100%` avec des cellules à `14.28%` — dans un conteneur
+     en `fit-content`, ces deux pourcentages se répondent en CERCLE : la largeur
+     de la table dépend de celle du conteneur, qui dépend de celle de la table. Le
+     navigateur tranche en effondrant les cellules, chaque chiffre passe à la
+     ligne, et la hauteur part en vrille — **mesuré : 7 302 px de haut**.
+     `table-layout: fixed` + une largeur en pixels coupent le cercle : sept
+     colonnes de 36 px, et rien ne peut plus s'effondrer.
+     ⚠️ Ce défaut EXISTAIT AVANT ce chantier, mais il était INVISIBLE : la mesure
+     de taille n'était jamais appliquée à ce popup (voir `cef_calendar::REMESURER`,
+     qui porte ce correctif), donc personne n'avait jamais vu la taille que la page
+     annonçait. C'est en réparant la mesure qu'on a découvert ce qu'elle mesurait. */
+  table {
+    border-collapse: collapse;
+    table-layout: fixed;
+    /* 252 + 28 : la colonne des SEMAINES (DEMANDE EXPLICITE, 2026-10-14). */
+    width: 280px;
+  }
+  /* ⭐ LE NUMÉRO DE SEMAINE (ISO 8601 : la semaine 1 contient le premier jeudi
+     de janvier) — en retrait, pour ne pas se lire comme un jour. */
+  th.semaine, td.semaine {
+    width: 28px;
+    font-size: 13px;
+    /* Un cran SOUS les jours de la semaine (0.8) : 0.45 se perdait sur un fond
+       gris (mesuré à la capture). */
+    color: rgba(var(--menu-text-rgb, 255, 255, 255), calc(0.7 * var(--popup-alpha, 1)));
+  }
+  th, td {
+    text-align: center;
+    padding: 6px 0;
+    font-size: 16px;
+  }
+  th {
+    /* 0.6 → 0.8 — DEMANDE EXPLICITE ("les jours de la semaine... ne sont
+       pas assez contrastés dans les menus") : alignée sur les autres textes
+       "secondaires mais lisibles" de ces popups (`.message`/`summary` à
+       0.85, `.section-title` à 0.9), 0.6 restait nettement en retrait. */
+    color: rgba(var(--menu-text-rgb, 255, 255, 255), calc(0.8 * var(--popup-alpha, 1)));
+    font-weight: 400;
+  }
+  td.today {
+    position: relative;
+  }
+  td.today span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    /* Aplat plein d'accent, pas un survol translucide — voir menu.css,
+       `--menu-accent-rgb`/`--menu-on-accent-rgb` (couple fond/texte pensé
+       pour un aplat opaque, contrairement aux autres rôles ici). */
+    background: rgb(var(--menu-accent-rgb, 255, 255, 255));
+    color: rgba(var(--menu-on-accent-rgb, 0, 0, 0), min(1, var(--popup-alpha, 1)));
+  }
+  /* ⚠️ LA CELLULE SÉLECTIONNÉE, DISTINCTE D'AUJOURD'HUI — un contour et non
+     l'aplat plein : « aujourd'hui » et « ce que je regarde » sont deux
+     informations différentes, et elles se confondent souvent (le jour
+     sélectionné EST aujourd'hui à l'ouverture). */
+  td.sel {
+    box-shadow: inset 0 0 0 1px rgba(var(--menu-text-rgb, 255, 255, 255), calc(0.55 * var(--popup-fond-alpha, 1)));
+    border-radius: var(--nd-rayon-controle);
+  }
+  td.jour {
+    cursor: pointer;
+  }
+
+  .ligne {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    padding: 3px 0;
+  }
+  /* La pastille dit la FAMILLE — même vocabulaire et mêmes couleurs que
+     l'applet Calendrier, qui emploie les mêmes clés (`Categorie::cle`). */
+  .pastille {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    align-self: center;
+  }
+  .pastille.saint { background: rgb(var(--menu-text-rgb, 255, 255, 255)); opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+  .pastille.ferie { background: #ff6b6b; }
+  .pastille.civil { background: #7fd1ff; }
+  .pastille.tradition { background: #ffd166; }
+  /* ⚠️ CES DEUX-LÀ MANQUAIENT PARTOUT, ET C'ÉTAIT UN TROU RÉEL : les familles
+     SAISIES étaient peintes avec une classe qui n'existait dans aucune feuille
+     de style, donc **transparentes** — une pastille invisible. Corrigé ici et
+     dans `calendar_applet.html`, qui a le même trou. */
+  .pastille.anniversaire { background: #c792ea; }
+  .pastille.fete { background: #ff9f43; }
+  /* ⚠️ **UNE FAMILLE DE PLUS, DONC UNE COULEUR DE PLUS.** Sans cette ligne, une
+     alarme de note s'afficherait avec une pastille TRANSPARENTE — un trou dans la
+     ligne. C'est exactement le défaut que le commentaire ci-dessus raconte pour
+     `anniversaire` et `fete`, et il se reproduit à chaque famille ajoutée. */
+  .pastille.note { background: #7fe0c0; }
+  .nom {
+    flex: 1 1 auto;
+    /* Un nom long se replie au lieu d'élargir le panneau — ce qui, à son tour,
+       élargirait la FENÊTRE, puis la replierait. */
+    overflow-wrap: anywhere;
+  }
+  /* ⚠️ **LES LETTRES DES ÉLÉMENTS À ALARME** — demande explicite : « fais
+     ressortir les éléments pour lesquels une alarme est activée en changeant la
+     couleur des lettres en fonction de si c'est une fête ou un anniversaire ».
+     Les teintes sont celles des pastilles de ces deux familles, déjà employées
+     partout dans le dépôt — la couleur dit donc la MÊME chose ici et là.
+     ⚠️ **LES DEUX SORTES DE FÊTES SONT CONCERNÉES** : une date saisie porte son
+     alarme en propre, une fête de la TABLE l'emporte de `rappels_fetes.toml`
+     (voir `fetes::Evenement::rappel`, et `evenements_du_mois` qui l'interroge).
+     La première version n'en colorait qu'une — l'utilisateur a vu le manque.
+     ⚠️ D'où un sélecteur qui ne nomme PAS les catégories de la table : il dit
+     « tout ce qui porte une alarme », et seule la famille anniversaire a sa
+     teinte à part. Ajouter une catégorie un jour n'y changera rien. */
+  .ligne.rappel .nom { color: #ff9f43; }
+  .ligne.rappel.anniversaire .nom { color: #c792ea; }
+  /* ⚠️ **LA TROISIÈME TEINTE — ET ELLE A MANQUÉ.** Une alarme de NOTE porte
+     toujours `rappel: true` (voir `fetes::alarmes_de_notes_du_mois`), donc son
+     nom héritait de l'orange ci-dessus — **exactement celui d'une fête
+     personnalisée à alarme**. Seule la pastille les distinguait, et encore : pas
+     dans le texte. DEMANDE EXPLICITE (2026-09-24) : « la rendre reconnaissable ».
+     Même teinte que `.pastille.note` — comme pour les deux familles ci-dessus,
+     la couleur dit la même chose ici et là.
+     ⚠️ Trois classes, comme la règle `anniversaire` : `.ligne.rappel.note` bat
+     `.ligne.rappel` (deux classes), qui reste la teinte par défaut. */
+  .ligne.rappel.note .nom { color: #7fe0c0; }
+  .annee {
+    opacity: calc(.55 * max(1, var(--popup-alpha, 1)));
+    font-size: 13px;
+    flex: 0 0 auto;
+  }
+  .vide {
+    opacity: calc(.55 * max(1, var(--popup-alpha, 1)));
+    font-style: italic;
+    font-size: 14px;
+  }
+  /* ⭐ LA MÉTÉO SOUS LE CALENDRIER — DEMANDE EXPLICITE (2026-10-14) : la ville,
+     la température et l'icône. Vide (et sans place) sans ville réglée. */
+  .meteo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+  }
+  .meteo:empty { display: none; }
+  .meteo svg { flex: 0 0 auto; }
+  .meteo .meteo-ville { font-weight: 600; font-size: 15px; }
+  .meteo .meteo-libelle { opacity: calc(.7 * max(1, var(--popup-alpha, 1))); font-size: 13px; }
+  .meteo .meteo-temp { margin-left: auto; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  /* ⭐ LES HORLOGES DU MONDE — DEMANDE EXPLICITE (2026-10-24), sous la météo.
+     `width: 0; min-width: 100%` : la liste prend la largeur de la grille sans
+     jamais l'élargir — un nom de ville long s'abrège au lieu de pousser le
+     calendrier (et la fenêtre) vers la droite. */
+  .horloges {
+    width: 0;
+    min-width: 100%;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .horloges:empty { display: none; }
+  .horloge { display: flex; align-items: baseline; gap: 8px; }
+  .horloge-nom { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+  .horloge-ecart { flex: 0 0 auto; font-size: 12px; opacity: calc(.65 * max(1, var(--popup-alpha, 1))); font-variant-numeric: tabular-nums; }
+  .horloge-heure { flex: 0 0 auto; font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+  <div class="cal">
+    <div class="grille">
+      <!-- LES FLÈCHES DE MOIS — DEMANDE EXPLICITE (2026-09-24) : « je voudrais
+           pouvoir changer de mois dans le calendrier ». Elles naviguent
+           LOCALEMENT (voir la doc de module) : aucun `location.href`. -->
+      <div class="barre">
+        <button id="mois-prec" class="fleche" title="Mois précédent">&#9664;</button>
+        <h1 id="month-title"></h1>
+        <button id="mois-suiv" class="fleche" title="Mois suivant">&#9654;</button>
+      </div>
+      <table>
+        <thead><tr id="weekday-row"></tr></thead>
+        <tbody id="grid"></tbody>
+      </table>
+      <div id="meteo" class="meteo"></div>
+      <div id="horloges" class="horloges"></div>
+    </div>
+    <div class="jour">
+      <h2 id="jour-titre">&nbsp;</h2>
+      <div id="jour-liste"></div>
+      <!-- LES NOTIFICATIONS DE NeuraDesk — DEMANDE EXPLICITE : « je voulais que
+           les notifications apparaissent dans le menu au clic gauche sur
+           l'horloge ». Elles sont poussées par `cef_calendar::push_state`, qui
+           les lit dans `win32::bandeau`.
+           ⚠️ Le clic DROIT garde l'historique complet, avec son bouton
+           « Vider » — ce panneau-ci ne fait que MONTRER, il n'émet rien (voir
+           la doc de module de `cef_calendar` : la page n'a qu'un `location.href`,
+           `menu/size`, et deux dans la même tâche se percutent en silence). -->
+      <div class="separateur"></div>
+      <h3 id="notif-titre">Notifications</h3>
+      <div id="notif-liste"></div>
+    </div>
+  </div>
+  <script>
+    // Semaine commençant le LUNDI (convention française déjà utilisée par
+    // win32::popup_menu::render_calendar) — Date.getDay() renvoie 0=dimanche,
+    // on décale de sorte que lundi devienne l'index 0.
+    const WEEKDAYS = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."];
+    const MONTHS = [
+      "janvier", "février", "mars", "avril", "mai", "juin",
+      "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+    ];
+    // Les mêmes libellés que l'applet Calendrier — les clés viennent de
+    // `fetes::Categorie::cle`, et ne sont JAMAIS réécrites ici.
+    const CATEGORIE_LIBELLE = {
+      ferie: "jour férié", saint: "fête du prénom", civil: "fête civile", tradition: "tradition",
+      anniversaire: "anniversaire", fete: "fête personnalisée",
+      note: "alarme de note",
+    };
+
+    let state = null;
+    // LE JOUR CHOISI, dans le mois affiché — `null` tant que `render()` ne l'a
+    // pas posé (voir sa doc, et le piège du préchargement).
+    let selection = null;
+    // **LE MOIS AFFICHÉ — UN VRAI CURSEUR DEPUIS LE 2026-09-24.** Les flèches ◀ ▶
+    // le déplacent et `render()` le lit, au lieu de toujours lire aujourd'hui
+    // (DEMANDE EXPLICITE : « je voudrais pouvoir changer de mois »).
+    //
+    // ⚠️ **IL VIT DANS LA PAGE, ET C'EST DÉLIBÉRÉ.** Demander le mois à Rust
+    // coûterait un `location.href` — or c'est EXACTEMENT le moment où le
+    // `MutationObserver` de `menu.js` en émet un (le passage de 5 à 6 rangées
+    // change la hauteur mesurée), et deux `location.href` d'une même tâche se
+    // télescopent, l'un des deux perdu en silence. Rust pousse donc ~25 mois
+    // D'AVANCE et la navigation reste locale — voir `cef_calendar::push_state`.
+    let curseur = null;
+    // La clé du dernier mois pour lequel la sélection a été REPOSÉE — un MÉMO,
+    // pas le curseur. Voir `render`.
+    let moisAffiche = null;
+
+    function el(tag, attrs, children) {
+      const node = document.createElement(tag);
+      for (const [k, v] of Object.entries(attrs || {})) {
+        if (k === "class") node.className = v;
+        else if (k === "onclick") node.addEventListener("click", v);
+        else node.setAttribute(k, v);
+      }
+      for (const c of children || []) {
+        node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+      }
+      return node;
+    }
+
+    // **LA DATE DE L'APPLICATION**, quand Rust l'a poussée — jamais `Date()`
+    // seul. La page ne doit pas déduire le jour de l'horloge du navigateur (voir
+    // `cef_calendar_applet::aujourdhui`, même règle).
+    //
+    // Le repli sur `Date()` couvre le PREMIER rendu : `window.__ndRefresh` est
+    // appelé à l'ouverture, AVANT que `push_state` n'ait posé l'état — sans ce
+    // repli la grille ne se dessinerait pas du tout.
+    function dateDuJour() {
+      if (state && state.aujourdhui) return state.aujourdhui;
+      const t = new Date();
+      return { jour: t.getDate(), mois: t.getMonth() + 1, annee: t.getFullYear() };
+    }
+
+    // Le mois que la grille affiche : le curseur s'il a bougé, sinon celui
+    // d'aujourd'hui.
+    function moisDuCurseur() {
+      const a = dateDuJour();
+      return curseur || { annee: a.annee, mois: a.mois };
+    }
+
+    // La clé d'un mois dans l'état poussé par Rust — **MÊME FORME que
+    // `cef_calendar::push_state`** (`format!("{annee}-{m}")`, sans zéro devant).
+    // Les deux doivent rester d'accord : une clé qui dérive donnerait un mois
+    // vide, c'est-à-dire « pas de fête » plutôt qu'une erreur.
+    function cleDuMois(annee, mois) {
+      return annee + "-" + mois;
+    }
+
+    // Les évènements d'un jour du mois affiché — `[]` s'il n'y en a pas.
+    //
+    // ⚠️ **LA RECHERCHE PORTE SUR LE MOIS, PLUS SUR LE SEUL NUMÉRO DE JOUR** :
+    // l'état porte désormais 25 mois, et chercher sur `j.jour` replierait douze
+    // septembres en un — le panneau afficherait les évènements d'une autre année.
+    function evenements(jour) {
+      if (!state || !state.mois) return [];
+      const m = moisDuCurseur();
+      const mois = state.mois[cleDuMois(m.annee, m.mois)];
+      if (!mois) return [];
+      const trouve = mois.jours.find((j) => j.jour === jour);
+      return trouve ? trouve.evenements : [];
+    }
+
+    // **LES FLÈCHES ◀ ▶ — PUREMENT LOCALES.** Aucun `location.href` : voir la
+    // déclaration de `curseur`, et la doc de module.
+    function allerAuMois(delta) {
+      const m = moisDuCurseur();
+      const total = m.annee * 12 + (m.mois - 1) + delta;
+      curseur = { annee: Math.floor(total / 12), mois: ((total % 12) + 12) % 12 + 1 };
+      render();
+    }
+
+    // ⚠️ **RÉOUVERTURE → LE MOIS COURANT** (demande explicite). Appelé par
+    // `cef_calendar::toggle` AVANT `__ndRefresh`. Sans lui le curseur survivrait
+    // à la fermeture, et le menu se rouvrirait sur un mois lointain.
+    window.__ndResetMois = function () { curseur = null; };
+
+    function rendrePanneau() {
+      const a = moisDuCurseur();
+      document.getElementById("jour-titre").textContent =
+        selection === null ? " " : `${selection} ${MONTHS[a.mois - 1]}`;
+
+      const zone = document.getElementById("jour-liste");
+      zone.replaceChildren();
+      const evs = selection === null ? [] : evenements(selection);
+      if (!evs.length) {
+        zone.appendChild(el("div", { class: "vide" }, ["Aucun évènement."]));
+        return;
+      }
+      for (const e of evs) {
+        // `rappel` en classe EN PLUS de la famille : le CSS colore les lettres
+        // des deux familles SAISIES qui portent une alarme (voir la feuille).
+        const classes = ["ligne"];
+        if (e.rappel) classes.push("rappel");
+        classes.push(e.categorie);
+        zone.appendChild(el("div", { class: classes.join(" ") }, [
+          el("span", { class: "pastille " + e.categorie, title: CATEGORIE_LIBELLE[e.categorie] || e.categorie }),
+          el("span", { class: "nom" }, [e.nom]),
+          // L'année n'apparaît que si elle est connue — elle dit l'âge, rien de plus.
+          ...(e.annee ? [el("span", { class: "annee" }, [String(e.annee)])] : []),
+        ]));
+      }
+    }
+
+    // **LE NUMÉRO DE SEMAINE ISO 8601** — la semaine qui contient le JEUDI de la
+    // semaine du jour donné ; la semaine 1 est celle du 4 janvier. En UTC : un
+    // passage à l'heure d'été ne doit pas décaler la division par 7.
+    function semaineIso(annee, mois0, jour) {
+      const d = new Date(Date.UTC(annee, mois0, jour));
+      d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7) + 3);
+      const premierJeudi = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
+      premierJeudi.setUTCDate(premierJeudi.getUTCDate() - ((premierJeudi.getUTCDay() + 6) % 7) + 3);
+      return 1 + Math.round((d - premierJeudi) / (7 * 86400000));
+    }
+
+    // Le clic sur un jour : purement LOCAL. Rien n'est demandé à Rust — voir
+    // l'en-tête, le télescopage des `location.href`.
+    function choisirJour(jour, td) {
+      selection = jour;
+      for (const autre of document.querySelectorAll("#grid td.sel")) autre.classList.remove("sel");
+      td.classList.add("sel");
+      rendrePanneau();
+    }
+
+    // TOUT le rendu vit dans cette fonction, et le mois est calculé À L'APPEL —
+    // pas au chargement de la page. C'est ce qui rend ce popup PRÉCHARGEABLE :
+    // sans cela, une page préchargée au démarrage resterait figée sur le mois du
+    // démarrage, indéfiniment, sans que rien ne le signale. Voir
+    // `window.__ndRefresh` juste en dessous.
+    function render() {
+      const a = dateDuJour();
+      // ⚠️ **LE MOIS VIENT DU CURSEUR, PLUS D'AUJOURD'HUI** — c'est ce qui rend
+      // les flèches possibles. `a` reste la date du jour, et sert à marquer
+      // « aujourd'hui » ET à reposer la sélection.
+      const m = moisDuCurseur();
+      const year = m.annee;
+      const month = m.mois - 1; // les mois de `Date` commencent à 0
+
+      document.getElementById("month-title").textContent = `${MONTHS[month]} ${year}`;
+      // Les flèches se désactivent AUX BORNES de la fenêtre poussée : au-delà,
+      // la page n'a aucune donnée (voir `bornes` dans `cef_calendar::push_state`).
+      const cleMois = cleDuMois(year, m.mois);
+      const bornes = state && state.bornes;
+      document.getElementById("mois-prec").disabled =
+        !!bornes && cleMois === cleDuMois(bornes.min.annee, bornes.min.mois);
+      document.getElementById("mois-suiv").disabled =
+        !!bornes && cleMois === cleDuMois(bornes.max.annee, bornes.max.mois);
+
+      const weekdayRow = document.getElementById("weekday-row");
+      const grid = document.getElementById("grid");
+      // VIDER LES DEUX D'ABORD : un second appel empilerait un second jeu
+      // d'en-têtes de jours et une seconde grille SOUS la première, sans la
+      // moindre erreur — aucun des deux conteneurs n'est recréé.
+      weekdayRow.replaceChildren();
+      grid.replaceChildren();
+
+      const thSemaine = document.createElement("th");
+      thSemaine.className = "semaine";
+      thSemaine.textContent = "sem.";
+      thSemaine.title = "Numéro de la semaine";
+      weekdayRow.appendChild(thSemaine);
+      for (const label of WEEKDAYS) {
+        const th = document.createElement("th");
+        th.textContent = label;
+        weekdayRow.appendChild(th);
+      }
+
+      // ⚠️ **LA SÉLECTION NE SURVIT PAS À UN CHANGEMENT DE MOIS.** Ce popup est
+      // PRÉCHARGÉ au démarrage : une sélection posée au chargement du script
+      // resterait le jour du démarrage, et en octobre, cliquer le 12
+      // interrogerait le 12 **septembre** — le panneau dirait « aucun évènement »
+      // pour tout le mois, EN SILENCE. C'est pour la même raison que tout le
+      // rendu est dans cette fonction (voir sa doc), et `__ndRefresh` est ce qui
+      // la rejoue à chaque ouverture.
+      //
+      // ⚠️ **ET ELLE CHANGE AUSSI DE RÈGLE QUAND ON FEUILLETTE** (demande
+      // explicite) : sur le mois d'aujourd'hui on garde aujourd'hui ; sur un
+      // AUTRE mois on prend le 1er — qui existe toujours, dans tous les mois de
+      // toutes les années. Garder `a.jour` ferait par exemple sélectionner un
+      // « 31 » dans un mois qui n'en a pas.
+      const cle = cleDuMois(year, m.mois);
+      if (moisAffiche !== cle || selection === null) {
+        moisAffiche = cle;
+        selection = year === a.annee && m.mois === a.mois ? a.jour : 1;
+      }
+
+      const firstOfMonth = new Date(year, month, 1);
+      // Date.getDay() de firstOfMonth : 0=dimanche..6=samedi -> décalage pour
+      // que lundi soit en première colonne.
+      const firstWeekday = (firstOfMonth.getDay() + 6) % 7;
+      const daysInMonth = new Date(year, month + 1, 0).getDate();
+      // La sélection ne doit pas rester sur un jour qui n'existe pas dans ce mois
+      // (le 31 après un mois de 30 jours).
+      if (selection > daysInMonth) selection = daysInMonth;
+
+      // Chaque rangée s'ouvre sur le NUMÉRO DE SEMAINE de l'un de ses jours :
+      // une rangée va du lundi au dimanche, comme une semaine ISO.
+      const nouvelleRangee = (jour) => {
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.className = "semaine";
+        td.textContent = semaineIso(year, month, jour);
+        tr.appendChild(td);
+        return tr;
+      };
+      let row = nouvelleRangee(1);
+      for (let i = 0; i < firstWeekday; i++) {
+        row.appendChild(document.createElement("td"));
+      }
+      for (let day = 1; day <= daysInMonth; day++) {
+        const cellIndex = firstWeekday + day - 1;
+        if (cellIndex > 0 && cellIndex % 7 === 0) {
+          grid.appendChild(row);
+          row = nouvelleRangee(day);
+        }
+        const td = document.createElement("td");
+        const classes = ["jour"];
+        // ⚠️ « Aujourd'hui » NE SE MARQUE QUE DANS LE MOIS D'AUJOURD'HUI : sur un
+        // autre mois, `day === a.jour` est vrai une fois par mois et cerclerait
+        // un jour qui n'est pas aujourd'hui.
+        const estAujourdhui = year === a.annee && m.mois === a.mois && day === a.jour;
+        if (estAujourdhui) classes.push("today");
+        if (day === selection) classes.push("sel");
+        td.className = classes.join(" ");
+        if (estAujourdhui) {
+          const span = document.createElement("span");
+          span.textContent = day;
+          td.appendChild(span);
+        } else {
+          td.textContent = day;
+        }
+        td.addEventListener("click", () => choisirJour(day, td));
+        row.appendChild(td);
+      }
+      grid.appendChild(row);
+
+      rendrePanneau();
+    }
+
+    // Appelée par Rust à CHAQUE ouverture (voir `win32::cef_calendar::toggle`).
+    // Elle rejoue le mois (contrepartie obligatoire du préchargement) **et** la
+    // sélection (voir le commentaire dans `render`).
+    window.__ndRefresh = render;
+
+    // LES DEUX FLÈCHES — **PUREMENT LOCALES, ELLES N'ÉMETTENT RIEN** : voir la
+    // déclaration de `curseur` pour la raison (le télescopage avec la mesure de
+    // taille, que le changement de rangées déclenche justement ici).
+    document.getElementById("mois-prec").addEventListener("click", () => allerAuMois(-1));
+    document.getElementById("mois-suiv").addEventListener("click", () => allerAuMois(1));
+
+    // ⚠️ **LEVIER DE VÉRIFICATION** — `cef_calendar::debug_mois` l'appelle pour
+    // capturer un autre mois SANS AUCUN CLIC. Sans lui, une capture ne montrerait
+    // jamais que le mois courant, et « changer de mois » resterait invérifiable.
+    // Posé explicitement sur `window` par symétrie avec `__ndRefresh` : une
+    // `const` de niveau script ne serait PAS visible depuis `execute_js`, et
+    // l'appel échouerait en silence.
+    window.__ndAllerMois = allerAuMois;
+
+    // Appelée par Rust à CHAQUE frame tant que le menu est ouvert (voir
+    // `cef_calendar::push_state`).
+    //
+    // ⚠️ **LA GARDE DE DÉDUPLICATION EST ICI AUSSI OBLIGATOIRE, ET POUR LA RAISON
+    // DÉJÀ PAYÉE DEUX FOIS CETTE SEMAINE** : `render()` fait `replaceChildren()`
+    // sur la grille, donc sans garde, chaque frame détruirait les cellules SOUS LE
+    // CURSEUR — et un clic n'est émis par le navigateur que si l'appui et le
+    // relâchement tombent sur le MÊME nœud. Même remède que `sound.html`.
+    const vueNotifications = document.getElementById("notif-liste");
+
+    // **LE SEUL CANAL D'ACTION DE CETTE PAGE** (voir la doc de module : la croix
+    // ne touche PAS au DOM, donc sa navigation ne peut pas entrer en collision
+    // avec la mesure que `menu.js` émet après une mutation).
+    // ⚠️ Le préfixe est `bandeau/` et NON `calendar/` : les messages appartiennent
+    // à `win32::bandeau`, et le verbe nomme celui qui POSSÈDE la donnée, pas celui
+    // qui l'émet. C'est aussi ce que `cef_calendar::drain_actions` reconnaît pour
+    // le renvoyer — une file d'actions appartient à UN popup.
+    function go(...segments) {
+      location.href = "neuradesk://bandeau/" + segments.map(encodeURIComponent).join("/");
+    }
+
+    // **LES NOTIFICATIONS DE NeuraDesk** (voir `cef_calendar::push_state`, qui les
+    // pousse avec le reste de l'état). Du plus RÉCENT au plus ancien, comme
+    // l'historique du clic droit.
+    //
+    // ⚠️ **APPELÉE DEPUIS `setState`, JAMAIS DEPUIS `render()`.** `render()` tourne
+    // à chaque flèche de mois, et `replaceChildren()` y remettrait le DÉFILEMENT
+    // de cette liste à zéro à chaque changement de mois — sous les doigts de
+    // l'utilisateur, exactement le défaut déjà payé sur le champ date. `setState`
+    // ne s'exécute que lorsque l'état change vraiment : la clé de cache de Rust
+    // filtre les frames identiques (voir `push_state`).
+    function rendreNotifications(messages) {
+      // ⚠️ **LE DÉFILEMENT EST REPOSÉ APRÈS LA RECONSTRUCTION.** Sans cette
+      // mémoire, chaque notification qui arrive — et chaque suppression —
+      // renverrait la liste en haut : l'ascenseur serait inutilisable, et la vue
+      // sauterait sous les doigts juste après un clic sur une croix.
+      const defilement = vueNotifications.scrollTop;
+      vueNotifications.replaceChildren();
+      if (!messages.length) {
+        window.__ndDerniersIds = [];
+        vueNotifications.appendChild(el("div", { class: "vide" }, ["Aucune notification pour l'instant."]));
+        return;
+      }
+      const affiches = messages.slice().reverse();
+      // **L'ORDRE AFFICHÉ, RETENU POUR LE HARNAIS** (voir
+      // `cef_calendar::debug_supprimer`) : c'est ce qui rend la croix vérifiable
+      // sans souris, par un appel de fonction direct, jamais par un clic aveugle.
+      window.__ndDerniersIds = affiches.map((m) => m.id);
+      for (const m of affiches) {
+        vueNotifications.appendChild(el("div", { class: "message" }, [
+          el("div", { class: "ligne1" }, [
+            el("span", { class: "titre" }, [m.titre]),
+            el("span", { class: "quand" }, [m.quand]),
+            el("button",
+               { class: "retirer", title: "Supprimer cette notification", onclick: () => go("supprimer", m.id) },
+               ["✕"]),
+          ]),
+          el("div", { class: "texte" }, [m.texte]),
+        ]));
+      }
+      vueNotifications.scrollTop = defilement;
+    }
+
+    // -------------------------------------------------------------------------
+    // LA MÉTÉO SOUS LE CALENDRIER (voir `win32::meteo_horloge`). Les tracés et la
+    // famille d'icônes sont RECOPIÉS de `meteo.html` (Keyline Icons, MIT) : les
+    // pages sont autonomes, aucun import possible entre elles.
+    // -------------------------------------------------------------------------
+    const TRACES_METEO = {
+      "sun-medium": "M16.5 12C16.5 14.4853 14.4853 16.5 12 16.5C9.5147 16.5 7.5 14.4853 7.5 12C7.5 9.5147 9.5147 7.5 12 7.5C14.4853 7.5 16.5 9.5147 16.5 12ZM20.5 12L21 12M18.0104 18.0104L18.364 18.364M12 20.5L12 21M5.9896 18.0104L5.636 18.364M3.5 12L3 12M5.9896 5.9896L5.636 5.636M12 3.5L12 3M18.0104 5.9896L18.364 5.636",
+      "moon": "M21 12C21 16.9706 16.9706 21 12 21C7.0294 21 3 16.9706 3 12C3 7.0294 7.0294 3 12 3C9.9618 5.5477 10.1652 9.2206 12.4723 11.5277C14.7794 13.8348 18.4523 14.0382 21 12Z",
+      "cloud-sun": "M10 22L19 22C20.6569 22 22 20.6569 22 19C22 17.3431 20.6569 16 19 16C19 13.5147 16.9853 11.5 14.5 11.5C12.0147 11.5 10 13.5147 10 16C8.3431 16 7 17.3431 7 19C7 20.6569 8.3431 22 10 22ZM7.6787 10.9281C7.5606 10.6329 7.5 10.3179 7.5 10C7.5 8.6193 8.6193 7.5 10 7.5C10.5583 7.5 11.1004 7.6868 11.5402 8.0308M3.5 10L2 10M5.4038 5.4038L4.3431 4.3431M10 3.5L10 2M14.5962 5.4038L15.6569 4.3431",
+      "cloud-moon": "M10 22L19 22C20.6569 22 22 20.6569 22 19C22 17.3431 20.6569 16 19 16C19 13.5147 16.9853 11.5 14.5 11.5C12.0147 11.5 10 13.5147 10 16C8.3431 16 7 17.3431 7 19C7 20.6569 8.3431 22 10 22ZM5.0758 14.0249C3.1634 12.8397 2 10.7498 2 8.5C2 4.9101 4.9101 2 8.5 2C7.844 2.82 7.4866 3.8388 7.4866 4.8889C7.4866 6.5491 8.3766 8.0819 9.8184 8.905",
+      "cloud": "M6 19L18 19C20.2091 19 22 17.2091 22 15C22 12.7909 20.2091 11 18 11C18 7.6863 15.3137 5 12 5C8.6863 5 6 7.6863 6 11C3.7909 11 2 12.7909 2 15C2 17.2091 3.7909 19 6 19Z",
+      "clouds": "M5 20L14 20C15.6569 20 17 18.6569 17 17C17 15.3431 15.6569 14 14 14C14 11.5147 11.9853 9.5 9.5 9.5C7.0147 9.5 5 11.5147 5 14C3.3431 14 2 15.3431 2 17C2 18.6569 3.3431 20 5 20ZM18.8989 12L19.5 12C20.8807 12 22 10.8807 22 9.5C22 8.1193 20.8807 7 19.5 7C19.5 5.3431 18.1569 4 16.5 4C15.0285 4 13.7742 5.0673 13.5387 6.5198",
+      "cloud-rain": "M6 16L18 16C20.2091 16 22 14.2091 22 12C22 9.7909 20.2091 8 18 8C18 4.6863 15.3137 2 12 2C8.6863 2 6 4.6863 6 8C3.7909 8 2 9.7909 2 12C2 14.2091 3.7909 16 6 16ZM8 20V22M12 20V22M16 20V22",
+      "snowflake": "M4.6795 12L19.3205 12M22 14.6795L19.3205 12L22 9.3205M2 9.3205L4.6795 12L2 14.6795M8.3397 5.6603L15.6603 18.3397M14.6795 22L15.6603 18.3397L19.3205 19.3205M9.3205 2L8.3397 5.6603L4.6795 4.6795M15.6603 5.6603L8.3397 18.3397M4.6795 19.3205L8.3397 18.3397L9.3205 22M19.3205 4.6795L15.6603 5.6603L14.6795 2",
+      "cloud-alert": "M6 19L18 19C20.2091 19 22 17.2091 22 15C22 12.7909 20.2091 11 18 11C18 7.6863 15.3137 5 12 5C8.6863 5 6 7.6863 6 11C3.7909 11 2 12.7909 2 15C2 17.2091 3.7909 19 6 19ZM12 9L12 11M13 15C13 15.5523 12.5523 16 12 16C11.4477 16 11 15.5523 11 15C11 14.4477 11.4477 14 12 14C12.5523 14 13 14.4477 13 15Z"
+    };
+    function familleMeteo(code, jour) {
+      if (code === 0) return jour ? "sun-medium" : "moon";
+      if (code === 1 || code === 2) return jour ? "cloud-sun" : "cloud-moon";
+      if (code === 3) return "cloud";
+      if (code === 45 || code === 48) return "clouds";
+      if (code >= 51 && code <= 67) return "cloud-rain";
+      if (code >= 71 && code <= 77) return "snowflake";
+      if (code >= 80 && code <= 82) return "cloud-rain";
+      if (code >= 85 && code <= 86) return "snowflake";
+      if (code >= 95) return "cloud-alert";
+      return "cloud";
+    }
+    function iconeMeteo(nom, taille) {
+      const NS = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(NS, "svg");
+      svg.setAttribute("viewBox", "0 0 24 24");
+      svg.setAttribute("width", taille);
+      svg.setAttribute("height", taille);
+      svg.setAttribute("fill", "none");
+      svg.setAttribute("stroke", "currentColor");
+      svg.setAttribute("stroke-width", "2");
+      svg.setAttribute("stroke-linecap", "round");
+      svg.setAttribute("stroke-linejoin", "round");
+      const chemin = document.createElementNS(NS, "path");
+      chemin.setAttribute("d", TRACES_METEO[nom] || TRACES_METEO["cloud"]);
+      svg.appendChild(chemin);
+      return svg;
+    }
+    // Les nombres à la française, comme `meteo.html` : virgule, pas de « ,0 ».
+    function degresMeteo(v) {
+      const arrondi = Math.round(v * 10) / 10;
+      return Number.isInteger(arrondi) ? String(arrondi) : arrondi.toFixed(1).replace(".", ",");
+    }
+    function rendreMeteo(m) {
+      const zone = document.getElementById("meteo");
+      zone.replaceChildren();
+      if (!m) return;
+      const mesuree = typeof m.temperature === "number";
+      zone.appendChild(iconeMeteo(mesuree ? familleMeteo(m.code, m.jour) : "cloud", 34));
+      const texte = el("div", {}, [el("div", { class: "meteo-ville" }, [m.ville])]);
+      const sous = mesuree ? m.libelle : (m.erreur || "mesure en cours…");
+      if (sous) texte.appendChild(el("div", { class: "meteo-libelle" }, [sous]));
+      zone.appendChild(texte);
+      if (mesuree) zone.appendChild(el("div", { class: "meteo-temp" }, [degresMeteo(m.temperature) + " " + (m.unite || "°C")]));
+    }
+
+    // ⭐ LES HORLOGES DU MONDE (voir `win32::horloges_monde`) : Rust donne les
+    // fuseaux, la page les convertit avec `Intl`, qui suit les changements
+    // d'heure de chaque pays. Le texte change chaque minute mais pas la TAILLE
+    // (chiffres tabulaires, largeur bornée) : `menu.js` n'émet rien tant que la
+    // boîte ne bouge pas (voir `lastSent`).
+    function partiesDans(zone, date) {
+      const parts = {};
+      for (const p of new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23",
+        year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" }).formatToParts(date)) {
+        parts[p.type] = Number(p.value);
+      }
+      return parts;
+    }
+    // L'écart avec l'heure d'ici, en minutes : les deux horloges murales
+    // relues comme si elles étaient en UTC, puis soustraites.
+    function ecartMinutes(zone, date) {
+      const a = partiesDans(zone, date);
+      const ici = date;
+      const mur = Date.UTC(a.year, a.month - 1, a.day, a.hour, a.minute);
+      const murIci = Date.UTC(ici.getFullYear(), ici.getMonth(), ici.getDate(), ici.getHours(), ici.getMinutes());
+      return Math.round((mur - murIci) / 60000);
+    }
+    function libelleEcart(minutes, zone, date) {
+      const a = partiesDans(zone, date);
+      const jour = Date.UTC(a.year, a.month - 1, a.day);
+      const jourIci = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+      const quand = jour > jourIci ? "demain, " : jour < jourIci ? "hier, " : "";
+      if (minutes === 0) return quand + "même heure";
+      const signe = minutes > 0 ? "+" : "−";
+      const abs = Math.abs(minutes);
+      const h = Math.floor(abs / 60), m = abs % 60;
+      return quand + signe + h + " h" + (m ? " " + String(m).padStart(2, "0") : "");
+    }
+    let horlogesAffichees = [];
+    function rendreHorloges() {
+      const zone = document.getElementById("horloges");
+      zone.replaceChildren();
+      const maintenant = new Date();
+      for (const h of horlogesAffichees) {
+        let heure, ecart;
+        try {
+          heure = new Intl.DateTimeFormat("fr-FR", { timeZone: h.zone, hour: "2-digit", minute: "2-digit" }).format(maintenant);
+          ecart = libelleEcart(ecartMinutes(h.zone, maintenant), h.zone, maintenant);
+        } catch (e) {
+          continue; // un fuseau qu'`Intl` ne connaît pas : rien plutôt qu'une heure fausse
+        }
+        zone.appendChild(el("div", { class: "horloge", title: h.zone }, [
+          el("span", { class: "horloge-nom" }, [h.nom]),
+          el("span", { class: "horloge-ecart" }, [ecart]),
+          el("span", { class: "horloge-heure" }, [heure]),
+        ]));
+      }
+    }
+    // Recalée sur la minute : la prochaine se déclenche à la seconde 0.
+    function horlogesAChaqueMinute() {
+      rendreHorloges();
+      setTimeout(horlogesAChaqueMinute, 60000 - (Date.now() % 60000) + 50);
+    }
+    setTimeout(horlogesAChaqueMinute, 60000 - (Date.now() % 60000) + 50);
+
+    let dernierEtatJson = null;
+    window.setState = function (next) {
+      const json = JSON.stringify(next);
+      if (json === dernierEtatJson) return;
+      dernierEtatJson = json;
+      state = next;
+      rendreNotifications(next.notifications || []);
+      rendreMeteo(next.meteo || null);
+      horlogesAffichees = next.horloges || [];
+      rendreHorloges();
+      render();
+    };
+
+    render();
+  </script>
+<script src="menu.js"></script>
+</body>
+</html>

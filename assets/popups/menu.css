@@ -1,0 +1,115 @@
+/* Style COMMUN à tous les popups CEF de type "menu" (Contexte/Réseau/
+   Alimentation/Son/Voicemeeter/Calendrier/tailles de barre-séparateur/
+   presse-papiers rapide — voir win32::menu, doc de module, pour la même
+   distinction "menu" vs "fenêtre libre" Dash/Réglages/Presse-papiers, qui
+   N'IMPORTENT PAS cette feuille) — BUG RÉEL SIGNALÉ ("les menus wifi et
+   alimentation n'ont pas la même taille de texte que les autres") :
+   chaque popup dupliquait son propre bloc `html, body { ... font-size:
+   Npx }`, dérivé indépendamment au fil des sessions sans référence
+   commune (22px ici, 20px là, 15px ailleurs, par pur hasard de
+   l'historique) — DEMANDE EXPLICITE : "que tous les menus utilisent des
+   réglages communs comme si c'était un style css". `font-size: 15px` —
+   valeur choisie par l'utilisateur ("la taille du menu voicemeeter me
+   convient").
+
+   Réglable "depuis les réglages" (autre demande explicite) via le
+   mécanisme qui existe DÉJÀ : le curseur "Taille des menus" du panneau de
+   réglages (voir win32::menu::menu_scale, win32::cef_popup::
+   menu_zoom_level) applique un zoom CEF UNIFORME à chaque popup qui
+   importe ce fichier — une fois leur base commune ici, ce curseur les
+   fait grandir/rétrécir TOUS ENSEMBLE en restant cohérents entre eux, au
+   lieu de partir de 9 bases différentes. Aucun réglage Rust séparé n'est
+   donc nécessaire pour ce fichier lui-même.
+
+   Variables `--menu-*-rgb` (triplet "R, G, B", 0..255) : poussées à CHAQUE
+   frame par win32::cef_popup::push_menu_palette (voir sa doc). Réduites à
+   DEUX pôles neutres FIXES (blanc quasi/noir quasi, voir
+   ui::color::MENU_FG_RGB/MENU_ON_FG_RGB) — SANS AUCUNE dépendance de thème
+   — DEMANDE EXPLICITE ("les menus ont du texte noir et ça ne me plait pas,
+   simplifie les possibilités, limites-les à du blanc, du gris clair, du
+   noir et du gris foncé, les menus devraient s'adapter automatiquement").
+   DEUX tentatives ont précédé ce réglage final, toutes deux retombées sur
+   du texte noir que l'utilisateur n'aimait pas : (1) dérivé de l'accent
+   choisi (ui::color::Palette/compute_palette, même système que le panneau
+   de réglages) — capable de choisir du texte NOIR dès que l'accent brut
+   était clair/vif, alors que le fond RÉELLEMENT affiché derrière (bureau
+   flouté teinté à faible opacité, voir win32::menu::menu_accent_rgb,
+   toujours utilisé pour LE FOND, séparément) reste visuellement
+   sombre-ish quel que soit cet accent ; (2) choisi selon le thème
+   clair/sombre WINDOWS — retombait sur du noir dès que Windows était en
+   thème clair, sans rapport avec ce fond réel (dérivé de l'accent choisi
+   par l'utilisateur, jamais du thème système) — DEMANDE EXPLICITE de
+   suite : "j'ai un thème clair mais des éléments en noir dans les menus,
+   cela ne me plait pas". "Gris clair"/"gris foncé" ne sont pas des tons
+   séparés : ce sont ces MÊMES deux pôles vus à travers l'alpha déjà réglé
+   au cas par cas par chaque popup (voir assets/popups/
+   *.html, ex. rgba(var(--menu-zone-rgb), calc(0.15 * var(--popup-alpha, 1)))) sur le fond flouté. Valeurs
+   de repli "255, 255, 255"/"0, 0, 0" ci-dessous (via `var(--x, repli)`) :
+   le TOUT PREMIER rendu d'un popup a lieu avant que `push_menu_palette`
+   n'ait pu tourner une première fois (voir win32::cef_popup::render,
+   appelée après la création de la fenêtre) — sans repli, ces variables
+   seraient vides et `rgb(var(--x))` invaliderait toute la déclaration
+   (texte invisible), pas seulement gris. */
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--nd-police);
+  color: rgba(var(--menu-text-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+  font-size: 15px;
+  /* Empêche un rail de défilement NATIF fantôme sur `html`/`body` (repéré
+     sur le menu Alimentation, voir win32::cef_popup::button_list_height,
+     doc de fonction) — persistait même avec une marge de sécurité large
+     et un `overflow-y: auto` sur le conteneur interne `.menu`/`.list`,
+     alors que le contenu réel tenait avec ~130px de marge (mesuré par
+     capture) : c'est bien `html`/`body` eux-mêmes qui déclenchaient ce
+     rail, pas le conteneur interne. Sans effet sur les popups dont le
+     contenu DOIT défiler (Voicemeeter, presse-papiers rapide) : leur
+     propre conteneur interne garde son `overflow-y: auto` explicite,
+     indépendant de celui-ci. */
+  overflow: hidden;
+}
+
+/* ── STRUCTURE COMMUNE DES MENUS — DEMANDE EXPLICITE (2026-11-06) : « un style
+   plus professionnel et structuré aux dashs et menus ». Tout est ADDITIF et
+   NEUTRE vis-à-vis des thèmes (aucune couleur fixée) : une page qui pose déjà
+   l'une de ces valeurs l'emporte (son `<style>` vient après ce fichier). Ne
+   touche QUE les dix menus qui importent cette feuille — jamais les outils de
+   capture, qui ne l'importent pas. */
+
+/* Un menu de bureau a de la TENUE : une largeur plancher pour qu'il ne se réduise
+   pas à la longueur de ses libellés, et un interligne confortable. */
+.menu {
+  min-width: 190px;
+  line-height: 1.35;
+}
+
+/* ⭐ SURFACE OPAQUE — même aspect « application » que les panneaux (voir la doc
+   jumelle dans `style.css` et `src/ui/style.rs`). Un menu « Programme » n'est plus
+   du verre teinté mais une surface pleine : on peint `<html>` avec le pôle de
+   surface OPAQUE. Pour un menu c'est `--menu-on-accent-rgb` (= `color::menu_on_fg`,
+   le pôle OPPOSÉ au texte `--menu-text-rgb`), poussé par `push_menu_palette` —
+   `--popup-bg-rgb` n'existe QUE pour les panneaux. N'agit que sous `data-nd-surface:
+   opaque` ; les styles « verre » gardent leur transparence. */
+html[data-nd-surface="opaque"] {
+  background-color: rgb(var(--menu-on-accent-rgb, 24, 24, 24));
+}
+
+/* Séparateur fin et INSÉRÉ (il ne touche pas les bords) — l'allure d'un vrai
+   menu d'application. Ne vise que les `<hr>` SANS classe : un séparateur déjà
+   dessiné par sa page (`.separator`…) garde exactement son trait. */
+.menu hr:not([class]) {
+  border: none;
+  border-top: 1px solid rgba(var(--menu-zone-rgb, 255, 255, 255), calc(0.2 * var(--popup-fond-alpha, 1)));
+  margin: 6px 10px;
+}
+
+/* En-tête de groupe : petit, discret, en capitales espacées — pour ranger les
+   entrées en sections lisibles. Utilitaire, à poser au besoin dans un menu. */
+.menu-label {
+  padding: 8px 12px 4px;
+  font-size: 0.82em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: calc(0.6 * max(1, var(--popup-alpha, 1)));
+}

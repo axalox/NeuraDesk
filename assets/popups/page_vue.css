@@ -1,0 +1,103 @@
+/*
+  **LE STYLE D'UNE PAGE SCANNÉE EN GRAND — PARTAGÉ PAR SES DEUX HÔTES.**
+
+  Voir `page_vue.js`, qui porte le même avertissement : la page se regarde dans le
+  PANNEAU SCANNER et dans la FENÊTRE DE PAGE, et recopier ce bloc ferait diverger
+  l'apparence d'un côté et pas de l'autre.
+
+  ⚠️ **CE FICHIER NE PORTE QUE LE CORPS DE LA VUE** (l'image, le volet d'OCR et
+  ses colonnes). L'en-tête, les onglets et le pied restent à chaque hôte : le
+  panneau a un ✕ de panneau, la fenêtre a une poignée de déplacement.
+
+  Chargé par : `scanner.html`, `page_scan.html`. Copié à côté de l'exe par
+  `build.rs::copy_popup_assets` (qui balaie `assets/popups/*.{html,css,js}`).
+*/
+
+/* LE CORPS : L'IMAGE D'UN CÔTÉ, LE VOLET D'OCR DE L'AUTRE. */
+.page-corps { display: flex; gap: 10px; min-height: 0; flex: 1 1 auto; }
+
+/* ⛔ **`scrollbar-gutter: stable` EST LA CORRECTION D'UNE BOUCLE, PAS UNE PARURE.**
+   Sans elle, régler la largeur de l'image peut faire APPARAÎTRE la barre de
+   défilement, ce qui change la largeur CLIENTE de la zone, ce qui relance
+   l'observateur de taille, ce qui re-règle la largeur — et Chromium finit par
+   signaler « ResizeObserver loop completed with undelivered notifications ».
+   En réservant la place de la barre, la largeur cliente ne bouge plus quand elle
+   apparaît, et la boucle n'a plus de raison d'être. */
+.page-image {
+  flex: 1 1 auto; overflow: auto; min-width: 0; padding: 10px;
+  text-align: center; scrollbar-gutter: stable;
+}
+.page-image img {
+  /* ⛔ **PAS DE `max-width`, ET C'EST LA CONDITION DU ZOOM.** La largeur est posée
+     par `PageVue.zoomer`, qui a le DROIT de dépasser la zone — c'est exactement ce
+     que « zoomer » veut dire. Un `max-width: 100%` la briderait en silence : le
+     bouton « + » cesserait d'agir dès que la page atteint la largeur de la zone,
+     sans un mot, et on croirait le zoom cassé. */
+  height: auto; display: block; margin: 0 auto;
+  box-shadow: 0 2px 14px rgba(0, 0, 0, .45); background: #fff;
+}
+
+/* LES COMMANDES DE ZOOM — mêmes dans les deux hôtes. */
+.zoom { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.zoom button { padding: 3px 8px; font-size: 13px; min-width: 30px; }
+/* Le palier courant : c'est un bouton (il ramène à « page entière »), donc il
+   porte la largeur du PLUS LARGE de ses libellés pour que les « + » et « − » ne
+   sautent pas d'un palier à l'autre. */
+.zoom #zoom-ajuster, .zoom .zoom-ajuster { min-width: 60px; font-variant-numeric: tabular-nums; }
+/* ⛔ **L'ABSENCE D'IMAGE SE DIT** — voir `PageVue.appliquerImage` : Rust envoie
+   `null` quand la page n'a pas pu être lue, et une case vide sans un mot serait
+   exactement le silence que ce dépôt refuse. */
+.page-absente { padding: 24px; text-align: center; font-size: 13px; color: #ff9d9d; }
+
+.page-volet {
+  flex: 0 0 320px; overflow-y: auto; min-width: 0; padding: 8px 10px;
+  border-left: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+  background: rgba(0, 0, 0, .18);
+}
+
+/* LES COLONNES D'OCR — une par moteur. */
+.moteur { margin-bottom: 10px; }
+.moteur h3 {
+  margin: 0 0 4px; font-size: 12px; font-weight: 600;
+  letter-spacing: .04em; text-transform: uppercase; opacity: calc(.7 * max(1, var(--popup-alpha, 1)));
+}
+.moteur .rangee { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 4px; }
+/* ⛔ **EN LECTURE SEULE, MAIS SÉLECTIONNABLE** : on doit pouvoir prendre un
+   morceau à la souris, même si « Copier » prend tout le texte. */
+.moteur textarea {
+  width: 100%; box-sizing: border-box; height: 150px; resize: vertical;
+  font: inherit; font-size: 12px; line-height: 1.4;
+  color: inherit; background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.07 * var(--popup-fond-alpha, 1)));
+  border: none; border-radius: var(--nd-rayon-petit, 4px); padding: 6px;
+}
+/* ⚠️ **LISIBLE, PARCE QUE C'EST LA RÉPONSE À UN GESTE.** En 12 px à 80 %
+   d'opacité, « aucun texte trouvé » était indistinguable de « le bouton ne fait
+   rien » — le défaut signalé le 2026-10-09. */
+.etat { font-size: 13px; opacity: calc(.95 * max(1, var(--popup-alpha, 1))); line-height: 1.35; }
+.etat.echec { color: #ff9d9d; opacity: 1; }
+
+/* **LA BARRE D'AMÉLIORATION — les trois curseurs et les trois boutons, posés par
+   `PageVue.amelioration` chez les deux hôtes.**
+   ⚠️ **ELLE WRAPPE** : le panneau Scanner est étroit, et une barre qui ne wrappe
+   pas y rognerait les commandes en silence — le `−` du zoom disparaît avant le
+   dernier bouton, et on croit la barre cassée. */
+.outils {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;
+  padding: 5px 10px; flex: 0 0 auto;
+  border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.10 * var(--popup-fond-alpha, 1)));
+}
+.reglage { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.reglage span { opacity: calc(.8 * max(1, var(--popup-alpha, 1))); white-space: nowrap; }
+/* ⚠️ **UNE LARGEUR FIXE, ET `accent-color` : un ascenseur de page CEF rend sa
+   propre piste, et sans cette couleur il serait gris sur fond gris.** */
+.reglage input[type="range"] {
+  width: 88px; margin: 0;
+  accent-color: rgb(var(--popup-accent-solid-rgb, 59, 130, 246));
+}
+.outils button { padding: 3px 9px; font-size: 12px; }
+
+/* ⛔ **SANS CETTE RÈGLE, `class="cache"` NE MASQUE RIEN** — et ce dépôt l'a payé
+   DEUX fois (`bandeau.html`, `scanner.html`). Elle est posée ici EN PLUS de
+   celle de chaque page : c'est ce fichier-là qui est chargé par les deux, donc
+   c'est ici qu'elle protège le plus sûrement. */
+.cache { display: none !important; }

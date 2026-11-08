@@ -1,0 +1,104 @@
+<!doctype html>
+<!--
+  win32::cef_network (icône Réseau) — reproduit en CSS le contenu de
+  win32::popup_menu::render_network (deux bascules Wi-Fi/Bluetooth).
+
+  Contrairement à assets/popups/power.html (état fixe, pas besoin de
+  savoir quoi que ce soit du système), l'état Wi-Fi/Bluetooth ne peut PAS
+  être calculé en JS pur — il vient de Windows côté Rust
+  (win32::network::wifi_state/bluetooth_state). Canal Rust→JS : Rust
+  appelle `window.setState({wifi, bluetooth})` (voir
+  win32::cef_network::push_state, win32::cef_app::CefBrowserSurface::
+  execute_js) à l'ouverture du popup ET après chaque bascule, pour que
+  l'affichage reflète toujours l'état réel sans recharger la page. Chaque
+  bouton fait `location.href = "neuradesk://network/toggle-<clé>"` —
+  même canal JS→Rust que power.html (RequestHandler::on_before_browse).
+
+  PAS de `background` sur `<html>`/`<body>` : transparent par défaut en
+  rendu hors-écran CEF.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="menu.css">
+<style>
+  .menu {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px;
+    box-sizing: border-box;
+    height: auto;
+    width: fit-content;
+    max-width: 100vw;
+    max-height: 100vh;
+    /* Voir power.html — même rail de défilement fantôme sans ça. */
+    overflow-y: auto;
+  }
+  button {
+    all: unset;
+    display: block;
+    padding: 10px 14px;
+    border-radius: var(--nd-rayon-surface);
+    cursor: pointer;
+    /* PAS de `color` ici : hérite de `menu.css` (`--menu-text-rgb`, voir sa
+       doc) — `all: unset` remet `color` à sa valeur héritée. */
+    font: inherit;
+  }
+  button:hover:not(:disabled) {
+    /* 0.15 → 0.26 → 0.36 → 0.46 — voir assets/popups/clipboard_menu.html,
+       `.row:hover`, pour le pourquoi (DEMANDE EXPLICITE, répétée après le
+       premier passage à 0.26 encore jugé insuffisant, puis de nouveau après
+       0.36). */
+    background: rgba(var(--menu-zone-rgb, 255, 255, 255), calc(0.46 * var(--popup-fond-alpha, 1)));
+  }
+  button:disabled {
+    color: rgba(var(--menu-text-rgb, 255, 255, 255), calc(0.4 * var(--popup-alpha, 1)));
+    cursor: default;
+  }
+</style>
+</head>
+<body>
+  <div class="menu">
+    <button id="wifi" disabled>Wi-Fi : …</button>
+    <button id="bluetooth" disabled>Bluetooth : …</button>
+  </div>
+  <script>
+    const NAMES = { wifi: "Wi-Fi", bluetooth: "Bluetooth" };
+    const state = { wifi: null, bluetooth: null };
+
+    function render() {
+      for (const key of Object.keys(NAMES)) {
+        const btn = document.getElementById(key);
+        const val = state[key];
+        if (val === null || val === undefined) {
+          btn.textContent = `${NAMES[key]} : indisponible sur cet appareil`;
+          btn.disabled = true;
+        } else {
+          btn.textContent = val ? `✓ ${NAMES[key]} activé` : `${NAMES[key]} désactivé`;
+          btn.disabled = false;
+        }
+      }
+    }
+
+    for (const key of Object.keys(NAMES)) {
+      document.getElementById(key).addEventListener("click", () => {
+        if (state[key] === null || state[key] === undefined) return;
+        location.href = `neuradesk://network/toggle-${key}`;
+      });
+    }
+
+    // Appelée depuis Rust (win32::cef_network::push_state) — voir le
+    // commentaire d'en-tête, le SEUL moyen pour cette page de connaître
+    // l'état Wi-Fi/Bluetooth réel.
+    window.setState = function (next) {
+      Object.assign(state, next);
+      render();
+    };
+
+    render();
+  </script>
+<script src="menu.js"></script>
+</body>
+</html>

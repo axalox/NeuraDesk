@@ -1,0 +1,52 @@
+# Style « Programme » — DEMANDE EXPLICITE (2026-11-06) : donner aux dashs et aux
+# menus « l'aspect d'un programme normal ». Les valeurs sont tirées du langage
+# visuel du kit d'interface GPUI de Longbridge (github.com/longbridge/gpui-component)
+# et de son shell nsh — tous deux bâtis sur shadcn/ui, palette « neutral » :
+# surfaces nettes, contour HAIRLINE visible (neutral-200 clair / neutral-800
+# sombre) qui cerne chaque carte comme une vraie fenêtre, coins modérément
+# arrondis (shadcn arrondit plus que Fluent : 10 px sur les surfaces), aucun
+# relief (plat et moderne), et une barre d'accent à gauche de l'élément actif —
+# le même langage que GPUI, le moteur d'interface de Zed.
+#
+# ⚠️ Un style ne porte que des FORMES, un contour, un relief, une police et un
+# repère de liste ; les COULEURS sont l'autre axe (Réglages › Thèmes). Pour
+# l'aspect « application » le plus net, l'associer à une famille de couleurs peu
+# translucide.
+
+nom = "Programme"
+
+[formes]
+# L'échelle de rayons de shadcn : petit 4, contrôle 6, surface 8, grand 10.
+rayon_petit = 4
+rayon_controle = 6
+rayon_surface = 8
+rayon_grand = 10
+rayon_icone = 8
+
+[traits]
+# Le contour « neutral-200 » de shadcn : fin mais bien VISIBLE, c'est lui qui
+# STRUCTURE la page — chaque carte, section et champ est nettement cerné, comme
+# dans une vraie application. Aussi marqué que KDE (0.16), plus que WinUI (0.08).
+bordure_alpha = 0.16
+
+[relief]
+# Plat et moderne : aucun bandeau ni biseau sur les barres (décision du projet).
+degrade = 0.0
+liserel = 0.0
+# SAUF l'ombre portée des DASHS : un popover shadcn flotte avec une ombre douce
+# (shadow-md) — c'est ce qui le détache du bureau comme une vraie fenêtre.
+ombre = 0.3
+
+[texte]
+# La police système de Windows 11, comme toute application native récente.
+police = "Segoe UI Variable Text"
+
+[structure]
+# Barre d'accent à gauche de l'élément choisi — la sélection de liste de GPUI.
+indicateur = "barre"
+# ⭐ LA CLÉ DE L'ASPECT « APPLICATION » : surface PLEINE, pas le verre du projet.
+# Les dashs et menus peignent alors `<html>` avec `--popup-bg-rgb` (le pôle de
+# surface opaque, contrasté avec le texte), et le bureau flouté ne transparaît
+# plus — un panneau devient une vraie fenêtre d'application, comme un popover
+# shadcn/GPUI qui a son propre fond neutre. Les thèmes « verre » gardent "verre".
+surface = "opaque"

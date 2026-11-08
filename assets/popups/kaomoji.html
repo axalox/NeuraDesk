@@ -1,0 +1,301 @@
+<!doctype html>
+<!--
+  win32::cef_kaomoji — la fenêtre des kaomojis.
+
+  DEMANDE EXPLICITE (2026-10-06) : « une applet dans la zone Intégrés pour pouvoir
+  saisir les kaomojis de Windows directement comme le fait la fenêtre des caractères
+  spéciaux ».
+
+  ⚠️ **C'EST LA SŒUR DE `caracteres.html`, ET ELLE EN SUIT LA STRUCTURE LIGNE POUR
+  LIGNE** — bande de titre qui DÉPLACE la fenêtre, punaise `◇`/`◆`, croix `✕`, même
+  mécanique de verbes. Ce qui change est la DISPOSITION : des cases LARGES qui
+  s'emballent sur plusieurs lignes, là où les caractères sont une grille de cases
+  carrées.
+
+  ⛔ **AUCUN `menu.js`** (comme la visionneuse et les caractères) : c'est une FENÊTRE,
+  sa taille est celle de la zone cliente et ne se négocie pas.
+
+  DEUX GESTES SUR LA LISTE :
+    - clic GAUCHE  -> `kaomoji/frapper/<index>` : il est FRAPPÉ dans la dernière
+      fenêtre étrangère retenue (voir `win32::cible_de_frappe`) ;
+    - clic DROIT   -> `kaomoji/copier/<index>` : il est COPIÉ. C'est la voie GARANTIE
+      — Windows refuse les frappes d'un processus non élevé vers une fenêtre ÉLEVÉE,
+      et ce refus est silencieux.
+
+  ⚠️ **L'INDEX, PAS LE KAOMOJI.** Un kaomoji contient des barres obliques
+  (`¯\_(ツ)_/¯`, `＼(º □ º l|l)/`) et des parenthèses : le faire voyager dans une URL
+  demanderait de l'échapper, et une erreur d'échappement serait SILENCIEUSE. La page
+  émet donc le RANG de la case, et Rust relit sa propre table au même rang.
+
+  ⚠️ **LA LISTE VIENT DE RUST, PAS D'ICI** (`state.familles`) : l'écrire aussi dans
+  cette page en ferait une SECONDE source de vérité — celle qui divergerait au premier
+  ajout. ⭐ **ET LE NOM DE CHAQUE GROUPE VIENT DE LÀ AUSSI** (`state.familles[i].nom`) :
+  c'est la demande qui a ouvert ce lot, les kaomojis étaient rangés en tranches muettes
+  de 36.
+
+  ⚠️ **AUCUN `background` sur `<html>`/`<body>`** : le fond est le BUREAU FLOUTÉ que
+  Rust dessine SOUS la page.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: var(--nd-police);
+    /* ⛔ **LA COULEUR DE TEXTE VIENT DU THÈME, ET ELLE EST OBLIGATOIRE ICI.**
+       Une page qui charge `style.css` SANS `menu.css` n'hérite d'aucune couleur :
+       si elle ne la pose pas, le navigateur met du NOIR. C'est exactement le défaut
+       qu'a porté `caracteres.html` pendant deux demandes de l'utilisateur — voir le
+       test `toute_page_de_panneau_prend_sa_couleur_du_theme`, qui balaie les pages. */
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    user-select: none;
+  }
+  /* LA BANDE DE TITRE — même facture que `caracteres.html` et `visionneuse.html`. */
+  #barre {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    cursor: default;
+  }
+  #titre {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* ⚠️ `Segoe UI Symbol` EN CLAIR : `◇`/`◆`/`✕` existent aussi dans la police EMOJI,
+     qui les rendrait EN COULEUR — un losange et une croix bleus et roses dans une
+     fenêtre qui n'a que des teintes de thème. */
+  .bouton {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+  }
+  .bouton:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  /* ⚠️ `[aria-pressed]` ET NON UNE CLASSE : l'état vient de Rust, qui le pose à
+     chaque poussée. */
+  .bouton[aria-pressed="true"] {
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1)));
+    opacity: 1;
+  }
+  /* ⭐ **LA LISTE EMBALLE — ELLE N'EST PAS UNE GRILLE.** Les sept rangées de
+     caractères ont des cases carrées toutes pareilles ; ici une case fait la largeur
+     de son texte, et les familles se replient sur autant de lignes qu'il faut.
+     `overflow: auto` est ce qui permet à la fenêtre d'être plus petite que le
+     contenu sans que rien ne se perde — et ce qui CLIPPE, donc rien ne peut déborder
+     par-dessus la bande de titre. */
+  #liste {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: safe center;
+    justify-content: safe flex-start;
+    overflow: auto;
+    /* La marge qui facilite le redimensionnement — comptée par
+       `cef_kaomoji::MARGE`. */
+    padding: 8px;
+  }
+  /* ⭐ **UN ONGLET PAR GROUPE** — DEMANDE EXPLICITE (2026-10-23) : « les catégories
+     rangées par onglet ». Ils s'enroulent sur autant de lignes qu'il faut, et cette
+     hauteur est COMPTÉE PAR RUST : `cef_kaomoji::HAUTEUR_ONGLET` (24 de bouton + 4
+     d'écart), `ESPACE_ONGLET`, `MARGE_ONGLETS` (6 + 6 de `padding`, le filet) et la
+     largeur estimée d'un onglet (`largeur_onglet`). Changer l'un sans l'autre fait une
+     fenêtre trop COURTE — la barre de défilement rattrape, mais c'est un défaut. */
+  #onglets {
+    flex: 0 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+  }
+  .onglet {
+    all: unset;
+    height: 24px;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    font-size: 12px;
+    white-space: nowrap;
+    border-radius: var(--nd-rayon-petit);
+    cursor: pointer;
+    opacity: calc(.8 * max(1, var(--popup-alpha, 1)));
+  }
+  .onglet:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.18 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  /* ⚠️ `[aria-selected]` ET NON UNE CLASSE, comme la punaise : l'état se lit dans le DOM. */
+  .onglet[aria-selected="true"] {
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1)));
+    font-weight: 600;
+    opacity: 1;
+  }
+  /* ⛔ **LA RANGÉE FAIT TOUTE LA LARGEUR — ELLE N'EST PAS CENTRÉE SUR SON CONTENU.**
+     Sans `align-self: stretch`, `align-items: safe center` de `#liste` la centrait :
+     un groupe court commençait à **822 px du bord** (mesuré, quand les groupes
+     étaient empilés). */
+  .rang {
+    align-self: stretch;
+    display: flex;
+    flex-wrap: wrap;
+    /* ⚠️ **LE MÊME ÉCART QUE `cef_kaomoji::ESPACE`** : l'emballage est calculé côté
+       Rust avec cette valeur, et une divergence ferait une fenêtre trop large ou trop
+       étroite en silence. */
+    gap: 8px;
+  }
+  .case {
+    all: unset;
+    box-sizing: border-box;
+    /* ⭐ **LA LARGEUR VIENT DU TEXTE, PAS D'UN CHIFFRE** : c'est ce qui permet à un
+       kaomoji de vingt unités et à un de deux de cohabiter. */
+    width: max-content;
+    height: 36px;
+    padding: 0 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    /* ⛔ **UNE PILE DE POLICES, ET C'EST OBLIGATOIRE ICI.** La racine du dépôt demande
+       `Segoe UI` (`--nd-police`), qui suffit aux 60 caractères accentués — mais un
+       kaomoji emploie des KATAKANAS DEMI-CHASSE (`ﾉ`, `ヮ`), des FORMES GÉOMÉTRIQUES
+       (`◕`, `□`) et des DINGBATS (`✧`, `✿`) que Segoe UI ne couvre PAS : ils
+       sortaient en glyphes de repli, et la capture du harnais l'a montré — des
+       `▽` et des `T` à la place des visages.
+       ⚠️ **L'ORDRE COMPTE** : `Yu Gothic UI` et `MS Gothic` portent le japonais,
+       `Segoe UI Symbol` les formes et les dingbats. `Segoe UI` reste en tête pour ce
+       qu'il sait rendre (le latin, les parenthèses), et `sans-serif` ferme la marche. */
+    font-family: "Segoe UI", "Yu Gothic UI", "MS Gothic", "Segoe UI Symbol", sans-serif;
+    white-space: nowrap;
+    border-radius: var(--nd-rayon-controle);
+    box-shadow: inset 0 0 0 1px rgba(var(--popup-fg-rgb, 255, 255, 255), var(--nd-bordure-alpha));
+    cursor: pointer;
+  }
+  .case:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.30 * var(--popup-fond-alpha, 1))); }
+  .case:active { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.55 * var(--popup-fond-alpha, 1))); }
+</style>
+</head>
+<body>
+  <!-- ⛔ **AUCUN `menu.js`** — voir l'en-tête. -->
+  <div id="barre">
+    <span id="titre">Kaomojis</span>
+    <!-- Deux glyphes de Segoe UI Symbol, jamais des emojis. ⚠️ LES CARACTÈRES SONT
+         ÉCRITS EN CLAIR ICI, PAS EN `\uXXXX` : un échappement JavaScript n'est pas
+         interprété dans du HTML — il s'afficherait tel quel. -->
+    <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
+    <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="onglets"></div>
+  <div id="liste"></div>
+<script>
+  function go(action) {
+    // ⚠️ Un segment, pas d'argument : c'est Rust qui sait QUELLE fenêtre parle.
+    location.href = "neuradesk://kaomoji/" + action;
+  }
+
+  // ⛔ **LA BANDE DE TITRE DÉPLACE LA FENÊTRE** — elle n'a pas de barre de titre
+  // Windows : c'est Rust qui envoie `WM_NCLBUTTONDOWN`/`HTCAPTION`, le geste natif.
+  // Déclenché au `mousedown` sur la bande, JAMAIS sur un bouton — sinon épingler
+  // déplacerait la fenêtre.
+  document.getElementById("barre").addEventListener("mousedown", function (e) {
+    if (e.target.closest("button")) return;
+    go("deplacer");
+  });
+  document.getElementById("epingle").addEventListener("click", function () { go("epingler"); });
+  document.getElementById("fermer").addEventListener("click", function () { go("fermer"); });
+
+  // ⭐ **L'ONGLET CHOISI VIT ICI, PAS DANS L'ÉTAT** : c'est un geste de lecture, rien
+  // côté Rust n'en dépend. La fenêtre est préchargée puis CACHÉE, jamais détruite —
+  // l'onglet tient donc d'une ouverture à l'autre, tant que l'application tourne.
+  let choisi = 0;
+  let dernierEtat = null;
+
+  window.setState = function (state) {
+    dernierEtat = state;
+    const epingle = document.getElementById("epingle");
+    epingle.setAttribute("aria-pressed", String(!!state.epingle));
+    // ⚠️ **LE SIGNE CHANGE, PAS SEULEMENT LA COULEUR** — un losange plein contre un
+    // losange vide se lit d'un coup d'œil ; une nuance de fond, non.
+    epingle.innerHTML = state.epingle ? '<span class="ico ico-push-pin-fill"></span>' : '<span class="ico ico-push-pin"></span>';
+    epingle.title = state.epingle ? "Ne plus rester au premier plan" : "Rester au premier plan";
+
+    dessiner();
+  };
+
+  function choisir(i) {
+    choisi = i;
+    dessiner();
+    document.getElementById("liste").scrollTop = 0;
+  }
+
+  function dessiner() {
+    const familles = (dernierEtat && dernierEtat.familles) || [];
+    if (choisi >= familles.length) choisi = 0;
+    const onglets = document.getElementById("onglets");
+    onglets.replaceChildren();
+    // ⭐ **LE NOM VIENT DE RUST** (`state.familles[i].nom`). L'écrire aussi ici en
+    // ferait une seconde source de vérité — celle qui divergerait au premier thème
+    // ajouté, et un onglet posé sur le mauvais groupe ne se verrait qu'à l'usage.
+    familles.forEach(function (groupe, i) {
+      const onglet = document.createElement("button");
+      onglet.className = "onglet";
+      onglet.textContent = groupe.nom;
+      onglet.title = groupe.nom + " — " + groupe.kaomojis.length + " kaomojis";
+      onglet.setAttribute("aria-selected", String(i === choisi));
+      onglet.onclick = function () { choisir(i); };
+      onglets.appendChild(onglet);
+    });
+
+    const liste = document.getElementById("liste");
+    // ⛔ **VIDER AVANT DE RECONSTRUIRE — ON APPENDAIT, ON N'ÉCRASSAIT PAS.**
+    // `appendChild` AJOUTE : chaque poussée d'état ajoutait une liste ENTIÈRE sous la
+    // précédente, et la punaise est le SEUL geste qui le montre (c'est la seule chose
+    // qui change l'état, `PAYLOAD` rendant les autres poussées gratuites). Le défaut a
+    // été signalé sur la fenêtre des caractères le 2026-10-06.
+    liste.replaceChildren();
+    // ⚠️ **L'INDEX EST GLOBAL, PAS PAR GROUPE** : c'est le RANG dans la table mise à
+    // plat, exactement ce que `cef_kaomoji::kaomoji_par_index` relit. Un seul groupe
+    // est montré, mais son premier kaomoji porte l'index qui suit TOUS ceux des
+    // onglets précédents — repartir de zéro écrirait le kaomoji d'un autre groupe.
+    let index = 0;
+    for (let i = 0; i < choisi; i++) index += familles[i].kaomojis.length;
+    const groupe = familles[choisi];
+    if (groupe) {
+      const rang = document.createElement("div");
+      rang.className = "rang";
+      for (const kaomoji of groupe.kaomojis) {
+        const ici = index++;
+        const bouton = document.createElement("button");
+        bouton.className = "case";
+        bouton.textContent = kaomoji;
+        bouton.title = kaomoji + "  —  clic : insérer, clic droit : copier";
+        bouton.onclick = function () { location.href = "neuradesk://kaomoji/frapper/" + ici; };
+        bouton.oncontextmenu = function (e) {
+          e.preventDefault();
+          location.href = "neuradesk://kaomoji/copier/" + ici;
+          return false;
+        };
+        rang.appendChild(bouton);
+      }
+      liste.appendChild(rang);
+    }
+  }
+</script>
+</body>
+</html>

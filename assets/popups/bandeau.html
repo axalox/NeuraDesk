@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<!--
+  LE BANDEAU ET L'HISTORIQUE DES MESSAGES (voir `win32::bandeau`).
+
+  ⛔ **UNE SEULE PAGE POUR DEUX USAGES**, et c'est délibéré : deux pages CEF
+  auraient coûté deux fois tout le câblage d'un panneau (les quatre listes
+  d'`app::run`, dont le registre du harnais qui échoue EN SILENCE, et les onze
+  dashs frères qui masquent leurs voisins). La fenêtre est la même ; seule la
+  GÉOMÉTRIE change, et c'est Rust qui la donne à chaque ouverture.
+
+  ÉTAT REÇU (window.setState) : { mode: "bandeau" | "historique",
+                                  messages: [{ id, titre, texte, quand }] }
+
+  ACTIONS ÉMISES (`go(...)`, sans segment) :
+    ready · fermer · vider · supprimer/<id>
+
+  ⚠️ **L'IDENTIFIANT VIENT DE RUST** (`bandeau::Message::id`), jamais le rang de
+  la ligne : l'historique change sous les doigts, et deux messages identiques
+  sont légitimes — un rang effacerait le mauvais message dès qu'une notification
+  arrive entre l'affichage et le clic.
+
+  ⚠️ **LE DERNIER MESSAGE EST LE PLUS RÉCENT** : l'historique est affiché du plus
+  récent au plus ancien, comme un fil de discussion.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    height: calc(100vh / var(--text-scale));
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  button {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    color: inherit; border: none; border-radius: var(--nd-rayon-controle);
+    padding: 3px 9px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  button:hover { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  .croix { background: none; font-size: 15px; opacity: calc(.75 * max(1, var(--popup-alpha, 1))); margin-left: auto; }
+  .croix:hover { background: none; opacity: 1; }
+
+  /* ⛔ **SANS CETTE RÈGLE, LES DEUX VUES S'AFFICHENT ENSEMBLE.** Le script pose
+     et retire `cache` (`classList.toggle`) pour choisir entre le bandeau et
+     l'historique — mais la classe n'était définie NULLE PART dans cette page,
+     ni dans `style.css` : elle ne masquait donc rien, et la carte du bandeau
+     s'affichait avec l'en-tête « Notifications / Vider » juste en dessous.
+     MESURÉ le 2026-10-04 (voir l'image de la sonde). Les sept autres popups
+     qui utilisent `cache` la définissent chacun chez eux. */
+  .cache { display: none !important; }
+
+  /* ---- LE BANDEAU : une carte, un message ---- */
+  #bandeau { padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; height: 100%; box-sizing: border-box; }
+  #bandeau .entete { display: flex; align-items: center; gap: 8px; }
+  #bandeau .titre { flex: 1 1 auto; min-width: 0; font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* LE MESSAGE PREND TOUTE LA PLACE QUI RESTE, et sa dernière ligne visible finit
+     par des points de suspension au lieu d'être coupée en deux : le nombre de lignes
+     (`-webkit-line-clamp`) est calculé par `ajusterLesLignes`, parce que la place
+     réelle dépend des réglages de taille (carte et texte ne suivent pas le même
+     facteur). Le message complet reste dans l'historique (clic droit sur l'horloge). */
+  #bandeau .texte { flex: 1 1 auto; min-height: 0; font-size: 13px; opacity: calc(.85 * max(1, var(--popup-alpha, 1))); line-height: 1.45; overflow: hidden; }
+  /* ⚠️ Le `line-clamp` sur un élément INTÉRIEUR, de hauteur automatique : posé sur la
+     boîte étirée par `flex`, Chromium dessinait encore la ligne suivante, coupée. */
+  #bandeau .texte .contenu { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  /* L'heure dans l'EN-TÊTE, à côté de la croix : une ligne de plus pour le message. */
+  #bandeau .quand { flex: 0 0 auto; font-size: 11px; opacity: calc(.5 * max(1, var(--popup-alpha, 1))); white-space: nowrap; }
+  #bandeau .croix { margin-left: 0; }
+
+  /* ---- L'HISTORIQUE : une liste ---- */
+  #historique { display: flex; flex-direction: column; height: 100%; }
+  #historique .entete {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; flex: 0 0 auto;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+  }
+  #historique h1 { margin: 0; font-size: 13px; font-weight: 600; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+  #historique .liste { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 6px 8px; }
+  /* L'ascenseur est celui de toute l'application (`style.css`).
+     ⚠️ `scrollbar-gutter: stable` réserve la place en permanence : sans lui, la
+     liste se décale de la largeur de la barre le jour où elle apparaît. */
+  #historique .liste { scrollbar-gutter: stable; }
+  .message { padding: 6px 8px; border-radius: 4px; }
+  .message + .message { border-top: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.08 * var(--popup-fond-alpha, 1))); }
+  .message .ligne1 { display: flex; gap: 8px; align-items: baseline; }
+  /* ⚠️ **`min-width: 0` EST OBLIGATOIRE, ET C'EST LA CROIX QUI L'EXIGE.** Dans une
+     rangée `flex`, un élément a `min-width: auto` : un titre en `white-space:
+     nowrap` ne rétrécit donc PAS, `text-overflow: ellipsis` ne s'applique jamais,
+     et la rangée débordait vers la droite — la croix se retrouvait hors de la
+     ligne dès qu'un titre était long. C'est un défaut PRÉEXISTANT (l'heure en
+     était déjà victime), rendu visible par la croix. */
+  .message .titre { min-width: 0; font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .message .quand { font-size: 11px; opacity: calc(.5 * max(1, var(--popup-alpha, 1))); margin-left: auto; white-space: nowrap; }
+  .message .texte { font-size: 12px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); line-height: 1.4; }
+  /* **LA CROIX D'UNE LIGNE.** ⚠️ Elle n'emprunte PAS la classe `.croix` de
+     l'en-tête : celle-ci porte `margin-left: auto`, qui se partagerait avec
+     `.quand` — lui aussi en `margin-left: auto` — et écarterait l'heure du titre. */
+  .message .retirer {
+    background: none; border: none; color: inherit; cursor: pointer;
+    font: inherit; font-size: 12px; line-height: 1;
+    padding: 1px 5px; border-radius: 3px; opacity: calc(.45 * max(1, var(--popup-alpha, 1)));
+  }
+  .message .retirer:hover {
+    opacity: 1; background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.14 * var(--popup-fond-alpha, 1)));
+  }
+  .vide { padding: 14px 12px; font-size: 13px; opacity: calc(.55 * max(1, var(--popup-alpha, 1))); }
+</style>
+</head>
+<body>
+<div id="bandeau" class="cache">
+  <div class="entete">
+    <span class="titre"></span>
+    <span class="quand"></span>
+    <button class="croix" onclick="go('fermer')" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div class="texte"><div class="contenu"></div></div>
+</div>
+
+<div id="historique" class="cache">
+  <div class="entete">
+    <h1>Notifications</h1>
+    <button onclick="go('vider')" title="Effacer tout l'historique">Vider</button>
+    <button class="croix" onclick="go('fermer')" title="Fermer (Échap)"><span class="ico ico-x"></span></button>
+  </div>
+  <div class="liste"></div>
+</div>
+
+<script>
+  function el(tag, attrs, children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (key === "class") node.className = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value);
+    }
+    for (const child of children || []) {
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+    return node;
+  }
+
+  function go(...segments) {
+    location.href = "neuradesk://bandeau/" + segments.map(encodeURIComponent).join("/");
+  }
+
+  const vueBandeau = document.getElementById("bandeau");
+  const vueHistorique = document.getElementById("historique");
+  const liste = vueHistorique.querySelector(".liste");
+  let courant = null;
+
+  function rendreBandeau(messages) {
+    const dernier = messages[messages.length - 1];
+    if (!dernier) return;
+    vueBandeau.querySelector(".titre").textContent = dernier.titre;
+    vueBandeau.querySelector(".texte .contenu").textContent = dernier.texte;
+    vueBandeau.querySelector(".quand").textContent = dernier.quand;
+    ajusterLesLignes();
+  }
+
+  // Autant de lignes que la place en tient, la dernière finissant par « … ».
+  // ⚠️ MESURÉ, PAS CALCULÉ : sous le `zoom` du corps, `lineHeight` et `clientHeight`
+  // ne sont pas dans la même unité (la division rendait 3 lignes là où 4 tenaient).
+  // On compare deux rectangles, qui le sont : du plus grand nombre au plus petit.
+  const LIGNES_MAX = 12;
+  function ajusterLesLignes() {
+    const texte = vueBandeau.querySelector(".texte");
+    const contenu = texte.querySelector(".contenu");
+    const place = texte.getBoundingClientRect().height;
+    if (!(place > 0)) return;
+    for (let n = LIGNES_MAX; n >= 1; n--) {
+      contenu.style.webkitLineClamp = String(n);
+      if (contenu.getBoundingClientRect().height <= place + 0.5) return;
+    }
+  }
+  new ResizeObserver(ajusterLesLignes).observe(vueBandeau.querySelector(".texte"));
+
+  function rendreHistorique(messages) {
+    // ⚠️ **LE DÉFILEMENT EST REPOSÉ APRÈS LA RECONSTRUCTION.** `replaceChildren`
+    // fait table rase : sans cette mémoire, chaque notification qui arrive — et
+    // chaque suppression — renverrait la liste en haut. L'ascenseur deviendrait
+    // inutilisable, et la vue sauterait sous les doigts juste après un clic sur
+    // une croix.
+    const defilement = liste.scrollTop;
+    liste.replaceChildren();
+    if (!messages.length) {
+      window.__ndDerniersIds = [];
+      liste.appendChild(el("div", { class: "vide" }, ["Aucune notification pour l'instant."]));
+      return;
+    }
+    // Du plus RÉCENT au plus ancien.
+    const affiches = messages.slice().reverse();
+    // **L'ORDRE AFFICHÉ, RETENU POUR LE HARNAIS** (voir `bandeau::debug_supprimer`) :
+    // c'est ce qui rend la croix vérifiable sans souris, par un appel de fonction
+    // direct, jamais par un clic aveugle.
+    window.__ndDerniersIds = affiches.map((m) => m.id);
+    for (const m of affiches) {
+      liste.appendChild(el("div", { class: "message" }, [
+        el("div", { class: "ligne1" }, [
+          el("span", { class: "titre" }, [m.titre]),
+          el("span", { class: "quand" }, [m.quand]),
+          el("button",
+             { class: "retirer", title: "Supprimer cette notification", onclick: () => go("supprimer", m.id) },
+             ["✕"]),
+        ]),
+        el("div", { class: "texte" }, [m.texte]),
+      ]));
+    }
+    liste.scrollTop = defilement;
+  }
+
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") go("fermer"); });
+
+  let dernierJson = null;
+  window.setState = function (next) {
+    const json = JSON.stringify(next);
+    if (json === dernierJson) return;
+    dernierJson = json;
+    courant = next;
+    document.documentElement.style.setProperty("--text-scale", next.contentScale || 1);
+    const historique = next.mode === "historique";
+    vueBandeau.classList.toggle("cache", historique);
+    vueHistorique.classList.toggle("cache", !historique);
+    const messages = next.messages || [];
+    if (historique) rendreHistorique(messages); else rendreBandeau(messages);
+  };
+
+  go("ready");
+</script>
+</body>
+</html>

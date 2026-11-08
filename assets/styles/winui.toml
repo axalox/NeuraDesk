@@ -1,0 +1,21 @@
+# Style « WinUI » — l'aspect des applications de Windows 11 (Fluent 2) :
+# coins de 4 px sur les contrôles et de 8 px sur les surfaces, contours fins,
+# police Segoe UI Variable, barre verticale d'accent sur l'élément actif.
+
+nom = "WinUI"
+
+[formes]
+rayon_petit = 2
+rayon_controle = 4
+rayon_surface = 8
+rayon_grand = 8
+rayon_icone = 8
+
+[traits]
+bordure_alpha = 0.08
+
+[texte]
+police = "Segoe UI Variable Text"
+
+[structure]
+indicateur = "barre"

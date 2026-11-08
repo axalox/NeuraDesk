@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Aperçu</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    /* ⛔ **AUCUN FOND ICI, ET C'EST TOUT LE SUJET DU THÈME.**
+       Le fond d'une `fenetre` est le BUREAU FLOUTÉ que Rust dessine SOUS cette
+       page (voir `cef_popup::render`). Peindre une couleur ici le masquerait —
+       c'est exactement ce que faisait la première version, et l'utilisateur l'a
+       vu : « la visionneuse ne prend pas le thème de l'app ».
+       ⚠️ Et la couleur qu'elle peignait venait de `--popup-bg-rgb`, **une
+       variable que RIEN ne pousse** (les seules sont `--popup-fg-rgb`,
+       `--popup-accent-rgb`, `--popup-accent-solid-rgb`, `--popup-on-accent-rgb`
+       et `--popup-alpha`) : elle retombait donc sur sa valeur de repli, en dur.
+       C'est la même faute que les trois variables fantômes du dash dossier, que
+       ce lot venait justement de corriger — refaite ici.
+       Le modèle est `cef_couleurs` (l'autre `fenetre: true`), qui porte la
+       démonstration en commentaire. */
+    html, body {
+      margin: 0; height: 100%; overflow: hidden;
+      background: transparent;
+      color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+      font-family: var(--nd-police, "Segoe UI", sans-serif);
+    }
+    body { display: flex; flex-direction: column; }
+
+    /* ---- LA BANDE DE TITRE ------------------------------------------------
+       ⛔ **ELLE EST AUSSI LA POIGNÉE DE DÉPLACEMENT.** La fenêtre n'a ni bordure
+       ni barre de titre Windows (`WS_POPUP`, voir `cef_visionneuse`, doc de
+       module) : le déplacement se demande à Rust, qui envoie `HTCAPTION` — le
+       geste natif. Sans ça, la fenêtre serait clouée à sa place. */
+    /* La TAILLE DU CONTENU (`etat.echelle`, Réglages) : la bande de titre est
+       zoomée, le texte grandit par sa police — un `zoom` sur la zone qui défile
+       fausserait sa hauteur dans la colonne flexible. L'image, elle, remplit
+       déjà la fenêtre. */
+    #barre { zoom: var(--text-scale, 1); }
+    #barre {
+      display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+      flex: 0 0 auto; cursor: default; user-select: none;
+      border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    }
+    #nom { flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* La mention d'encodage ou de troncature : petite, mais TOUJOURS LÀ quand elle
+       a quelque chose à dire — un texte tronqué sans le dire se lit comme un
+       fichier incomplet. */
+    #mention { font-size: 11px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); white-space: nowrap; }
+    .bouton {
+      width: 24px; height: 24px; padding: 0; border: 0; border-radius: 4px;
+      background: none; color: inherit; font: inherit; font-size: 13px;
+      line-height: 1; cursor: default; opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+    }
+    .bouton:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+    /* L'état ÉPINGLÉ se voit : le signe change, pas seulement la couleur — même
+       règle que le « + » d'épinglage du dash dossier, qui a coûté quatre clics
+       « il ne se passe rien ». */
+    .bouton[aria-pressed="true"] {
+      background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.35 * var(--popup-fond-alpha, 1)));
+      opacity: 1; font-weight: 600;
+    }
+
+    /* ---- LE CONTENU ------------------------------------------------------- */
+    #contenu { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; }
+    /* Le texte : police à chasse fixe, et les lignes LONGUES ne sont PAS repliées
+       — un fichier de code ou de données se lit en colonnes, et replier ferait
+       perdre l'alignement, qui est souvent l'information. On défile. */
+    #texte {
+      margin: 0; font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: calc(13px * var(--text-scale, 1)); line-height: 1.45; white-space: pre; tab-size: 4;
+    }
+    #image { display: none; max-width: 100%; max-height: 100%; object-fit: contain; margin: auto; }
+    #contenu.image { display: flex; align-items: center; justify-content: center; }
+    /* L'erreur se MONTRE : un fichier illisible (binaire, verrouillé, disparu)
+       doit le dire, sinon la fenêtre est vide sans que personne ne sache
+       pourquoi. */
+    #erreur { display: none; padding: 16px; opacity: calc(.85 * max(1, var(--popup-alpha, 1))); font-size: 13px; }
+
+    /* ---- LES FLÈCHES DE VOISINAGE ------------------------------------------
+       ⭐ DEMANDE EXPLICITE (2026-11-03) : « des flèches en surbrillance pour passer
+       à la photo suivante ». Deux prises pour le même geste : les deux boutons de
+       la bande, et deux chevrons au bord de l'image.
+
+       ⛔ **LA SURBRILLANCE EST UNE CLASSE POSÉE À LA MAIN AU `mousemove`.** `:hover`
+       n'est pas tenu ici — le dash dossier l'a déjà payé (`installerSurvol`, qui ne
+       fait plus qu'éclairer la case par une classe) — et le fond est le BUREAU
+       FLOUTÉ que Rust peint sous la page : rien ne peut s'y éclairer tout seul.
+
+       ⚠️ **POSITION N'EST PAS PRISE SUR `#contenu`** : il défile, et une flèche
+       posée dedans partirait avec l'image zoomée. Sans ancêtre positionné, elle se
+       pose sur la fenêtre elle-même — elle reste donc au bord, même en grand.
+
+       ⛔ **CENTRÉE PAR `top`, JAMAIS PAR `transform`** — mesuré le 2026-11-03 au
+       harnais : `style.css` pose `button:active:not(:disabled) { transform:
+       translateY(1px) }`, plus spécifique (0,2,0) que `.bord` (0,1,0), donc au
+      `mousedown` SA valeur REMPLACE le centrage et le cartel saute de vingt-quatre
+       pixels vers le bas. Le `mouseup` du même geste tombe alors à côté (sur
+       `#image`), et Blink donne le `click` à l'ancêtre commun : la page envoyait
+       `mousedown` sur `bord_droite`, `mouseup` sur `image`, `click` sur `BODY` — les
+       chevrons ne réagissaient JAMAIS, ni au harnais ni à un vrai doigt. Une hauteur
+       fixe de 46 px se centre exactement avec `calc(50% - 23px)` */
+    .bord {
+      position: absolute; top: calc(50% - 23px);
+      width: 34px; height: 46px; padding: 0; border: 0; border-radius: 7px;
+      background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.14 * var(--popup-fond-alpha, 1)));
+      color: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.85 * max(1, var(--popup-alpha, 1))));
+      font: inherit; line-height: 1; font-size: 18px; cursor: default;
+      opacity: 0; pointer-events: none; transition: opacity .14s ease, background .14s ease;
+    }
+    body.fleches .bord { opacity: 1; pointer-events: auto; }
+    /* Le côté vers lequel la souris va : c'est la surbrillance demandée. */
+    body.pres_gauche #bord_gauche, body.pres_droite #bord_droite {
+      background: rgba(var(--popup-accent-solid-rgb, 255, 255, 255), calc(.5 * var(--popup-fond-alpha, 1)));
+      color: rgba(var(--popup-on-accent-rgb, 0, 0, 0), 1); opacity: 1;
+    }
+    #bord_gauche { left: 10px; }
+    #bord_droite { right: 10px; }
+    /* Pas de voisin de ce côté : la flèche disparait (elle ne se grise pas — il n'y
+       a rien à cliquer, et une flèche grisée se lit « attendez »). */
+    .bord[hidden], .bouton[hidden] { display: none; }
+
+    /* ---- EN GRAND (double clic, voir `cef_visionneuse::basculer_l_agrandissement`)
+       Rien que l'image, sur un fond sombre : la bande de titre disparaît, et le
+       zoom (molette) fixe une TAILLE en pixels — l'image peut alors déborder, et
+       on s'y déplace en glissant (clic gauche maintenu), barres de défilement
+       cachées. ⚠️ Centrée par `margin: auto` SEULEMENT : un
+       `align-items: center` rognerait le haut et la gauche d'une image plus grande
+       que la zone, hors d'atteinte du défilement. */
+    body.grand #barre { display: none; }
+    body.grand #contenu { padding: 0; background: rgba(0, 0, 0, .9); }
+    body.grand #contenu.image { align-items: initial; justify-content: initial; }
+    body.grand.zoome #image { max-width: none; max-height: none; }
+    body.grand #contenu { scrollbar-width: none; }
+    body.grand #contenu::-webkit-scrollbar { display: none; }
+    body.grand.zoome #image { cursor: grab; }
+    body.grand.glisse #image { cursor: grabbing; }
+  </style>
+</head>
+<body>
+  <!-- ⛔ **AUCUN `menu.js`** : cette page est une FENÊTRE, sa taille est celle de
+       la zone cliente et ne se négocie pas (`content_factor` vaut 0 pour
+       `PopupPalette::Window`). Le charger poserait un `MutationObserver` qui
+       émettrait un `location.href` à chaque rendu — exactement le télescopage de
+       navigations que le dépôt documente. -->
+  <div id="barre">
+    <span id="nom"></span>
+    <span id="mention"></span>
+    <!-- Deux glyphes de Segoe UI Symbol, jamais des emojis : ils seraient rendus
+         en couleur par la police emoji. Le sens est porté par l'infobulle.
+         ⚠️ **LES CARACTÈRES SONT ÉCRITS EN CLAIR ICI, PAS EN `\uXXXX`** : un
+         échappement JavaScript n'est pas interprété dans du HTML — il
+         s'afficherait tel quel, cinq caractères à la place d'un losange. -->
+    <!-- ⭐ Les deux flèches de voisinage (demande du 2026-11-03), à la bande pour
+         qu'elles soient trouvables, et au bord de l'image pour qu'elles restent en
+         grand, où la bande est cachée. Carets de Segoe UI, jamais des emojis. -->
+    <button id="precedent" class="bouton" title="Fichier précédent"><span class="ico ico-caret-left"></span></button>
+    <button id="suivant" class="bouton" title="Fichier suivant"><span class="ico ico-caret-right"></span></button>
+    <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
+    <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="contenu">
+    <pre id="texte"></pre>
+    <img id="image" alt="" />
+    <div id="erreur"></div>
+  </div>
+  <!-- Les chevrons de bord, FRÈRES de `#contenu` et pas enfants : la zone d'image
+       défile, et un enfant absolu y serait rogné au lieu de rester au bord. -->
+  <button id="bord_gauche" class="bord" title="Fichier précédent"><span class="ico ico-caret-left"></span></button>
+  <button id="bord_droite" class="bord" title="Fichier suivant"><span class="ico ico-caret-right"></span></button>
+  <script src="menu_contextuel.js"></script>
+  <script>
+    function go(action) {
+      // ⚠️ Un segment, pas d'argument : la page ne connaît ni son chemin ni son
+      // créneau — c'est Rust qui sait QUELLE fenêtre parle (voir
+      // `cef_visionneuse::dispatch_actions`, qui draine les quatre slots).
+      location.href = "neuradesk://visionneuse/" + action;
+    }
+
+    const nom = document.getElementById("nom");
+    const mention = document.getElementById("mention");
+    const contenu = document.getElementById("contenu");
+    const texte = document.getElementById("texte");
+    const image = document.getElementById("image");
+    const erreur = document.getElementById("erreur");
+    const epingle = document.getElementById("epingle");
+    const precedent = document.getElementById("precedent");
+    const suivant = document.getElementById("suivant");
+    const bordGauche = document.getElementById("bord_gauche");
+    const bordDroite = document.getElementById("bord_droite");
+
+    // ⭐ **LA FLÈCHE DE VOISINAGE** — DEMANDE EXPLICITE (2026-11-03). Rust seul sait
+    // où aller : la page ne connaît ni le dossier ni l'ordre, et ne dit que
+    // « un voisin existe de ce côté » (`etat.precedent`, `etat.suivant`).
+    let dispo = { avant: false, apres: false };
+
+    // ⛔ **UN GESTE = UN CRAN.** Un double clic sur une flèche envoie DEUX « click » (la
+    // barre du lecteur de vidéos, elle, ne traite que le premier des trois messages
+    // Windows pour la même raison) : les laisser passer ferait sauter DEUX fichiers d'un
+    // seul geste, et le deuxième ne serait jamais vu — un fichier sauté par accident se
+    // lit comme une flèche qui marche trop vite. Le garde ne bloque pas deux clics
+    // volontaires espacés : DOUBLE_CLIC_MS reste sous le seuil d'un double clic. Les
+    // touches « ArrowLeft » / « ArrowRight » ne passent pas ici — une touche maintenue
+    // est un geste volontaire, pas un double clic.
+    const DOUBLE_CLIC_MS = 250;
+    let dernier_cran = 0;
+    function cran(action) {
+      const maintenant = performance.now();
+      if (maintenant - dernier_cran < DOUBLE_CLIC_MS) return;
+      dernier_cran = maintenant;
+      go(action);
+    }
+
+    precedent.addEventListener("click", () => cran("precedent"));
+    suivant.addEventListener("click", () => cran("suivant"));
+    bordGauche.addEventListener("click", () => cran("precedent"));
+    bordDroite.addEventListener("click", () => cran("suivant"));
+
+    // La souris dans la zone d'image allume les deux chevrons ; celui du côté où
+    // elle va s'allume davantage. ⛔ Une classe posée à la main, parce que `:hover`
+    // n'est pas tenu en OSR CEF (le dash dossier l'a déjà payé).
+    const ZONE_BORD = 110;
+    document.addEventListener("mousemove", (e) => {
+      const r = contenu.getBoundingClientRect();
+      const dedans = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+      document.body.classList.toggle("fleches", dedans && (dispo.avant || dispo.apres));
+      document.body.classList.toggle("pres_gauche", dispo.avant && e.clientX - r.left <= ZONE_BORD);
+      document.body.classList.toggle("pres_droite", dispo.apres && r.right - e.clientX <= ZONE_BORD);
+    });
+
+    // ⛔ **LA BANDE DE TITRE DÉPLACE LA FENÊTRE.** La fenêtre n'a pas de barre de
+    // titre Windows : c'est Rust qui envoie `WM_NCLBUTTONDOWN`/`HTCAPTION`, le
+    // geste natif (copié du Sélecteur de couleurs, qui est la seule autre
+    // fenêtre du dépôt). On le déclenche au `mousedown` sur la bande, JAMAIS sur
+    // un bouton — sinon l'épinglage déplacerait la fenêtre.
+    document.getElementById("barre").addEventListener("mousedown", (e) => {
+      if (e.target.closest("button")) return;
+      go("deplacer");
+    });
+
+    epingle.addEventListener("click", () => go("epingler"));
+
+    // ⭐ DOUBLE CLIC SUR L'IMAGE : EN GRAND, OU DE RETOUR — DEMANDE EXPLICITE
+    // (2026-10-19). Rust choisit l'écran entier ou la zone centrale (Réglages),
+    // puis appelle `setGrand`. Échap ramène aussi.
+    image.addEventListener("dblclick", () => go("agrandir"));
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && document.body.classList.contains("grand")) go("agrandir");
+      // ⭐ `←` / `→` sont libres ici (le lecteur de vidéos, lui, les a pris pour
+      // ±5 s). Rien quand il n'y a pas de voisin de ce côté : une touche qui ne
+      // fait rien est ce qu'un utilisateur appelle « l'application est cassée ».
+      if (e.key === "ArrowLeft" && dispo.avant) { e.preventDefault(); go("precedent"); }
+      if (e.key === "ArrowRight" && dispo.apres) { e.preventDefault(); go("suivant"); }
+    });
+
+    // ⭐ LE ZOOM, EN GRAND SEULEMENT — À LA MOLETTE SEULE (demande du 2026-10-19 :
+    // « mets-le sur la molette seule », c'était Ctrl+molette), centré sur le
+    // pointeur : le point sous la souris reste sous la souris. `echelle` : la
+    // taille affichée sur la taille réelle ; `null` = ajustée à la zone (sans
+    // agrandir une petite image). On se déplace en glissant (voir plus bas).
+    const ZOOM_PAS = 1.25;
+    const ZOOM_MAX = 16;
+    let echelle = null;
+
+    function echelleAjustee() {
+      if (!image.naturalWidth || !image.naturalHeight) return 1;
+      return Math.min(1, contenu.clientWidth / image.naturalWidth, contenu.clientHeight / image.naturalHeight);
+    }
+
+    function appliquerZoom() {
+      document.body.classList.toggle("zoome", echelle !== null);
+      if (echelle === null) {
+        image.style.width = "";
+        image.style.height = "";
+        return;
+      }
+      image.style.width = (image.naturalWidth * echelle).toFixed(1) + "px";
+      image.style.height = (image.naturalHeight * echelle).toFixed(1) + "px";
+    }
+
+    contenu.addEventListener("wheel", (e) => {
+      if (!document.body.classList.contains("grand") || !image.naturalWidth) return;
+      e.preventDefault();
+      const avant = image.getBoundingClientRect();
+      const fx = (e.clientX - avant.left) / avant.width;
+      const fy = (e.clientY - avant.top) / avant.height;
+      const ajustee = echelleAjustee();
+      const actuelle = echelle === null ? ajustee : echelle;
+      let suivante = e.deltaY < 0 ? actuelle * ZOOM_PAS : actuelle / ZOOM_PAS;
+      suivante = Math.min(ZOOM_MAX, Math.max(Math.min(ajustee, 1) / 8, suivante));
+      // Revenir près de l'ajustement, c'est y revenir : pas de « presque ajusté ».
+      echelle = Math.abs(suivante - ajustee) / ajustee < 0.05 ? null : suivante;
+      appliquerZoom();
+      const apres = image.getBoundingClientRect();
+      contenu.scrollLeft += apres.left + fx * apres.width - e.clientX;
+      contenu.scrollTop += apres.top + fy * apres.height - e.clientY;
+    }, { passive: false });
+
+    // ⭐ SE DÉPLACER DANS L'IMAGE ZOOMÉE, CLIC GAUCHE MAINTENU — DEMANDE EXPLICITE
+    // (2026-10-19). La zone défile de ce que la souris a parcouru, en sens
+    // inverse : l'image suit la main. Le suivi est sur le DOCUMENT, pour qu'un
+    // glissement qui sort de l'image ne s'arrête pas. ⚠️ `dragstart` est bloqué :
+    // sinon Chromium lance le glisser-déposer natif de l'image au premier pixel.
+    let glisse = null;
+    image.addEventListener("dragstart", (e) => e.preventDefault());
+    image.addEventListener("mousedown", (e) => {
+      if (e.button !== 0 || !document.body.classList.contains("zoome")) return;
+      e.preventDefault();
+      glisse = { x: e.clientX, y: e.clientY, gauche: contenu.scrollLeft, haut: contenu.scrollTop };
+      document.body.classList.add("glisse");
+    });
+    document.addEventListener("mousemove", (e) => {
+      if (!glisse) return;
+      contenu.scrollLeft = glisse.gauche - (e.clientX - glisse.x);
+      contenu.scrollTop = glisse.haut - (e.clientY - glisse.y);
+    });
+    document.addEventListener("mouseup", () => {
+      glisse = null;
+      document.body.classList.remove("glisse");
+    });
+
+    // Appelée depuis Rust (`cef_visionneuse::basculer_l_agrandissement`) ; le
+    // zoom repart ajusté dans les deux sens.
+    window.setGrand = function (grand) {
+      document.body.classList.toggle("grand", !!grand);
+      echelle = null;
+      appliquerZoom();
+    };
+    document.getElementById("fermer").addEventListener("click", () => go("fermer"));
+
+    // Appelée depuis Rust (`cef_visionneuse::pousser`).
+    window.setApercu = function (etat) {
+      document.documentElement.style.setProperty("--text-scale", etat.echelle || 1);
+      nom.textContent = etat.nom || "";
+      epingle.setAttribute("aria-pressed", String(!!etat.epingle));
+      // ⚠️ **LE SIGNE CHANGE, PAS SEULEMENT LA COULEUR** — un losange plein
+      // contre un losange vide se lit d'un coup d'œil ; une nuance de fond, non.
+      epingle.innerHTML = etat.epingle ? '<span class="ico ico-push-pin-fill"></span>' : '<span class="ico ico-push-pin"></span>';
+      epingle.title = etat.epingle
+        ? "Ne plus rester au premier plan"
+        : "Rester au premier plan";
+
+      // ⭐ **L'ÉTAT DES FLÈCHES, AVANT LA SORTIE SUR L'IMAGE DÉJÀ CHARGÉE.** La
+      // rafale repousse le même état soixante fois (voir `cef_visionneuse::ETAT`) :
+      // placer ceci après la sortie laisserait les flèches du premier fichier
+      // éteintes jusqu'à ce qu'une autre image arrive. Le nom du voisin va dans
+      // l'infobulle, pour qu'un clic dise où il mène avant qu'on le clique.
+      dispo = { avant: !!etat.precedent, apres: !!etat.suivant };
+      const fleches = [
+        [precedent, etat.nom_precedent, dispo.avant],
+        [bordGauche, etat.nom_precedent, dispo.avant],
+        [suivant, etat.nom_suivant, dispo.apres],
+        [bordDroite, etat.nom_suivant, dispo.apres],
+      ];
+      for (const [bouton, voisin, visible] of fleches) {
+        bouton.hidden = !visible;
+        bouton.title = visible ? (voisin ? `Voir ${voisin}` : "Voir le fichier voisin") : "";
+      }
+      if (!dispo.avant || !dispo.apres) document.body.classList.remove("pres_gauche", "pres_droite");
+
+      // ⛔ **LA MÊME IMAGE NE SE RECHARGE PAS** : l'état est repoussé une seconde
+      // durant (la rafale, voir `cef_visionneuse::ETAT`), et remettre `src`
+      // relirait l'image à chaque poussée.
+      if (etat.genre === "image" && image.getAttribute("src") === etat.image) return;
+
+      // On remet TOUT à zéro à chaque état : un même créneau peut passer d'un
+      // texte à une image, et une image resterait affichée sous le texte suivant.
+      texte.textContent = "";
+      image.removeAttribute("src");
+      image.style.display = "none";
+      contenu.classList.remove("image");
+      erreur.style.display = "none";
+      mention.textContent = "";
+
+      // Une autre image repart ajustée.
+      echelle = null;
+      appliquerZoom();
+
+      if (etat.genre === "image") {
+        // Une image que le moteur ne sait pas décoder (ou disparue) se DIT, au
+        // lieu d'une fenêtre vide.
+        image.onerror = () => {
+          image.style.display = "none";
+          contenu.classList.remove("image");
+          erreur.textContent = "Cette image n'a pas pu être affichée";
+          erreur.style.display = "block";
+        };
+        image.src = etat.image;
+        image.style.display = "block";
+        contenu.classList.add("image");
+        return;
+      }
+      if (etat.genre === "erreur") {
+        erreur.textContent = etat.erreur || "Fichier illisible";
+        erreur.style.display = "block";
+        return;
+      }
+      texte.textContent = etat.texte || "";
+      // Les deux mentions qui comptent, et elles se cumulent : l'encodage (pour
+      // qu'un texte « approximé » ne passe pas pour une faute de frappe) et la
+      // troncature (pour qu'un fichier coupé ne passe pas pour un fichier court).
+      const morceaux = [];
+      if (etat.approximatif) morceaux.push(etat.encodage);
+      if (etat.tronque) morceaux.push("début du fichier seulement");
+      mention.textContent = morceaux.join(" · ");
+    };
+  </script>
+</body>
+</html>

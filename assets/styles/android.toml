@@ -1,0 +1,27 @@
+# Style « Android » — DEMANDE EXPLICITE (2026-10-12) : « le thème android ».
+#
+# Material You (Material 3, Android 12 et suivants) : des boutons en PILULE
+# (20 px, la moitié de leur hauteur), des cartes à 16 px et des fenêtres à
+# 28 px comme les dialogues de Material 3, des icônes RONDES comme celles du
+# lanceur Pixel (24 px : un cercle à la taille par défaut de 48 px), aucun
+# contour — Material sépare les surfaces par leur ton —, la police Roboto, et
+# l'élément actif en aplat arrondi comme l'indicateur du tiroir de navigation.
+# Les couleurs vont avec la famille « Material You ».
+
+nom = "Android"
+
+[formes]
+rayon_petit = 8
+rayon_controle = 20
+rayon_surface = 16
+rayon_grand = 28
+rayon_icone = 24
+
+[traits]
+bordure_alpha = 0.0
+
+[texte]
+police = "Roboto"
+
+[structure]
+indicateur = "point"

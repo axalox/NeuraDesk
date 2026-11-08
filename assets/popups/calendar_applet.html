@@ -1,0 +1,1164 @@
+<!doctype html>
+<!--
+  win32::cef_calendar_applet (applet « calendrier » de la zone Intégrés) —
+  DEMANDE EXPLICITE (2026-09-23) : « une applet calendrier dans la zone
+  Intégrés de la barre de droite qui affichent les fêtes du jour et les dates
+  d'anniversaires avec la possibilité de mettre un rappel automatique », puis
+  « ajoute la possibilité de mettre des dates de fête personnalisée » et
+  « mets des fonds comme pour les autres dashs ».
+
+  ELLE DESSINE UNE GRILLE DE MOIS, ET ELLE EST NAVIGABLE — DEMANDE EXPLICITE
+  (2026-09-24) : « dans le dash calendrier j'aimerais avoir un calendrier pour
+  changer de jour ou de mois ». La grille montre, par case, le numéro du jour
+  ET le prénom qui y est fêté ; ◀ ▶ changent de mois, et cliquer une case
+  sélectionne ce jour — c'est alors SES fêtes que la liste du dessous affiche.
+  Le mois et la sélection vivent CÔTÉ RUST (`cef_calendar_applet::VUE`) : la
+  page ne fait que les demander par `calendar/mois` et `calendar/jour`.
+
+  ⚠️ **C'est la différence de fond avec `assets/popups/calendar.html`** (le mini
+  calendrier du clic sur l'horloge), qui porte sa propre grille mais **n'émet
+  RIEN** : lui est un MENU, mesuré par `menu.js`, où deux `location.href` d'une
+  même tâche se télescopent. Cette page-ci est un PANNEAU : sa taille est
+  imposée par `dash_rect`, elle ne charge pas `menu.js`, et elle peut donc
+  émettre à chaque clic. **Ne pas transposer une règle de l'une à l'autre.**
+
+  Tout le reste vient de Rust : les fêtes, les jours fériés et les dates saisies
+  sont des DONNÉES que `win32::fetes` et `config` portent, et la page ne fait
+  que les afficher et les éditer.
+
+  FONDS — `rgba(var(--popup-accent-rgb), calc(N * var(--popup-alpha)))`, les
+  MÊMES variables et les mêmes ordres de grandeur que dash.html/clipboard.html/
+  notes.html (voir `cef_popup::push_window_palette`, qui les pousse à chaque
+  frame depuis `render_if_visible`). La première version de cette page
+  utilisait des `rgba(255,255,255,…)` FIGÉS : elle ne suivait donc ni la
+  couleur de mise en avant de la fenêtre ni sa transparence, et ne ressemblait
+  pas à ses voisines — c'est ce qui a été signalé.
+
+  ÉTAT REÇU (window.setState) :
+    { "date": "mercredi 23 septembre 2026",
+      "aujourdhui": {"jour": 23, "mois": 9, "annee": 2026},
+      "selection": {"jour": 21, "mois": 9, "annee": 2026},
+      "estAujourdhui": false,
+      "mois": {"annee": 2026, "mois": 9,
+               "jours": [{"jour": 1, "evenements": [{nom, categorie, annee}]}]},
+      "fetes": [{nom, categorie}],
+      "dates": [{nom, jour, mois, rappel, genre, annee}],
+      "rappelsFetes": [{nom, jour, mois}] }
+      // ⚠️ `rappelsFetes` : les prénoms de la TABLE qui portent une alarme
+      // (`config::RappelFete`). Ils ne se désignent PAS par un rang mais par
+      // leur triplet (mois, jour, nom) — voir `ligneRappelFete`.
+      // genre : "anniversaire" | "fete"  ·  annee : un nombre, ou null
+      // `date` et `fetes` décrivent LA SÉLECTION, pas aujourd'hui.
+      // `mois.jours` ne porte que les jours NON VIDES (c'est `evenements_du_mois`
+      // qui décide) : la page ne doit pas supposer un tableau par jour.
+      // ⚠️ `annee` est FACULTATIVE (null quand elle est inconnue) — elle vit
+      // dans les DEUX objets et est lue par le calcul de l'âge. Elle manquait
+      // à cette description, comme à la ligne `add` plus bas : même dérive,
+      // corrigée des deux côtés.
+
+  ACTIONS ÉMISES (`neuradesk://calendar/<verbe>/…`, arguments encodés par
+  `encodeURIComponent` — voir la règle du dépôt sur les arguments de page) :
+    calendar/close
+    calendar/add/<genre>/<nom>/<jour>/<mois>/<0|1>/<annee>
+    calendar/modifier/<index>/<genre>/<nom>/<jour>/<mois>/<0|1>/<annee>
+    calendar/remove/<index>
+    calendar/rappel/<index>/<0|1>
+    calendar/chercher/<texte>
+    calendar/rappel-fete/<mois>/<jour>/<nom>/<0|1>
+    calendar/mois/<delta>
+    calendar/jour/<jour>
+    calendar/aujourdhui
+
+  ⚠️ CETTE LISTE DOIT RESTER LE MIROIR EXACT DES BRAS DU `match` DE
+  `cef_calendar_applet::dispatch_actions` — un bras supprimé en silence a déjà
+  coûté un aller-retour ici (le bras `rappel-fete`, emporté par un découpage par
+  index). C'est désormais un TEST qui le garde :
+  `cef_calendar_applet::tests::la_page_et_le_dispatch_acceptent_les_memes_verbes`
+  compare les verbes émis par cette page à ceux que Rust accepte. **Ajouter une
+  action ici sans le bras correspondant en face fait ÉCHOUER ce test** — et
+  l'inverse aussi.
+
+  ⚠️ `calendar/chercher` est la SEULE action qui RÉPOND : les autres modifient
+  l'état, celle-ci rend une liste, que Rust pousse en retour par
+  `window.setResultats` (voir `cef_calendar_applet::dispatch_actions`). La
+  recherche se fait donc DANS RUST, où vit la table — la faire descendre dans la
+  page coûterait des dizaines de kilo-octets par image, et la garder ici la
+  rendrait intestable sans CEF.
+
+  ⚠️ L'INDEX D'UNE DATE EST SON RANG DANS `state.dates`, TOUTES FAMILLES
+  CONFONDUES — c'est celui que `remove` et `rappel` attendent côté Rust. La
+  page ne le recalcule pas : elle le reçoit avec chaque entrée.
+
+  PAS de `background` sur `<html>`/`<body>` : transparent par défaut en rendu
+  hors-écran CEF.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<script src="menu_contextuel.js"></script>
+<style>
+  html {
+    /* **LE FACTEUR DE GROSSISSEMENT DU PANNEAU** — posé par `window.setState`
+       depuis `state.contentScale` (voir `cef_calendar_applet::push_state`, qui
+       le reçoit de `screen_content_scale`). Appliqué en `zoom` sur `body`.
+       ⚠️ **AUCUNE TAILLE NE DOIT LE MULTIPLIER ELLE-MÊME.** Il l'a fait :
+       quinze `calc(Npx * var(--text-scale))` sur les polices cohabitaient avec
+       ce zoom — les polices auraient été mises à l'échelle DEUX FOIS. C'est le
+       piège que `notes.html` signale au même endroit, et la raison pour laquelle
+       il n'emploie QUE le `zoom`. */
+    --text-scale: 1;
+    font-family: var(--nd-police);
+  }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    overflow-y: auto;
+    /* **LE GROSSISSEMENT DE TOUT LE PANNEAU** — voir `--text-scale`, en-tête.
+       `zoom` plutôt que des `calc()` sur chaque taille (polices, hauteur de
+       case, largeurs de champ, pastilles…) : une seule règle, et **rien ne peut
+       être oublié** — c'est exactement l'argument de `notes.html`.
+       ⚠️ Les deux dimensions sont divisées par le facteur pour **COMPENSER** ce
+       que `zoom` multiplie : sans elles, le contenu déborderait vers la droite
+       au lieu de remplir la fenêtre. */
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    min-height: calc(100vh / var(--text-scale));
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px 6px;
+  }
+  h1 {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 600;
+  }
+  /* ⚠️ MAJUSCULE AU PREMIER MOT SEULEMENT — `text-transform: capitalize` a été
+     essayé et RETIRÉ après capture : il capitalise CHAQUE mot, donc la date
+     s'affichait « Mercredi 23 Septembre 2026 », ce qui n'est pas du français
+     (Windows rend pourtant bien « mercredi 23 septembre » en minuscules, c'est
+     la page qui l'a abîmé). `::first-letter` dit ce qu'on veut dire. */
+  h1::first-letter { text-transform: uppercase; }
+  .close-btn {
+    background: none;
+    border: none;
+    color: inherit;
+    font-size: 16px;
+    cursor: pointer;
+    opacity: calc(.8 * max(1, var(--popup-alpha, 1)));
+  }
+  .close-btn:hover { opacity: 1; }
+  section { padding: 6px 16px 14px; }
+  h2 {
+    margin: 0 0 6px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    opacity: calc(.65 * max(1, var(--popup-alpha, 1)));
+  }
+  /* ---- LA GRILLE DU MOIS ---- */
+  .barre-mois { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  #mois-titre { flex: 1 1 auto; font-weight: 600; font-size: 15px; }
+  .barre-mois button {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 4px 10px;
+    font: inherit;
+    cursor: pointer;
+  }
+  .barre-mois button:hover { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  /* ⚠️ LARGEUR EXPLICITE ET `table-layout: fixed` — la leçon payée sur le mini
+     calendrier (`calendar.html`), où des cellules en pourcentage dans un
+     conteneur en `fit-content` se répondaient en CERCLE et donnaient une table
+     de **7 302 px de haut**. Ici le conteneur n'est pas en `fit-content`, mais la
+     règle est gratuite et rend la grille insensible au zoom du panneau. */
+  #grille { border-collapse: separate; border-spacing: 3px; table-layout: fixed; width: 100%; }
+  #grille th {
+    padding: 0 0 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    opacity: calc(.55 * max(1, var(--popup-alpha, 1)));
+  }
+  #grille td {
+    height: 46px;
+    padding: 3px 6px;
+    vertical-align: top;
+    border: 1px solid transparent;
+    border-radius: var(--nd-rayon-controle);
+    overflow: hidden;
+    cursor: pointer;
+    background: rgba(var(--popup-accent-rgb), calc(0.14 * var(--popup-fond-alpha, 1)));
+  }
+  #grille td.vide { background: none; cursor: default; }
+  /* ⭐ LE NUMÉRO DE SEMAINE (ISO 8601) — DEMANDE EXPLICITE (2026-10-14), comme
+     dans le calendrier du menu de l'horloge : une colonne étroite, sans fond ni
+     clic, pour ne pas se lire comme un jour. */
+  #grille th.semaine { width: 34px; }
+  #grille td.semaine {
+    background: none;
+    cursor: default;
+    padding: 3px 0;
+    text-align: center;
+    font-size: 11px;
+    font-weight: 600;
+    opacity: calc(.55 * max(1, var(--popup-alpha, 1)));
+  }
+  #grille td.semaine:hover { background: none; }
+  #grille td:hover:not(.vide) { background: rgba(var(--popup-accent-rgb), calc(0.28 * var(--popup-fond-alpha, 1))); }
+  #grille .num { font-size: 13px; font-weight: 600; }
+  #grille .nom {
+    display: block;
+    font-size: 11px;
+    opacity: calc(.7 * max(1, var(--popup-alpha, 1)));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* « Aujourd'hui » et « sélectionné » sont DEUX marques distinctes, comme dans
+     le mini calendrier : un fond plein pour le jour du jour, un CONTOUR pour la
+     sélection — sans quoi on ne saurait plus lequel est aujourd'hui quand on
+     sélectionne un autre jour. */
+  #grille td.today { background: rgba(var(--popup-accent-rgb), calc(0.34 * var(--popup-fond-alpha, 1))); }
+  #grille td.sel { border-color: rgb(var(--popup-accent-solid-rgb)); }
+  #grille td.today .num, #grille td.sel .num { opacity: 1; }
+  /* Les lignes portent un FOND, comme les `.row` des autres panneaux — c'est
+     ce qui fait lire une liste plutôt qu'un bloc de texte. */
+  .ligne {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    margin-bottom: 3px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-accent-rgb), calc(0.18 * var(--popup-fond-alpha, 1)));
+  }
+  .fete { display: flex; align-items: baseline; gap: 8px; }
+  /* La cloche d'une fête du jour se pousse à DROITE de la ligne, comme les trois
+     boutons des deux listes du bas — même lecture d'un bout à l'autre.
+     ⚠️ **LE SÉLECTEUR EST `>` POUR UNE RAISON** : `.fete` est AUSSI une classe de
+     PASTILLE (`span.pastille.fete`, voir `.pastille.fete` plus bas). Un
+     `.ligne .fete` sans enfant direct atteindrait la pastille et la ferait
+     GRANDIR — une pastille de 8 px étirée sur toute la ligne. */
+  .ligne > .fete { flex: 1 1 auto; }
+  /* La pastille dit la FAMILLE sans un mot de plus — un jour férié ne se lit
+     pas comme un saint, et la couleur le dit avant le texte. */
+  .pastille { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+  .pastille.ferie { background: #ff6b6b; }
+  .pastille.saint { background: rgb(var(--popup-fg-rgb, 255, 255, 255)); opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+  .pastille.civil { background: #7fd1ff; }
+  .pastille.tradition { background: #ffd166; }
+  /* ⚠️ **CES DEUX RÈGLES MANQUAIENT, ET C'ÉTAIT UN DÉFAUT VISIBLE** : les
+     résultats de recherche peignent leur pastille avec la clé de la catégorie
+     (`el("span", { class: "pastille " + r.categorie })`), et une date SAISIE y
+     arrive avec `anniversaire` ou `fete` — deux classes qui n'existaient dans
+     AUCUNE feuille de style, donc **une pastille transparente**, un trou dans la
+     ligne. Les quatre familles de la table avaient leur couleur, les deux de
+     l'utilisateur n'en avaient pas. Mêmes couleurs que `calendar.html`, qui a
+     reçu le même correctif. */
+  .pastille.anniversaire { background: #c792ea; }
+  .pastille.fete { background: #ff9f43; }
+  /* Voir `calendar.html` — la MÊME famille, la MÊME couleur : une famille sans
+     couleur donne une pastille transparente, un trou dans la ligne. */
+  .pastille.note { background: #7fe0c0; }
+  .categorie { opacity: calc(.55 * max(1, var(--popup-alpha, 1))); font-size: 12px; }
+  .vide { opacity: calc(.55 * max(1, var(--popup-alpha, 1))); font-style: italic; padding: 2px 8px; }
+
+  .ligne .nom { flex: 1 1 auto; }
+  .ligne .quand { opacity: calc(.6 * max(1, var(--popup-alpha, 1))); font-size: 12px; }
+  .ligne .aujourdhui { color: #ffd166; font-weight: 600; opacity: 1; }
+  .icon-btn {
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: 14px;
+    opacity: calc(.5 * max(1, var(--popup-alpha, 1)));
+    padding: 2px 6px;
+    border-radius: var(--nd-rayon-controle);
+  }
+  .icon-btn:hover {
+    opacity: 1;
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+  }
+  .icon-btn.actif { opacity: 1; }
+
+  /* Le sélecteur de famille — deux boutons EXCLUSIFS, comme le contrôle
+     segmenté des Réglages (`segmented`), plutôt qu'un `<select>` : trois
+     valeurs courtes se lisent mieux en boutons. */
+  .familles { display: flex; gap: 6px; margin-bottom: 8px; }
+  .familles button {
+    background: rgba(var(--popup-accent-rgb), calc(0.18 * var(--popup-fond-alpha, 1)));
+    border: 1px solid transparent;
+    border-radius: var(--nd-rayon-controle);
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    padding: 4px 12px;
+    opacity: calc(.7 * max(1, var(--popup-alpha, 1)));
+  }
+  .familles button:hover { opacity: 1; }
+  .familles button.choisi {
+    background: rgba(var(--popup-accent-rgb), calc(0.34 * var(--popup-fond-alpha, 1)));
+    border-color: rgba(var(--popup-accent-rgb), calc(0.6 * var(--popup-fond-alpha, 1)));
+    opacity: 1;
+    font-weight: 600;
+  }
+
+  .ajout { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  input {
+    background: rgba(var(--popup-accent-rgb), calc(0.18 * var(--popup-fond-alpha, 1)));
+    border: 1px solid rgba(var(--popup-accent-rgb), calc(0.3 * var(--popup-fond-alpha, 1)));
+    border-radius: var(--nd-rayon-controle);
+    color: inherit;
+    font: inherit;
+    padding: 5px 8px;
+  }
+  input#nom { flex: 1 1 140px; min-width: 90px; }
+  input#jour, input#mois { width: 52px; text-align: center; }
+  input#annee { width: 68px; text-align: center; }
+  button.ajouter {
+    background: rgba(var(--popup-accent-rgb), calc(0.28 * var(--popup-fond-alpha, 1)));
+    border: 1px solid rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1)));
+    border-radius: var(--nd-rayon-controle);
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    padding: 5px 12px;
+  }
+  button.ajouter:hover { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  /* « Annuler » est plus DISCRET que l'action principale : même forme, sans
+     bordure et avec un fond plus faible. C'est l'écart entre les deux qui dit
+     lequel engage — les peindre pareil rendrait le choix ambigu au moment
+     précis où l'on ne veut pas se tromper. */
+  button.ajouter.annuler {
+    background: rgba(var(--popup-accent-rgb), calc(0.14 * var(--popup-fond-alpha, 1)));
+    border-color: transparent;
+  }
+  button.ajouter.annuler:hover { background: rgba(var(--popup-accent-rgb), calc(0.28 * var(--popup-fond-alpha, 1))); }
+  label.case { display: flex; align-items: center; gap: 4px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+  .erreur { color: #ff9d9d; min-height: 1em; font-size: 12px; }
+  input#recherche { width: 100%; box-sizing: border-box; }
+  /* Pendant une recherche, les sections habituelles s'effacent — voir le
+     commentaire du champ. `body.recherche` est posé par le script. */
+  body.recherche section.normal { display: none; }
+  .resultat { display: flex; align-items: baseline; gap: 8px; }
+  .resultat .date {
+    flex: 0 0 auto;
+    width: 92px;
+    opacity: calc(.7 * max(1, var(--popup-alpha, 1)));
+    font-size: 12px;
+  }
+  .resultat .nom { flex: 1 1 auto; }
+  .compte { opacity: calc(.55 * max(1, var(--popup-alpha, 1))); font-size: 12px; padding: 4px 8px; }
+  /* LES DEUX FAMILLES ENREGISTRÉES, CÔTE À CÔTE — DEMANDE EXPLICITE : « les fêtes
+     à gauche les anniversaires à droite ».
+     `grid` et NON `flex` : les deux colonnes se partagent la largeur à parts
+     ÉGALES, quel que soit leur nombre de lignes. Avec `flex`, la colonne la plus
+     fournie prendrait la place, et les deux listes changeraient de largeur à
+     chaque ajout — l'inverse de ce qu'on attend d'un tableau qu'on parcourt.
+     Pas de `gap` : chaque `section` garde son retrait habituel de 16 px, donc les
+     colonnes sont séparées de 32 px et leurs bords EXTÉRIEURS restent alignés sur
+     ceux des sections pleine largeur (Fêtes du jour, Ajouter une date). */
+  .deux-colonnes {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="titre">&nbsp;</h1>
+  <button class="close-btn" onclick="go('close')" title="Fermer"><span class="ico ico-x"></span></button>
+</header>
+
+<section>
+  <h2>Rechercher une fête</h2>
+  <!-- DEMANDE EXPLICITE (2026-09-23) : « une possibilité de recherche dans le
+       dash calendrier pour rechercher une chaîne de texte ». La recherche
+       couvre TOUTE L'ANNÉE (voir win32::fetes::chercher), pas seulement ce qui
+       est affiché — c'est ce qui rend « quand est la Sainte Barbe ? »
+       possible. -->
+  <input id="recherche" type="text" placeholder="Nom d'une fête, d'un saint…" autocomplete="off">
+  <!-- Les résultats REMPLACENT la vue normale tant qu'une recherche est en
+       cours (`masquerPourRecherche`) : une liste de résultats qui s'ajouterait
+       sous les sections habituelles les ferait défiler hors de l'écran, et on
+       ne saurait plus si l'on regarde une réponse ou l'état courant. -->
+  <div id="resultats"></div>
+</section>
+
+<!-- LA GRILLE DU MOIS — DEMANDE EXPLICITE (2026-09-24) : « dans le dash
+     calendrier j'aimerais avoir un calendrier pour changer de jour ou de mois ».
+     Chaque case porte le numéro du jour ET le prénom qui y est fêté.
+     ⚠️ Elle garde la classe `normal`, comme ses voisines : c'est elle qui
+     l'efface pendant une recherche (voir le commentaire des deux colonnes). -->
+<section class="normal">
+  <h2>Calendrier</h2>
+  <div class="barre-mois">
+    <button class="fleche" onclick="go('mois', '-1')" title="Mois précédent">&#9664;</button>
+    <span id="mois-titre"></span>
+    <button class="fleche" onclick="go('mois', '1')" title="Mois suivant">&#9654;</button>
+    <button class="aujourdhui" onclick="go('aujourdhui')">Aujourd'hui</button>
+  </div>
+  <table id="grille">
+    <thead><tr id="jours-semaine"></tr></thead>
+    <tbody id="grille-corps"></tbody>
+  </table>
+</section>
+
+<section class="normal">
+  <!-- ⚠️ L'`id` EXISTE parce que le titre change : sur un jour sélectionné il dit
+       « Fêtes du 21 septembre » plutôt que « Fêtes du jour » — sans quoi la page
+       afficherait les fêtes d'un autre jour sous un titre qui ment. -->
+  <h2 id="titre-fetes">Fêtes du jour</h2>
+  <div id="fetes"></div>
+</section>
+
+<!-- LES DEUX FAMILLES **ENREGISTRÉES**, CÔTE À CÔTE — DEMANDE EXPLICITE
+     (2026-09-23) : « les éléments enregistrés pourraient-ils apparaître sur deux
+     colonnes, les fêtes à gauche les anniversaires à droite ».
+     ⚠️ Les deux gardent la classe `normal` : c'est ELLE qui les efface pendant une
+     recherche (`body.recherche section.normal`), et l'oublier ferait réapparaître
+     les listes sous les résultats. -->
+<div class="deux-colonnes">
+  <section class="normal">
+    <!-- « FÊTES » — DEMANDE EXPLICITE (2026-09-24) : « renomme cette liste
+         FÊTES ». Elle porte DEUX sortes de lignes, FUSIONNÉES et triées
+         ensemble : les fêtes saisies par l'utilisateur et les prénoms de la
+         TABLE qui ont une alarme (voir `rendreColonneFetes`) — d'où un titre qui
+         ne dit plus « personnalisées », qui ne décrirait plus que la moitié de
+         ce qu'on y voit. -->
+    <h2>Fêtes</h2>
+    <div id="fetes-perso"></div>
+  </section>
+  <section class="normal">
+    <h2>Anniversaires</h2>
+    <div id="anniversaires"></div>
+  </section>
+</div>
+
+<section class="normal">
+  <!-- ⚠️ CE FORMULAIRE SERT À DEUX CHOSES — ajouter ET modifier. C'est le TITRE
+       qui porte l'`id`, parce qu'il n'est plus un texte fixe : `commencerEdition`
+       le change, et c'est la première des trois marques du mode (avec le libellé
+       du bouton et la présence d'« Annuler »). Voir `majModeSaisie`.
+       Pourquoi le formulaire plutôt qu'une ligne éditable sur place : la page est
+       RECONSTRUITE à chaque état poussé par Rust (`setState` → `rendreDates`), donc
+       un éditeur en place serait détruit par le moindre rafraîchissement — cliquer
+       la cloche d'une autre ligne pendant l'édition effacerait ce qu'on tape. Ici
+       le formulaire n'est jamais reconstruit : il change d'état. -->
+  <h2 id="titre-saisie">Ajouter une date</h2>
+  <div class="familles" id="familles"></div>
+  <div class="ajout">
+    <input id="nom" type="text" placeholder="Nom ou libellé" maxlength="40">
+    <input id="jour" type="number" min="1" max="31" placeholder="JJ">
+    <input id="mois" type="number" min="1" max="12" placeholder="MM">
+    <!-- ANNÉE FACULTATIVE — DEMANDE EXPLICITE (2026-09-23) : « pour les dates
+         d'anniversaire j'aimerais pouvoir ajouter l'année sur quatre chiffres ».
+         Laissée vide, la date est exactement ce qu'elle était avant : elle
+         revient chaque année, simplement on ne connaît pas l'âge. -->
+    <input id="annee" type="number" min="1000" max="9999" placeholder="AAAA" title="Année (facultative)">
+    <label class="case"><input id="rappel" type="checkbox" checked> Rappel</label>
+    <button class="ajouter" id="valider" onclick="validerSaisie()">Ajouter</button>
+    <!-- N'apparaît QU'EN MODIFICATION (voir `majModeSaisie`) : en ajout, il n'y a
+         rien à annuler — un bouton qui ne ferait rien serait pire que pas de
+         bouton, comme la cloche d'une fête à date calculée dans la recherche. -->
+    <button class="ajouter annuler" id="annuler" onclick="annulerEdition()" style="display: none">Annuler</button>
+  </div>
+  <div class="erreur" id="erreur"></div>
+</section>
+
+<script>
+  // `el` et `go` — MÊMES HELPERS que les autres pages du dépôt (voir
+  // assets/popups/clipboard.html), sans quoi chaque page réinventerait sa
+  // façon de poser un attribut ou d'émettre une action.
+  function el(tag, attrs, children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (key === "class") node.className = value;
+      // ⛔ **TOUT `on…` PASSE PAR `addEventListener`.** Ce helper ne traitait que
+      // `onclick`, et renvoyait tout le reste à `setAttribute` — donc
+      // `onchange: (e) => …` devenait une CHAÎNE jamais exécutée. Corrigé ici AVANT
+      // d'en avoir besoin : ce défaut a frappé deux fois le 2026-09-24 (`notes.html`,
+      // puis `settings.html` où il a tué les deux sélecteurs de son des rappels), et
+      // chaque fois parce que le correctif avait été appliqué LÀ OÙ IL S'ÉTAIT
+      // MANIFESTÉ, pas à la classe.
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value);
+    }
+    for (const child of children || []) {
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+    return node;
+  }
+
+  // Les arguments sont ENCODÉS segment par segment (règle du dépôt : sans
+  // cela, un libellé contenant « / » fabriquerait une action d'une autre
+  // arité, et Rust la refuserait).
+  function go(...segments) {
+    location.href = "neuradesk://calendar/" + segments.map(encodeURIComponent).join("/");
+  }
+
+  const MOIS = ["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"];
+  // Les familles viennent de Rust (`fetes::Categorie`) sous forme de chaîne
+  // minuscule ; ce tableau ne fait que les NOMMER en français pour l'affichage.
+  const CATEGORIE_LIBELLE = {
+    ferie: "jour férié", saint: "fête du prénom", civil: "fête civile", tradition: "tradition",
+    // Les deux familles SAISIES (voir `fetes::Categorie::AnniversaireSaisi`/
+    // `FeteSaisie`) — elles n'existent pas dans la table, et les peindre avec
+    // les clés de celle-ci serait un contresens.
+    anniversaire: "anniversaire", fete: "fête personnalisée",
+    note: "alarme de note",
+  };
+  // Les deux familles de dates SAISIES (voir `config::Genre`) — mêmes clés
+  // que le fichier et que Rust, jamais réécrites ici.
+  const GENRES = [["anniversaire", "Anniversaire"], ["fete", "Fête personnalisée"]];
+
+  let state = null;
+  let aujourdhui = { jour: 0, mois: 0 };
+  // Le genre choisi dans le sélecteur — « anniversaire » au départ, parce que
+  // c'est la demande d'origine et le cas le plus fréquent.
+  let genreChoisi = "anniversaire";
+  // ⚠️ LE RANG DE LA DATE EN COURS DE MODIFICATION, dans `state.dates` TOUTES
+  // FAMILLES CONFONDUES — le MÊME espace d'index que `remove` et `rappel`, jamais
+  // le rang affiché dans une des deux listes. `null` = le formulaire AJOUTE.
+  // Voir la garde de `setState`, qui l'annule dès que les rangs ont pu glisser.
+  let editionIndex = null;
+  // ⛔ **LE GARDE QUI REND LES BOUTONS CLIQUABLES** — voir `setState`, qui porte
+  // la démonstration complète et les mesures. En un mot : Rust repousse l'état À
+  // CHAQUE FRAME, donc sans ce garde les deux listes sont reconstruites 60 fois
+  // par seconde, et un clic — dont l'appui et le relâchement tombent de part et
+  // d'autre d'une reconstruction — **n'atteint jamais son bouton**.
+  let dernierEtatJson = null;
+
+  // Les initiales des jours, LUNDI PREMIER — même ordre que `calendar.html` et
+  // que `win32::popup_menu::render_calendar`, pour que les trois grilles du
+  // dépôt ne puissent pas diverger.
+  const JOURS_SEMAINE = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."];
+
+  // **LA GRILLE DU MOIS** — chaque case porte le numéro du jour ET le prénom qui
+  // y est fêté. Le MOIS ENTIER arrive de Rust (`push_state` → `mois.jours`), donc
+  // la page ne calcule aucune fête : elle range ce qu'elle reçoit.
+  //
+  // ⚠️ **LE DÉCALAGE DU PREMIER JOUR SE CALCULE ICI, EN JS** — et c'est licite :
+  // `getDay()` sur une date FIXE ne dépend pas de l'horloge de la machine, alors
+  // que la page s'interdit partout ailleurs de déduire « quel jour sommes-nous »
+  // autrement que de `state.aujourdhui` (voir `joursAvant`). Même choix que
+  // `calendar.html`, qui a la seule autre grille du dépôt.
+  function rendreGrille() {
+    const m = state.mois;
+    document.getElementById("mois-titre").textContent = MOIS[m.mois - 1] + " " + m.annee;
+
+    // `mois.jours` ne porte que les jours NON VIDES (`fetes::evenements_du_mois`
+    // décide) : les autres n'ont pas de case dans cette table.
+    const parJour = new Map();
+    for (const j of m.jours) parJour.set(j.jour, j.evenements);
+
+    const entete = document.getElementById("jours-semaine");
+    entete.replaceChildren();
+    entete.appendChild(el("th", { class: "semaine", title: "Numéro de la semaine" }, ["sem."]));
+    for (const libelle of JOURS_SEMAINE) entete.appendChild(el("th", {}, [libelle]));
+
+    const corps = document.getElementById("grille-corps");
+    corps.replaceChildren();
+    const decalage = (new Date(m.annee, m.mois - 1, 1).getDay() + 6) % 7;
+    const longueur = new Date(m.annee, m.mois, 0).getDate();
+    // Chaque rangée s'ouvre sur le NUMÉRO DE SEMAINE de son premier jour posé :
+    // une rangée va du lundi au dimanche, comme une semaine ISO. Elle est donc
+    // pleine à HUIT cases, et ouverte paresseusement — au jour qui la commence.
+    const nouvelleLigne = (jour) => el("tr", {}, [el("td", { class: "semaine" }, [String(semaineIso(m.annee, m.mois - 1, jour))])]);
+    let ligne = nouvelleLigne(1);
+    const poser = (td) => {
+      ligne.appendChild(td);
+      if (ligne.children.length === 8) { corps.appendChild(ligne); ligne = null; }
+    };
+    for (let i = 0; i < decalage; i++) poser(el("td", { class: "vide" }, []));
+    for (let jour = 1; jour <= longueur; jour++) {
+      if (!ligne) ligne = nouvelleLigne(jour);
+      const classes = ["jour"];
+      const estAujourdhui = m.annee === aujourdhui.annee && m.mois === aujourdhui.mois && jour === aujourdhui.jour;
+      const estChoisi = m.annee === state.selection.annee && m.mois === state.selection.mois && jour === state.selection.jour;
+      if (estAujourdhui) classes.push("today");
+      if (estChoisi) classes.push("sel");
+      const evenements = parJour.get(jour) || [];
+      const enfants = [el("span", { class: "num" }, [String(jour)])];
+      // Le PREMIER évènement est le saint : `evenements_du_mois` met les fêtes de
+      // la table avant les dates saisies. Un jour qui en porte plusieurs n'en
+      // montre qu'un — la liste du dessous les dit tous.
+      if (evenements.length) enfants.push(el("span", { class: "nom" }, [evenements[0].nom]));
+      const td = el("td", { class: classes.join(" ") }, enfants);
+      td.addEventListener("click", () => go("jour", String(jour)));
+      poser(td);
+    }
+    if (ligne) corps.appendChild(ligne);
+  }
+
+  // **LE NUMÉRO DE SEMAINE ISO 8601** — la semaine qui contient le JEUDI de la
+  // semaine du jour donné ; la semaine 1 est celle du 4 janvier. En UTC : un
+  // passage à l'heure d'été ne doit pas décaler la division par 7. Même calcul
+  // que `calendar.html`.
+  function semaineIso(annee, mois0, jour) {
+    const d = new Date(Date.UTC(annee, mois0, jour));
+    d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7) + 3);
+    const premierJeudi = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
+    premierJeudi.setUTCDate(premierJeudi.getUTCDate() - ((premierJeudi.getUTCDay() + 6) % 7) + 3);
+    return 1 + Math.round((d - premierJeudi) / (7 * 86400000));
+  }
+
+  // Le titre de la liste : « Fêtes du jour » seulement quand c'est le jour du
+  // jour — sinon il dirait les fêtes d'un autre jour sous un titre qui ment.
+  function rendreTitreFetes() {
+    const s = state.selection;
+    document.getElementById("titre-fetes").textContent = state.estAujourdhui
+      ? "Fêtes du jour"
+      : "Fêtes du " + s.jour + " " + MOIS[s.mois - 1];
+  }
+
+  function rendreFetes() {
+    const zone = document.getElementById("fetes");
+    zone.replaceChildren();
+    if (!state.fetes.length) {
+      zone.appendChild(el("div", { class: "vide" }, [
+        state.estAujourdhui ? "Aucune fête aujourd'hui." : "Aucune fête ce jour-là.",
+      ]));
+      return;
+    }
+    for (const f of state.fetes) {
+      zone.appendChild(el("div", { class: "ligne" }, [
+        el("div", { class: "fete" }, [
+          el("span", { class: "pastille " + f.categorie }),
+          el("span", {}, [f.nom]),
+          el("span", { class: "categorie" }, [CATEGORIE_LIBELLE[f.categorie] || f.categorie]),
+        ]),
+        // **LA CLOCHE D'UNE FÊTE DU JOUR** — DEMANDE EXPLICITE (2026-09-24) :
+        // « pouvoir rajouter un rappel de fête depuis le dash calendrier en
+        // cliquant sur une cloche affichée sur les prénoms du jour sélectionné ».
+        //
+        // ⚠️ **LE TRIPLET EST CELUI DU JOUR AFFICHÉ** (`state.selection`), pas
+        // celui d'aujourd'hui : la grille peut montrer le 21 septembre, et poser
+        // l'alarme sur le 24 serait un contresens SILENCIEUX — elle sonnerait un
+        // autre jour que celui qu'on avait sous les yeux.
+        //
+        // ⚠️ Le verbe `calendar/rappel-fete` existe déjà (il sert aux résultats de
+        // recherche) : rien à ajouter au `match` de Rust, donc le test du miroir
+        // des verbes reste vert. Le nom passé est CELUI DE LA TABLE — c'est la
+        // clé exacte que `fetes::rappel_fete_actif` compare.
+        el("button", {
+          class: "icon-btn" + (f.rappel ? " actif" : ""),
+          title: f.rappel ? "Alarme posée sur cette fête — cliquer pour la retirer" : "Poser une alarme sur cette fête",
+          onclick: () => go("rappel-fete", String(state.selection.mois), String(state.selection.jour), f.nom, f.rappel ? "0" : "1"),
+        }, [f.rappel ? "🔔" : "🔕"]),
+      ]));
+    }
+  }
+
+  // **DANS COMBIEN DE JOURS tombe le PROCHAIN (jour, mois)** — 0 aujourd'hui.
+  //
+  // PURE, et c'est elle qui décide de l'ordre des deux listes (DEMANDE EXPLICITE :
+  // « j'aimerais que les prochains évènements les plus proches soient affichés en
+  // haut de liste »). Elle ne connaît que la date du jour, que Rust pousse dans
+  // `state.aujourdhui` — la page ne lit JAMAIS `Date()`, pour que l'affichage suive
+  // l'application et non l'horloge du navigateur.
+  //
+  // L'année ne compte pas : un anniversaire revient chaque année, donc si la date
+  // est déjà passée cette année, c'est celle de l'an prochain qui compte.
+  function joursAvant(jour, mois) {
+    const a = aujourdhui.annee;
+    const minuit = (an) => Date.UTC(an, mois - 1, jour);
+    const depart = Date.UTC(a, aujourdhui.mois - 1, aujourdhui.jour);
+    const cetteAnnee = minuit(a);
+    return Math.round(((cetteAnnee >= depart ? cetteAnnee : minuit(a + 1)) - depart) / 86400000);
+  }
+
+  // **UNE COLONNE D'UNE SEULE FAMILLE SAISIE** — les anniversaires. La colonne
+  // des fêtes, elle, est FUSIONNÉE avec les alarmes de la table : voir
+  // `rendreColonneFetes`.
+  function rendreDates(zoneId, genre) {
+    const zone = document.getElementById(zoneId);
+    zone.replaceChildren();
+    const lignes = state.dates
+      .map((d, index) => ({ d, index }))
+      .filter(({ d }) => d.genre === genre)
+      // ⚠️ **LE TRI EST D'AFFICHAGE SEUL, ET L'INDEX RESTE ATTACHÉ À SON
+      // ÉLÉMENT.** `index` est le rang dans `state.dates` TOUTES FAMILLES
+      // CONFONDUES — c'est celui que Rust attend pour `remove`, `rappel` et
+      // `modifier`. Trier le TABLEAU DE RÉFÉRENCE, ou recalculer l'index après
+      // coup, ferait agir ces trois boutons sur une AUTRE date que celle
+      // affichée : c'est exactement le défaut d'index périmé que
+      // `republier_recherche` a corrigé côté recherche.
+      //
+      // Égalité de jours (deux fêtes le même jour) : on départage par le NOM, pour
+      // que l'ordre ne dépende pas de celui du fichier.
+      .sort((a, b) => {
+        const ecart = joursAvant(a.d.jour, a.d.mois) - joursAvant(b.d.jour, b.d.mois);
+        return ecart !== 0 ? ecart : a.d.nom.localeCompare(b.d.nom);
+      });
+    if (!lignes.length) {
+      zone.appendChild(el("div", { class: "vide" }, ["Aucun anniversaire enregistré."]));
+      return;
+    }
+    for (const { d, index } of lignes) zone.appendChild(ligneDateSaisie(d, index));
+  }
+
+  // **LA LIGNE D'UNE DATE SAISIE** — extraite pour que les DEUX colonnes **et la
+  // fusion des fêtes** (voir `rendreColonneFetes`) la partagent au lieu d'en
+  // entretenir deux copies qui divergeraient.
+  //
+  // ⚠️ Elle n'est **PAS générique** : ses trois boutons n'existent que pour une
+  // date saisie, et `index` est le rang dans `state.dates` **TOUTES FAMILLES
+  // CONFONDUES** — celui que Rust attend pour `remove`, `rappel` et `modifier`.
+  // Le recalculer à partir du rang affiché viserait une AUTRE date que celle
+  // qu'on a sous les yeux.
+  function ligneDateSaisie(d, index) {
+    const estAujourdhui = d.jour === aujourdhui.jour && d.mois === aujourdhui.mois;
+    // L'ANNÉE, quand elle est connue — et l'ÂGE le jour venu. « 30 ans » n'est
+    // dit QUE le jour de l'anniversaire : l'afficher toute l'année dirait
+    // « 30 ans » à quelqu'un qui en a encore 29.
+    const age = d.annee && estAujourdhui && aujourdhui.annee ? ` · ${aujourdhui.annee - d.annee} ans` : "";
+    const quandTexte = (estAujourdhui ? "aujourd'hui" : `${d.jour} ${MOIS[d.mois - 1]}`)
+      + (d.annee ? ` · ${d.annee}` : "");
+    return el("div", { class: "ligne" }, [
+      el("span", { class: "nom" }, [d.nom]),
+      el("span", { class: "quand" + (estAujourdhui ? " aujourdhui" : "") }, [quandTexte + age]),
+      // La cloche du RAPPEL : c'est ici que se pose « la possibilité de
+      // mettre un rappel automatique » de la demande, date par date.
+      el("button", {
+        class: "icon-btn" + (d.rappel ? " actif" : ""),
+        title: d.rappel ? "Rappel activé — cliquer pour le retirer" : "Rappel désactivé — cliquer pour l'activer",
+        onclick: () => go("rappel", String(index), d.rappel ? "0" : "1"),
+      }, [d.rappel ? "🔔" : "🔕"]),
+      // LE CRAYON — DEMANDE EXPLICITE (2026-09-23) : « je voudrais avoir la
+      // possibilité de modifier les données d'un anniversaire depuis le dash
+      // calendrier ». Il ne modifie RIEN lui-même : il amorce le formulaire du
+      // bas (voir `commencerEdition`), qui reste la SEULE surface d'écriture.
+      //
+      // ⚠️ C'est le PREMIER glyphe crayon du dépôt — la convention établie pour
+      // l'édition est le libellé texte « Modifier » (voir notes.html). Ici la
+      // ligne est une rangée d'icônes (🔔, ✕) et un mot la rendrait trop large ;
+      // le `title` dit le geste, comme pour les deux autres boutons.
+      //
+      // ⚠️ ET IL PORTE L'ÉTAT « .actif », comme la cloche : la ligne que le
+      // formulaire écrasera DOIT se voir. Sans cette marque, cliquer la cloche
+      // d'une autre ligne pendant qu'on édite ferait perdre de vue la ligne
+      // visée — le formulaire étant ailleurs, rien d'autre ne le dirait.
+      el("button", {
+        class: "icon-btn" + (index === editionIndex ? " actif" : ""),
+        title: "Modifier",
+        onclick: () => commencerEdition(index),
+      }, ["✎"]),
+      el("button", { class: "icon-btn", title: "Retirer", onclick: () => go("remove", String(index)) }, [el("span", { class: "ico ico-x" })]),
+    ]);
+  }
+
+  function rendreFamilles() {
+    const zone = document.getElementById("familles");
+    zone.replaceChildren();
+    for (const [cle, libelle] of GENRES) {
+      zone.appendChild(el("button", {
+        class: cle === genreChoisi ? "choisi" : "",
+        onclick: () => { genreChoisi = cle; rendreFamilles(); },
+      }, [libelle]));
+    }
+  }
+
+  // --- LE MODE « MODIFIER » ---
+
+  // Bascule le formulaire du bas entre ajouter et modifier. UN SEUL endroit
+  // décide de l'apparence du mode, pour que ses trois marques (titre, libellé du
+  // bouton, présence d'« Annuler ») ne puissent pas diverger l'une de l'autre.
+  function majModeSaisie() {
+    const enEdition = editionIndex !== null;
+    document.getElementById("titre-saisie").textContent = enEdition ? "Modifier une date" : "Ajouter une date";
+    document.getElementById("valider").textContent = enEdition ? "Enregistrer" : "Ajouter";
+    document.getElementById("annuler").style.display = enEdition ? "" : "none";
+  }
+
+  // Amorce le formulaire avec les valeurs d'une ligne existante.
+  //
+  // ⚠️ **C'EST UN POINT D'ENTRÉE POUR RUST AUSSI** (voir `window.commencerEdition`
+  // en fin de script, et `cef_calendar_applet::debug_editer`) : elle doit donc être
+  // DÉCLARÉE ainsi (`function`), jamais une `const` fléchée — une `const` de
+  // niveau script n'est pas une propriété de `window`, et `execute_js` échouerait
+  // en SILENCE.
+  function commencerEdition(index) {
+    // Le `state &&` n'est pas de la prudence de principe : le levier de
+    // vérification peut appeler AVANT que Rust ait poussé le premier état, et
+    // `state.dates[index]` lèverait alors un `TypeError` que `execute_js` ne
+    // remonte nulle part.
+    const d = state && state.dates[index];
+    // Un rang qui n'existe plus (un retrait vient d'avoir lieu) : on ne devine
+    // pas, on ne fait rien. C'est la seconde moitié de la garde de `setState`.
+    if (!d) return;
+    editionIndex = index;
+    genreChoisi = d.genre;
+    rendreFamilles();
+    document.getElementById("nom").value = d.nom;
+    document.getElementById("jour").value = d.jour;
+    document.getElementById("mois").value = d.mois;
+    // `null` (année inconnue) arrive de Rust : on écrit une chaîne VIDE, jamais
+    // le texte « null » dans le champ.
+    document.getElementById("annee").value = d.annee ?? "";
+    document.getElementById("rappel").checked = d.rappel;
+    document.getElementById("erreur").textContent = "";
+    // La marque `.actif` du crayon vit DANS les lignes, et le garde d'état de
+    // `setState` ne les redessine plus à chaque frame : c'est donc à nous de le
+    // faire quand `editionIndex` change.
+    rendreListes();
+    majModeSaisie();
+    // Le formulaire est SOUS les listes : sans ceci, cliquer le crayon d'une
+    // ligne basse ne montrerait pas ce qui vient de se remplir.
+    document.getElementById("titre-saisie").scrollIntoView({ block: "nearest" });
+  }
+
+  // Sort du mode et rend au formulaire son état de départ : champs vides, et le
+  // sélecteur revenu sur « anniversaire » (le défaut de la page, choisi parce que
+  // c'est la demande d'origine). Sans ce retour du genre, éditer une fête
+  // personnalisée puis annuler laisserait le formulaire d'AJOUT silencieusement
+  // positionné sur « Fête personnalisée ».
+  function annulerEdition() {
+    editionIndex = null;
+    for (const id of ["nom", "jour", "mois", "annee"]) {
+      document.getElementById(id).value = "";
+    }
+    document.getElementById("rappel").checked = true;
+    document.getElementById("erreur").textContent = "";
+    genreChoisi = "anniversaire";
+    rendreFamilles();
+    // Voir `commencerEdition` : la marque du crayon est dans les lignes.
+    rendreListes();
+    majModeSaisie();
+  }
+
+  // Ajoute une date, ou enregistre la modification en cours — MÊME validation
+  // dans les deux cas ; seuls le verbe et le rang changent.
+  function validerSaisie() {
+    const nom = document.getElementById("nom").value.trim();
+    const jour = parseInt(document.getElementById("jour").value, 10);
+    const mois = parseInt(document.getElementById("mois").value, 10);
+    const rappel = document.getElementById("rappel").checked ? "1" : "0";
+    // Vide = pas d'année (le cas ordinaire). La validation des bornes est
+    // refaite côté Rust, qui fait foi (voir `cef_calendar_applet`).
+    const annee = document.getElementById("annee").value.trim();
+    const erreur = document.getElementById("erreur");
+
+    // La validation est faite ICI AUSSI, mais elle n'est PAS la garde : Rust
+    // revérifie (voir `cef_calendar_applet::analyser_date`), et c'est lui qui
+    // fait foi. Celle-ci n'existe que pour répondre tout de suite.
+    if (!nom) { erreur.textContent = "Il manque le nom."; return; }
+    if (!(jour >= 1 && jour <= 31) || !(mois >= 1 && mois <= 12)) {
+      erreur.textContent = "Date invalide : jour 1–31, mois 1–12.";
+      return;
+    }
+    if (annee !== "" && !/^\d{4}$/.test(annee)) {
+      erreur.textContent = "Année : quatre chiffres, ou rien.";
+      return;
+    }
+    erreur.textContent = "";
+    if (editionIndex === null) {
+      go("add", genreChoisi, nom, String(jour), String(mois), rappel, annee);
+      // Le champ se vide après un ajout : sans ça, la ligne ajoutée paraît ne pas
+      // avoir été prise, et un second clic la dupliquerait.
+      document.getElementById("nom").value = "";
+      return;
+    }
+    // ⚠️ Le rang est lu AVANT `go`, et le mode se referme TOUT DE SUITE (sortie
+    // optimiste, comme l'ajout ci-dessus). Si Rust refuse — le seul écart
+    // possible est un jour valide pour la borne large mais impossible dans son
+    // mois, ex. 31 février — la ligne ne change pas, exactement comme un ajout
+    // refusé ne fait pas apparaître de ligne : même contrat, et une machinerie
+    // d'erreur en retour pour ce seul cas serait disproportionnée.
+    go("modifier", String(editionIndex), genreChoisi, nom, String(jour), String(mois), rappel, annee);
+    annulerEdition();
+  }
+
+  // Les trois zones qui dépendent de l'état. Fonction à part parce qu'elle est
+  // appelée de DEUX endroits : `setState` quand l'état a changé, et les fonctions
+  // du mode « modifier » quand c'est `editionIndex` qui a changé (la marque
+  // `.actif` du crayon vit dans les lignes, pas dans le formulaire).
+  function rendreListes() {
+    rendreFetes();
+    rendreDates("anniversaires", "anniversaire");
+    // ⚠️ **PAS `rendreDates("fetes-perso", "fete")`** : cette colonne-là est
+    // FUSIONNÉE avec les alarmes de la table (voir `rendreColonneFetes`).
+    rendreColonneFetes();
+  }
+
+  // **LES PRÉNOMS DE LA TABLE QUI PORTENT UNE ALARME** — DEMANDE EXPLICITE
+  // (2026-09-24) : « fais apparaitre les prénoms pour lesquels il y a une alarme
+  // dans la liste fêtes personnalisées ».
+  //
+  // ⚠️ **CE NE SONT PAS DES DATES SAISIES.** Elles viennent du CALENDRIER, pas de
+  // l'utilisateur, et deux conséquences en découlent :
+  //  · elles ne se désignent PAS par un rang dans `state.dates`, mais par leur
+  //    TRIPLET `(mois, jour, nom)` — la clé de `config::RappelFete`, et celle
+  //    qu'attend le verbe `calendar/rappel-fete` ;
+  //  · elles ne portent donc **NI crayon NI croix**. Une fête de la table ne se
+  //    supprime pas : elle vient du calendrier. Une croix mentirait sur ce
+  //    qu'elle ferait — la CLOCHE, elle, éteint vraiment l'alarme, et la ligne
+  //    quitte la liste.
+  //
+  // Le tri suit celui des dates saisies (`joursAvant`, défini plus haut) : les
+  // deux sortes de lignes se lisent donc dans le même ordre chronologique.
+  // **LA LIGNE D'UN PRÉNOM DE LA TABLE QUI PORTE UNE ALARME.** Elle n'a qu'UNE
+  // cloche : une fête de la table ne se supprime pas (elle vient du calendrier)
+  // et ne se modifie pas — seuls les deux boutons des dates SAISIES le peuvent,
+  // et une croix mentirait sur ce qu'elle ferait.
+  function ligneRappelFete(r) {
+    return el("div", { class: "ligne" }, [
+      el("span", { class: "nom" }, [r.nom]),
+      el("span", { class: "quand" }, [`${r.jour} ${MOIS[r.mois - 1]}`]),
+      el("button", {
+        class: "icon-btn actif",
+        title: "Alarme posée sur cette fête de la table — cliquer pour l'éteindre",
+        onclick: () => go("rappel-fete", String(r.mois), String(r.jour), r.nom, "0"),
+      }, ["🔔"]),
+    ]);
+  }
+
+  // **LA COLONNE DES FÊTES — LES DEUX SOURCES FUSIONNÉES, TRIÉES ENSEMBLE.**
+  //
+  // DEMANDE EXPLICITE (2026-09-24) : « fusionne les deux listes ». Elles étaient
+  // rendues en DEUX BLOCS — les dates saisies, puis les alarmes de la table —
+  // donc l'ensemble n'était PAS chronologique : Margot (16 novembre) précédait
+  // Michel (29 septembre). Il n'y a plus qu'une liste, ordonnée par `joursAvant`
+  // comme l'est déjà celle des anniversaires.
+  //
+  // ⚠️ **LE TRI PORTE SUR DES LIGNES DÉJÀ CONSTRUITES**, appariées à leur date. On
+  // ne peut pas trier les deux sources séparément puis les concaténer — c'est
+  // exactement ce qui donnait deux blocs.
+  function rendreColonneFetes() {
+    const zone = document.getElementById("fetes-perso");
+    zone.replaceChildren();
+    const elements = [];
+    state.dates
+      .map((d, index) => ({ d, index }))
+      .filter(({ d }) => d.genre === "fete")
+      .forEach(({ d, index }) => {
+        elements.push({ jour: d.jour, mois: d.mois, nom: d.nom, noeud: ligneDateSaisie(d, index) });
+      });
+    for (const r of state.rappelsFetes || []) {
+      elements.push({ jour: r.jour, mois: r.mois, nom: r.nom, noeud: ligneRappelFete(r) });
+    }
+    // ⚠️ **LE MESSAGE DE LISTE VIDE NE DIT VRAI QUE SI LES DEUX SOURCES SONT
+    // VIDES** : cette colonne porte aussi les alarmes de la table, et afficher
+    // « aucune fête enregistrée » au-dessus de lignes bien visibles mentirait.
+    if (!elements.length) {
+      zone.appendChild(el("div", { class: "vide" }, ["Aucune fête enregistrée."]));
+      return;
+    }
+    elements.sort((a, b) => {
+      const ecart = joursAvant(a.jour, a.mois) - joursAvant(b.jour, b.mois);
+      return ecart !== 0 ? ecart : a.nom.localeCompare(b.nom);
+    });
+    for (const e of elements) zone.appendChild(e.noeud);
+  }
+
+  // ⛔ **CE GARDE EST CE QUI REND LES BOUTONS CLIQUABLES — NE PAS LE RETIRER.**
+  //
+  // DÉFAUT RÉEL SIGNALÉ (2026-09-23) : « mes clics sur les icônes ne sont pas pris
+  // en compte sur les noms d'anniversaire que j'ai rentré ou sur les fêtes pour
+  // lesquelles j'ai mis une alerte ». **MESURÉ, et la mesure désigne ce garde** :
+  // dans le journal, les SEULES actions `calendar/` arrivées de toute une session
+  // étaient des `calendar/chercher/…` — c'est-à-dire de la FRAPPE. Aucun
+  // `rappel`, aucun `rappel-fete`, aucun `remove` : les clics n'atteignaient pas
+  // Rust du tout.
+  //
+  // LA CAUSE : `app::run` repousse l'état **À CHAQUE FRAME** tant que la fenêtre
+  // est ouverte (voir `cef_calendar_applet::refresh_if_visible`, et POURQUOI :
+  // le jour change à minuit). Sans ce garde, chaque frame faisait
+  // `replaceChildren()` sur les deux listes, donc les boutons étaient DÉTRUITS ET
+  // RECRÉÉS soixante fois par seconde. Or un clic n'est pas un instant : le
+  // navigateur ne l'émet que si l'APPUI et le RELÂCHEMENT tombent sur le même
+  // nœud — et les nœuds ne survivaient pas 16 ms. Les icônes étaient donc
+  // dessinées, survolables, et **inertes**.
+  //
+  // POURQUOI LA RECHERCHE, ELLE, MARCHAIT : les résultats ne sont repoussés QUE
+  // par une action (`setResultats`), jamais par frame. Leurs boutons survivaient
+  // au clic. C'est l'asymétrie que l'utilisateur a décrite, et elle est la preuve
+  // que la cause était bien là.
+  //
+  // LE REMÈDE EST CELUI DE `notes.html` (`lastStateJson`, même raison, même
+  // commentaire de ce côté-ci du dépôt) : ne toucher au DOM que si l'état a
+  // VRAIMENT changé. Chaque frame redevient alors gratuite.
+  window.setState = function (next) {
+    const json = JSON.stringify(next);
+    if (json === dernierEtatJson) return;
+
+    // ⚠️ **LA GARDE CONTRE UN RANG PÉRIMÉ — ET ELLE COMMENCE PAR `!== null`.**
+    // `remove` fait GLISSER les rangs, donc un `editionIndex` mémorisé viserait une
+    // AUTRE date : c'est le défaut déjà corrigé côté recherche, où une cloche
+    // adressait la mauvaise entrée. On annule donc l'édition quand la liste a
+    // changé de longueur, ou quand le rang n'existe plus. (`add` ajoute en fin et
+    // `rappel` ne réordonne rien : changer de longueur est bien le seul signal qui
+    // compte, et il est large.)
+    //
+    // ⚠️ **LE TEST DE NULLITÉ N'EST PAS REDONDANT : en JS, `null >= 0` est VRAI.**
+    // Sans lui, une liste VIDE ferait entrer dans la branche, et `annulerEdition`
+    // remettrait les champs à zéro — la première date deviendrait impossible à
+    // saisir. (Le garde d'état ci-dessus a depuis rendu ce chemin bien plus rare,
+    // mais il reste atteignable : c'est un vrai changement d'état qui le rouvre.)
+    const longueurPrecedente = state ? state.dates.length : 0;
+    if (editionIndex !== null && (next.dates.length !== longueurPrecedente || editionIndex >= next.dates.length)) {
+      annulerEdition();
+    }
+    state = next;
+    // **LE GROSSISSEMENT DU PANNEAU** — voir `--text-scale`, en-tête du <style>,
+    // qui porte le mécanisme et le piège du double facteur.
+    //
+    // ⚠️ **IL ÉTAIT POUSSÉ DEPUIS TOUJOURS ET JAMAIS LU** : `push_state` envoie
+    // `contentScale` depuis l'origine, et la page ne le lisait nulle part — donc
+    // TOUT le panneau ignorait le réglage de taille, quand le Dash, le
+    // presse-papiers et les Notes l'appliquent. Sur un écran dont l'échelle vaut
+    // 1.0, rien ne se voit : c'est pourquoi le défaut a tenu si longtemps.
+    document.documentElement.style.setProperty("--text-scale", state.contentScale || 1);
+    document.getElementById("titre").textContent = state.date || "";
+    // Le jour et le mois d'aujourd'hui servent à marquer « aujourd'hui » dans
+    // les listes — Rust les envoie à part parce que la page ne doit PAS les
+    // déduire de `Date()` : la date affichée est celle de l'application.
+    // ⚠️ L'ANNÉE FAIT PARTIE DU REPLI : la grille s'en sert pour marquer
+    // « aujourd'hui », et un repli sans elle comparerait `undefined` à un nombre
+    // — faux, donc silencieux, donc le repère disparaîtrait sans un mot.
+    aujourdhui = state.aujourdhui || { jour: 0, mois: 0, annee: 0 };
+    rendreGrille();
+    rendreTitreFetes();
+    rendreListes();
+
+    // ⚠️ **MARQUÉ EN DERNIER, JAMAIS AVANT.** Même leçon que `notes.html` : un
+    // état marqué « appliqué » avant de l'avoir été rend le garde menteur dès
+    // qu'une ligne lève entre les deux — et comme la poussée est par frame, le
+    // défaut se figerait au lieu de se voir.
+    dernierEtatJson = json;
+  };
+
+  // ⚠️ **LE SEUL POINT D'ENTRÉE QUE RUST APPELLE SANS PASSER PAR UNE ACTION** :
+  // `cef_calendar_applet::debug_editer` exécute `window.commencerEdition(n)` pour
+  // capturer le mode édition sans aucun clic. Posé explicitement sur `window` par
+  // symétrie avec `setState`/`setResultats` — une `const` de niveau script ne
+  // serait PAS visible depuis `execute_js`, et l'appel échouerait en silence.
+  window.commencerEdition = commencerEdition;
+
+  // --- LA RECHERCHE ---
+  // Elle part à CHAQUE frappe — un aller-retour par caractère. C'est acceptable
+  // ici parce que Rust cherche dans une table en mémoire (voir
+  // `win32::fetes::chercher`) et que la frappe est lente devant une image ; la
+  // faire descendre dans la page coûterait, elle, des dizaines de kilo-octets
+  // PAR IMAGE pour un résultat identique.
+  let derniereRequete = null;
+
+  function envoyerRecherche() {
+    const texte = document.getElementById("recherche").value;
+    if (texte === derniereRequete) return;
+    derniereRequete = texte;
+    // Le corps passe en mode recherche DÈS la première frappe, et en sort quand
+    // le champ se vide — c'est ce qui fait que la fenêtre répond tout de suite,
+    // sans attendre le retour de Rust.
+    document.body.classList.toggle("recherche", texte.trim() !== "");
+    if (texte.trim() === "") {
+      document.getElementById("resultats").replaceChildren();
+      return;
+    }
+    go("chercher", texte);
+  }
+
+  /// Appelé par Rust (voir `cef_calendar_applet::dispatch_actions`).
+  window.setResultats = function (liste) {
+    const zone = document.getElementById("resultats");
+    zone.replaceChildren();
+    if (!liste.length) {
+      zone.appendChild(el("div", { class: "vide" }, ["Aucune fête ne correspond."]));
+      return;
+    }
+    // Le compte est EXACT : Rust ne tronque rien (voir `fetes::chercher`, qui
+    // porte la correction du plafond retiré). Une liste longue défile, et c'est
+    // préférable à une liste courte qui laisserait croire qu'il n'y a rien
+    // d'autre.
+    const compte = el("div", { class: "compte" }, [
+      liste.length === 1 ? "1 résultat" : `${liste.length} résultats`,
+    ]);
+    zone.appendChild(compte);
+    for (const r of liste) {
+      // ⚠️ `jour === 0` : une fête à DATE CALCULÉE (Grands-Mères, Mères, Pères)
+      // — elles tombent un dimanche compté depuis un bord du mois, donc leur
+      // date n'existe pas dans l'année. On dit le mois, jamais « le 0 ».
+      const quand = r.jour === 0 ? `en ${MOIS[r.mois - 1]}` : `${r.jour} ${MOIS[r.mois - 1]}`;
+      const ligne = el("div", { class: "ligne" }, [
+        el("div", { class: "resultat" }, [
+          el("span", { class: "pastille " + r.categorie }),
+          el("span", { class: "date" }, [quand]),
+          el("span", { class: "nom" }, [r.nom]),
+          // Une VARIANTE orthographique dit sa forme de référence : sans quoi
+          // « Jean Baptiste » et « Jean-Baptiste » paraîtraient être deux saints.
+          ...(r.varianteDe ? [el("span", { class: "categorie" }, ["= " + r.varianteDe])] : []),
+          el("span", { class: "categorie" }, [CATEGORIE_LIBELLE[r.categorie] || r.categorie]),
+        ]),
+      ]);
+      // **LA CLOCHE — DEMANDE EXPLICITE (2026-09-23)** : « dans les résultats des
+      // fêtes et des anniversaires j'aimerais avoir la possibilité de mettre un
+      // rappel ou de le retirer ».
+      //
+      // ⚠️ ELLE N'APPARAÎT PAS PARTOUT, et c'est Rust qui le dit (`r.cible`) :
+      // une fête à DATE CALCULÉE n'a pas de date dans l'année à désigner, donc
+      // une cloche y serait un bouton mort. Mieux vaut pas de bouton qu'un
+      // bouton qui ne fait rien.
+      const cloche = (() => {
+        if (r.cible === "saisie") {
+          // Une date SAISIE s'adresse par son RANG — l'action existe déjà pour
+          // la liste des anniversaires, on la réutilise telle quelle.
+          return el("button", {
+            class: "icon-btn" + (r.rappel ? " actif" : ""),
+            title: r.rappel ? "Retirer le rappel" : "Mettre un rappel",
+            onclick: () => go("rappel", String(r.index), r.rappel ? "0" : "1"),
+          }, [r.rappel ? "🔔" : "🔕"]);
+        }
+        if (r.cible === "table") {
+          // Une fête de la TABLE s'adresse par sa date ET son nom (dix-huit
+          // jours en portent deux — voir `config::RappelFete`).
+          return el("button", {
+            class: "icon-btn" + (r.rappel ? " actif" : ""),
+            title: r.rappel ? "Retirer le rappel" : "Mettre un rappel",
+            onclick: () => go("rappel-fete", String(r.mois), String(r.jour), r.nom, r.rappel ? "0" : "1"),
+          }, [r.rappel ? "🔔" : "🔕"]);
+        }
+        return null;
+      })();
+      if (cloche) ligne.firstChild.appendChild(cloche);
+      zone.appendChild(ligne);
+    }
+  };
+
+  document.getElementById("recherche").addEventListener("input", envoyerRecherche);
+  document.getElementById("recherche").addEventListener("keydown", (e) => {
+    // Échap vide le champ — le geste attendu pour sortir d'une recherche.
+    if (e.key === "Escape") { document.getElementById("recherche").value = ""; envoyerRecherche(); }
+  });
+
+  rendreFamilles();
+  // L'état de DÉPART du formulaire — « Ajouter une date », bouton « Ajouter », pas
+  // d'« Annuler ». Le HTML le porte déjà, mais le reposer ici fait qu'un SEUL
+  // endroit (`majModeSaisie`) décrit le mode, chargement compris : deux
+  // descriptions qui pourraient diverger n'en font plus qu'une.
+  majModeSaisie();
+  // Les champs de saisie se valident au clavier aussi : Entrée = Ajouter — ou
+  // Enregistrer, en modification, puisque c'est la même fonction.
+  for (const id of ["nom", "jour", "mois"]) {
+    document.getElementById(id).addEventListener("keydown", (e) => { if (e.key === "Enter") validerSaisie(); });
+  }
+
+  // ⭐ **« READY » — SANS LUI, L'APPLET RESTE VIDE SI ON L'OUVRE TÔT.**
+  // `cef_calendar_applet::push_state` mémorise ce qu'il a poussé (`PAYLOAD`) et
+  // ne repousse que si la clé change. Un état poussé AVANT que ce script ne
+  // tourne est donc perdu POUR DE BON : la page est préchargée, et ouvrir
+  // l'applet dans les premières secondes donnait une fenêtre aux titres vides.
+  // Les panneaux frères (calculatrice, aide, couleurs…) vident le cache sur ce
+  // verbe ; celui-ci ne l'avait pas.
+  go("ready");
+</script>
+</body>
+</html>

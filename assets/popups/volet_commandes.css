@@ -1,0 +1,96 @@
+/* Le volet des COMMANDES ENREGISTRÉES des panneaux Terminal et SSH — voir
+   `volet_commandes.js`. Il se range à droite de `#corps`, dans `#milieu`. */
+#milieu { flex: 1 1 auto; min-height: 0; display: flex; }
+#milieu > #corps { flex: 1 1 auto; min-width: 0; }
+#volet-commandes {
+  position: relative;
+  flex: 0 0 270px; min-height: 0; display: flex; flex-direction: column; gap: 6px;
+  padding: 8px; box-sizing: border-box;
+  border-top: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+  border-left: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+  background: rgba(0, 0, 0, .18);
+}
+/* LE SÉPARATEUR RÉGLABLE avec les terminaux — DEMANDE EXPLICITE (2026-10-23).
+   Une poignée sur le bord GAUCHE du volet : tirée, elle change sa largeur, qui
+   est retenue d'une ouverture à l'autre (`localStorage`). Dans le volet, et non
+   à côté, pour disparaître avec lui quand il est replié. */
+#vc-poignee {
+  position: absolute; top: 0; bottom: 0; left: -4px; width: 7px; z-index: 10;
+  cursor: col-resize;
+}
+#vc-poignee:hover, #vc-poignee.tire {
+  background: rgba(var(--popup-accent-rgb), calc(.55 * var(--popup-fond-alpha, 1)));
+}
+/* Pendant un glissement, rien d'autre ne réagit à la souris : xterm
+   sélectionnerait du texte sous le curseur. */
+body.glisse { user-select: none; }
+body.glisse .terminal-hote, body.glisse .xterm { pointer-events: none; }
+#vc-bouton { font-family: "Cascadia Mono", Consolas, monospace; font-size: 13px; padding: 2px 8px; }
+#vc-bouton.actif { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+.vc-entete { display: flex; align-items: center; gap: 2px; }
+.vc-titre { flex: 1 1 auto; font-weight: 600; }
+.vc-outil { background: none; padding: 1px 7px; opacity: calc(.75 * max(1, var(--popup-alpha, 1))); }
+.vc-outil:hover { opacity: 1; }
+.vc-outil.danger { opacity: 1; background: rgba(230, 100, 90, .6); font-size: 11px; }
+.vc-cible { font-size: 11px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color .2s; }
+.vc-cible.vide { font-style: italic; }
+.vc-cible.alerte { opacity: 1; color: rgb(255, 130, 120); }
+.vc-recherche input { width: 100%; box-sizing: border-box; }
+.vc-liste { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
+.vc-vide { font-size: 12px; opacity: calc(.55 * max(1, var(--popup-alpha, 1))); font-style: italic; padding: 4px; }
+.vc-commande {
+  padding: 5px 6px; border-radius: 4px; cursor: pointer;
+  background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.05 * var(--popup-fond-alpha, 1)));
+}
+.vc-commande:hover { background: rgba(var(--popup-accent-rgb), calc(0.3 * var(--popup-fond-alpha, 1))); }
+.vc-ligne { display: flex; align-items: flex-start; gap: 2px; }
+/* LE TEXTE DES COMMANDES PASSE À LA LIGNE — DEMANDE EXPLICITE (2026-10-23) :
+   coupé par des points de suspension, une longue commande ne se lisait pas.
+   `anywhere` : une commande n'a souvent aucune espace où couper. */
+.vc-nom { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.vc-nom.code { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; }
+.vc-badge { font-size: 11px; opacity: calc(.6 * max(1, var(--popup-alpha, 1))); margin: 0 2px; }
+.vc-commande .vc-outil { visibility: hidden; padding: 0 5px; }
+.vc-commande:hover .vc-outil, .vc-commande .vc-outil.danger { visibility: visible; }
+.vc-apercu {
+  font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; opacity: calc(.6 * max(1, var(--popup-alpha, 1)));
+  white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px;
+}
+.vc-edition { display: flex; flex-direction: column; gap: 4px; }
+.vc-edition label { font-size: 11px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); margin-top: 4px; }
+.vc-edition input, .vc-edition textarea { width: 100%; box-sizing: border-box; }
+.vc-edition textarea { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; resize: vertical; }
+.vc-choix { display: flex; gap: 2px; flex-wrap: wrap; }
+.vc-choix button { font-size: 12px; padding: 2px 8px; }
+.vc-choix button.actif { background: rgb(var(--popup-accent-solid-rgb, 90, 120, 200)); }
+.vc-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+/* Les dossiers — un seul niveau ; leurs commandes en retrait. */
+.vc-dossier {
+  display: flex; align-items: center; gap: 2px; padding: 4px 4px; border-radius: 4px; cursor: pointer;
+  margin-top: 4px; background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.08 * var(--popup-fond-alpha, 1))); font-weight: 600;
+}
+.vc-dossier:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.14 * var(--popup-fond-alpha, 1))); }
+.vc-dossier .vc-fleche { width: 14px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); font-size: 11px; }
+.vc-dossier .vc-compte { font-size: 11px; font-weight: 400; opacity: calc(.6 * max(1, var(--popup-alpha, 1))); margin: 0 4px; }
+.vc-dossier .vc-outil { visibility: hidden; padding: 0 5px; font-weight: 400; }
+.vc-dossier:hover .vc-outil, .vc-dossier .vc-outil.danger { visibility: visible; }
+.vc-dossier-saisie { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
+.vc-dossier-saisie input { flex: 1 1 auto; min-width: 0; }
+.dans-dossier { margin-left: 14px; }
+/* LES CHAMPS DU VOLET — texte ET fond tirés du thème du panneau. Un champ
+   laissé au style du navigateur garde son fond BLANC : lui donner la couleur
+   de texte du panneau (blanche en mode sombre) le rendait illisible (le nom
+   d'un dossier en saisie, mesuré par capture le 2026-10-03). */
+#volet-commandes input, #volet-commandes textarea {
+  color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+  background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.08 * var(--popup-fond-alpha, 1)));
+  border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.25 * var(--popup-fond-alpha, 1)));
+  border-radius: 4px; padding: 3px 6px; outline: none;
+}
+#volet-commandes input:focus, #volet-commandes textarea:focus {
+  border-color: rgba(var(--popup-accent-rgb), calc(.9 * var(--popup-fond-alpha, 1)));
+  background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+}
+#volet-commandes input::placeholder, #volet-commandes textarea::placeholder {
+  color: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.45 * var(--popup-alpha, 1)));
+}

@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>NeuraDesk — logiciels et polices à installer</title>
+<style>
+  body { font-family: "Segoe UI", sans-serif; max-width: 920px; margin: 2em auto; padding: 0 1.2em; line-height: 1.55; color: #1b1b1b; background: #fafafa; }
+  h1 { font-size: 1.7em; margin-bottom: .2em; }
+  h2 { margin-top: 1.8em; border-bottom: 2px solid #3d7fd6; padding-bottom: .2em; }
+  table { border-collapse: collapse; width: 100%; margin: .8em 0; background: #fff; }
+  th, td { border: 1px solid #d6d6d6; padding: .5em .7em; text-align: left; vertical-align: top; }
+  th { background: #eef1f5; }
+  code { background: #eef1f5; padding: .1em .35em; border-radius: 4px; font-size: .92em; }
+  .note { background: #fff7e0; border-left: 4px solid #e0a800; padding: .6em .9em; margin: 1em 0; }
+  .ok { color: #2e7d32; font-weight: 600; }
+  ol li, ul li { margin: .3em 0; }
+</style>
+</head>
+<body>
+
+<h1>NeuraDesk — logiciels et polices à installer</h1>
+<p>NeuraDesk fonctionne seul : son moteur d'affichage (CEF) et <a href="#prerequis">le runtime
+Visual C++</a> sont fournis avec lui. Tout le reste est <strong>facultatif</strong>, chaque
+programme n'y débloquant qu'une applet précise, qui reste simplement absente ou inactive sans
+lui.</p>
+
+<h2 id="prerequis">0. Runtime Microsoft Visual C++ 2015-2022 (x64) — fourni</h2>
+<p><strong>Rien à installer.</strong> L'archive portable contient les trois fichiers du runtime
+dont NeuraDesk a besoin, à côté de <code>neuradesk.exe</code> : <code>vcruntime140.dll</code>,
+<code>vcruntime140_1.dll</code> et <code>msvcp140.dll</code>, copiés du redistribuable de
+Microsoft.</p>
+<div class="note">
+  Si l'un de ces fichiers a été supprimé, NeuraDesk <em>se lance puis s'arrête aussitôt</em>,
+  sans fenêtre et sans message. Il suffit alors de réextraire l'archive, ou d'installer le
+  redistribuable de Microsoft ci-dessous.
+</div>
+<table>
+  <tr><th>En secours</th><th>Comment le vérifier</th><th>Téléchargement</th></tr>
+  <tr>
+    <td><strong>Visual C++ Redistributable 2015-2022, x64</strong></td>
+    <td>Le fichier <code>C:\Windows\System32\msvcp140.dll</code> existe.</td>
+    <td><a href="https://aka.ms/vs/17/release/vc_redist.x64.exe">vc_redist.x64.exe</a><br>
+      ou <code>winget install Microsoft.VCRedist.2015+.x64</code></td>
+  </tr>
+</table>
+<p>Le programme d'installation de Microsoft demande un redémarrage dans certains cas ; NeuraDesk
+fonctionne dès l'installation terminée, sans redémarrer.</p>
+
+<h2>1. Programmes</h2>
+<table>
+  <tr><th>Programme</th><th>À quoi il sert dans NeuraDesk</th><th>Téléchargement</th></tr>
+  <tr>
+    <td><strong>NAPS2</strong></td>
+    <td>Applet <em>Scanner</em> (numérisation, PDF multipage) et la reconnaissance de caractères
+      « intégrée » (NeuraDesk utilise le Tesseract que NAPS2 embarque).</td>
+    <td><a href="https://www.naps2.com/download">naps2.com/download</a><br>
+      ou <code>winget install Cyanfrog.NAPS2</code></td>
+  </tr>
+  <tr>
+    <td><strong>Everything</strong> (voidtools)</td>
+    <td>Applet <em>Recherche</em> de fichiers — elle n'apparaît que si Everything est installé.</td>
+    <td><a href="https://www.voidtools.com/downloads/">voidtools.com/downloads</a><br>
+      ou <code>winget install voidtools.Everything</code></td>
+  </tr>
+  <tr>
+    <td><strong>Voicemeeter</strong> (VB-Audio)</td>
+    <td>Panneau <em>Voicemeeter</em> (réglage des entrées et sorties audio).</td>
+    <td><a href="https://vb-audio.com/Voicemeeter/">vb-audio.com/Voicemeeter</a></td>
+  </tr>
+  <tr>
+    <td><strong>PowerShell 7</strong></td>
+    <td>Choix « PowerShell 7 » dans l'applet <em>Terminal</em> (PowerShell 5 et l'invite de
+      commandes de Windows marchent sans rien installer).</td>
+    <td><code>winget install Microsoft.PowerShell</code></td>
+  </tr>
+</table>
+
+<h3>Après l'installation de NAPS2 : la langue française de l'OCR</h3>
+<ol>
+  <li>Ouvrir NAPS2, puis <em>OCR</em> (icône de la barre d'outils).</li>
+  <li>Choisir la langue <strong>Français</strong> : NAPS2 télécharge alors le paquet de langue
+    dans <code>%APPDATA%\NAPS2\components\tesseract4</code>.</li>
+  <li>Sans ce paquet, la reconnaissance « intégrée » de NeuraDesk refuse de démarrer et le dit.</li>
+</ol>
+
+<h3>La reconnaissance de caractères de Windows</h3>
+<p>Le second moteur d'OCR est celui de Windows. Il demande la langue française avec sa
+fonctionnalité « reconnaissance optique de caractères » :
+<em>Paramètres → Heure et langue → Langue et région → Français → Options de langue</em>.
+Elle est en général déjà présente sur un Windows en français.</p>
+
+<h2>2. Polices de caractères</h2>
+<p>Chaque <em>style</em> de NeuraDesk (Réglages → Style) a sa police. Si elle manque, Windows
+la remplace par Segoe UI : rien ne casse, mais le style perd son allure. La police se change
+aussi à la main dans Réglages.</p>
+<table>
+  <tr><th>Police</th><th>Style qui l'utilise</th><th>Téléchargement</th></tr>
+  <tr><td>Segoe UI, Segoe UI Variable, Segoe Fluent Icons, Cambria Math</td>
+      <td>NeuraDesk, WinUI ; icônes ; applet Symboles mathématiques</td>
+      <td class="ok">Fournies avec Windows 11 — rien à faire</td></tr>
+  <tr><td><strong>Noto Sans</strong></td><td>KDE, deepin</td>
+      <td><a href="https://fonts.google.com/noto/specimen/Noto+Sans">fonts.google.com — Noto Sans</a></td></tr>
+  <tr><td><strong>Adwaita Sans</strong></td><td>GNOME</td>
+      <td><a href="https://gitlab.gnome.org/GNOME/adwaita-fonts/-/releases">gitlab.gnome.org — adwaita-fonts</a>
+      (fichiers <code>.ttf</code> du dossier <code>sans</code>)</td></tr>
+  <tr><td><strong>Inter</strong></td><td>elementary</td>
+      <td><a href="https://rsms.me/inter/">rsms.me/inter</a></td></tr>
+  <tr><td><strong>Ubuntu</strong></td><td>Cinnamon</td>
+      <td><a href="https://fonts.google.com/specimen/Ubuntu">fonts.google.com — Ubuntu</a></td></tr>
+  <tr><td><strong>Open Sans</strong></td><td>COSMIC</td>
+      <td><a href="https://fonts.google.com/specimen/Open+Sans">fonts.google.com — Open Sans</a></td></tr>
+  <tr><td><strong>Roboto</strong></td><td>Android (Material You)</td>
+      <td><a href="https://fonts.google.com/specimen/Roboto">fonts.google.com — Roboto</a></td></tr>
+</table>
+
+<h3>Installer une police</h3>
+<ol>
+  <li>Télécharger l'archive (bouton « Get font » puis « Download all » sur Google Fonts).</li>
+  <li>Extraire l'archive.</li>
+  <li>Sélectionner les fichiers <code>.ttf</code> ou <code>.otf</code>, clic droit →
+    <strong>Installer pour tous les utilisateurs</strong>.</li>
+  <li>Rouvrir les Réglages de NeuraDesk : la liste des polices est relue à chaque ouverture.</li>
+</ol>
+
+<div class="note">
+  <strong>Polices « variables » :</strong> une police à axes (Adwaita Sans, Inter, Roboto…)
+  peut apparaître sous un nom un peu différent. Le style GNOME attend
+  <code>Adwaita Sans Text</code> — c'est le nom sous lequel Windows range ses instances.
+</div>
+
+</body>
+</html>

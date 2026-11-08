@@ -1,0 +1,1241 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Dossier</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    html, body { margin: 0; background: transparent; overflow: hidden; }
+    /* ⛔ **LE PANNEAU REMPLIT SA FENÊTRE — IL NE FLOTTE PLUS.** Il était en
+       `width: fit-content`, posé en haut à gauche d'une fenêtre qui faisait déjà
+       toute la zone libre du dock : une petite boîte dans un grand cadre vide.
+       Depuis qu'il porte DEUX explorateurs, il prend ce cadre — c'est ce qui
+       donne à chaque moitié la moitié de la largeur, et à chaque grille la
+       hauteur entière pour s'enrouler.
+       ⚠️ Sa TAILLE reste celle de la fenêtre (la zone libre, voir `dash_rect`) :
+       `cef_popup::resize_to_content` IGNORE la taille qu'une page annonce quand
+       le popup est un panneau (`content_factor` vaut 0). Cette boîte grandit
+       DANS la fenêtre ; elle ne la fait pas grandir. */
+    /* La TAILLE DU CONTENU (`state.echelle`, Réglages) : `zoom` seul, et la
+       boîte compensée pour remplir toujours la fenêtre — même formule que la
+       calculatrice. */
+    #panneau {
+      /* ⚠️ **PLUS DE `gap` — C'EST LE SÉPARATEUR QUI PORTE L'ESPACE.** Il valait
+         6 px du temps où les deux moitiés se touchaient presque, et c'était tout
+         l'écart entre elles. Depuis qu'une poignée de 6 px s'est glissée au
+         milieu, le garder ajoutait 6 px DE CHAQUE CÔTÉ : un couloir de 18 px, que
+         l'utilisateur a trouvé trop large (« réduis le couloir »). Retiré, la
+         poignée rend donc exactement l'écart d'avant — avec son trait au milieu. */
+      display: flex; flex-direction: column; gap: 4px;
+      box-sizing: border-box; padding: 6px;
+      zoom: var(--text-scale, 1);
+      width: calc(100vw / var(--text-scale, 1));
+      height: calc(100vh / var(--text-scale, 1));
+    }
+    /* ⛔ **LA RANGÉE, C'EST ELLE QUE LE SÉPARATEUR MESURE.** `#panneau` porte
+       désormais en plus la barre de la punaise : mesurer `#panneau` décalerait le
+       partage de la hauteur de cette barre (voir `reglerPartage`). */
+    .rangee { flex: 1; min-height: 0; display: flex; }
+    /* La barre du haut — la punaise seule, à droite. Elle appartient au PANNEAU
+       et pas à une moitié, et c'est ce que sa position dit : au-dessus des deux. */
+    .barre { display: flex; justify-content: flex-end; align-items: center; height: 20px; }
+    /* ⛔ **LA COULEUR ET LA POLICE SONT POSÉES ICI**, comme sur `.moitie` : la barre
+       n'est dans aucune moitié, et sans elles le zoom s'affichait en NOIR et en
+       police à empattements (capture du 2026-10-11). Le zoom se range à GAUCHE
+       (`margin-right: auto` sur son premier bouton), la punaise reste à droite. */
+    .barre { color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1))); font-family: var(--nd-police, inherit); gap: 2px; }
+    .barre .niveau-zoom + .outil { margin-right: auto; }
+    /* Les deux moitiés sont ÉGALES AU DÉPART (`flex: 1 1 0`), et `min-width: 0`
+       est ce qui les autorise à descendre sous la largeur de leur contenu — sans
+       lui, une grille pleine imposerait sa largeur intrinsèque et la seconde
+       moitié sortirait de l'écran. Même ressort que `.grid-pane` du Dash.
+       ⚠️ **LE PARTAGE N'EST PLUS FIGÉ** : le séparateur ci-dessous règle le
+       `flex-grow` des deux, et comme la base vaut 0, les largeurs suivent le
+       rapport. Voir `reglerPartage`, qui porte le pourquoi du RATIO. */
+    .moitie {
+      flex: 1 1 0; min-width: 0;
+      display: flex; flex-direction: column; gap: 4px;
+      padding: 6px; border-radius: var(--nd-rayon-grand, 10px);
+      color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+      font-family: var(--nd-police, inherit);
+      background: rgba(0, 0, 0, .55);
+    }
+    /* ---- LE SÉPARATEUR ENTRE LES DEUX MOITIÉS ------------------------------
+       ⛔ **LE MOTIF EST RECOPIÉ DE `clipboard.html` (`.splitter`), PAS INVENTÉ** —
+       et recopié plutôt que partagé, comme `notes.html` l'assume : chaque page
+       CEF est un document indépendant, **il n'existe aucun module commun entre
+       popups**. `clipboard.html` et `notes.html` ont donc chacun leur copie ;
+       ceci est la troisième, et c'est la règle de ce dépôt, pas une négligence.
+
+       ⚠️ **6 px DE PRÉHENSION, 2 px DE TRAIT** : seul le trait `::before` porte
+       l'aspect visuel. Une bande pleine alourdirait la mise en page au repos, et
+       une bande plus fine serait insaisissable — c'est le compromis que
+       `clipboard.html` a retenu après un premier essai « presque invisible ». */
+    .separateur {
+      width: 6px; flex-shrink: 0;
+      cursor: col-resize;
+      position: relative;
+      background: transparent;
+    }
+    .separateur::before {
+      content: "";
+      position: absolute; top: 0; bottom: 0; left: 50%;
+      width: 2px; transform: translateX(-50%);
+      border-radius: 1px;
+      background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.35 * var(--popup-fond-alpha, 1)));
+    }
+    .separateur:hover,
+    .separateur.dragging,
+    .separateur:focus-visible {
+      background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.18 * var(--popup-fond-alpha, 1)));
+      outline: none;
+    }
+    .separateur:hover::before,
+    .separateur.dragging::before,
+    .separateur:focus-visible::before {
+      background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.65 * var(--popup-fond-alpha, 1)));
+    }
+    /* ⛔ **LES VARIABLES SONT CELLES QUI EXISTENT.** La page lisait
+       `--nd-accent-rgb`, `--nd-fg` et `--nd-sousdock-largeur` — **définies nulle
+       part**, ni par Rust ni par le CSS. Elle retombait donc sur blanc, #fff et
+       420 px, et **ignorait l'accent que le panneau lui passe pourtant** à chaque
+       frame. Les vraies sont poussées par `cef_popup::push_window_palette`.
+       ⚠️ `--popup-alpha` n'est PAS dans cette famille : c'est un facteur NU,
+       jamais une couleur — l'employer dans un `rgba()` donnerait une déclaration
+       invalide, donc la couleur de repli, donc un défaut invisible. */
+    .entete { display: flex; align-items: center; gap: 6px; }
+    .titre { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    /* ⭐ **LE CHEMIN COMPLET, SOUS LE TITRE** — DEMANDE EXPLICITE : « j'aimerais
+       avoir le chemin complet dans les navigateurs du dash dossier ».
+       Plus petit et atténué : c'est une information de repérage, le titre reste
+       le nom du dossier.
+       ⚠️ **IL SE REPLIE, IL NE SE TRONQUE PAS** (`overflow-wrap: anywhere`) : un
+       chemin ne contient aucun espace où couper, donc sans ça il déborderait — et
+       une ellipse cacherait justement le DÉBUT du chemin, c'est-à-dire ce qu'on
+       vient y chercher. Le repli peut coûter une seconde ligne sur un chemin très
+       long : c'est le prix demandé, et il est préférable à une information tue. */
+    .chemin {
+      font-size: 10px; opacity: calc(.55 * max(1, var(--popup-alpha, 1))); line-height: 1.2;
+      overflow-wrap: anywhere;
+    }
+    .tronque { font-size: 10px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); }
+    .grille {
+      flex: 1; min-height: 0; overflow-y: auto;
+      display: flex; flex-wrap: wrap; gap: 4px;
+      align-content: flex-start;
+    }
+    .enfant {
+      display: flex; flex-direction: column; align-items: center; gap: 2px;
+      /* ⭐ **LA CASE SUIT LE ZOOM** (`--case`, voir `poserZoom`) : 36 px de plus
+         que l'image, la place du nom — c'était 68 pour 32 avant le zoom. */
+      width: calc(var(--case, 32px) + 36px); padding: 4px 2px; border: 0; cursor: default;
+      background: none; color: inherit; border-radius: 6px;
+      font: inherit; font-size: 10px;
+    }
+    /* ⛔ **LA CLASSE `survole` EST POSÉE PAR NOUS, PAS PAR LE MOTEUR.** CEF ne
+       tient pas `:hover` (mesuré 121 fois sur 121 à `dash.html`), donc une case
+       survolée peut très bien ne pas s'éclairer. Depuis que le survol ne fait
+       PLUS QU'ÉCLAIRER (voir `installerSurvol`), ce repère est tout ce qui
+       reste pour ne pas cliquer à l'aveugle : on le garantit nous-mêmes. */
+    .enfant:hover, .enfant.survole { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.22 * var(--popup-fond-alpha, 1))); }
+    /* Une case de la SÉLECTION MULTIPLE (Ctrl+clic, Maj+clic) — plus marquée
+       que le survol, et bordée pour rester visible sous lui. */
+    .enfant.choisi {
+      background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.42 * var(--popup-fond-alpha, 1)));
+      box-shadow: inset 0 0 0 1px rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.9 * var(--popup-fond-alpha, 1)));
+    }
+    .enfant img { width: var(--case, 32px); height: var(--case, 32px); object-fit: contain; }
+    /* Un carré en pointillés DIT qu'il n'y a pas d'icône — un vide indistinct ne
+       se distinguerait pas d'un échec de chargement. */
+    .enfant .vide { width: var(--case, 32px); height: var(--case, 32px); box-sizing: border-box; border: 1px dashed currentColor; opacity: calc(.5 * max(1, var(--popup-alpha, 1))); border-radius: 4px; }
+    .enfant .nom { width: 100%; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Le champ de RENOMMAGE EN PLACE : il prend la place du nom, dans la case,
+       sans que la grille bouge — reconstruire la case au moment où on donne le
+       focus le retirerait aussitôt (voir `renommerDansLaCase`). */
+    .enfant .renommage {
+      width: 100%; padding: 0 2px; border: 1px solid rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.8 * var(--popup-fond-alpha, 1)));
+      border-radius: 3px; background: rgba(0, 0, 0, .6); color: inherit;
+      font: inherit; font-size: 10px; text-align: center;
+    }
+    /* ⛔ **LE COMPTE RENDU D'UN GESTE, ET IL N'EST PAS DÉCORATIF.** Un renommage
+       refusé, une suppression qui n'a pas eu lieu, un presse-papiers occupé : sans
+       cette ligne, ces échecs seraient des non-événements, et l'utilisateur
+       recommencerait — ou pire, croirait son fichier supprimé. */
+    .message {
+      font-size: 10px; padding: 2px 4px; border-radius: 4px;
+      background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.18 * var(--popup-fond-alpha, 1)));
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .message:empty { display: none; }
+
+    /* ---- LA BARRE D'OUTILS, UNE PAR MOITIÉ --------------------------------
+       ⛔ **DES BOUTONS, JAMAIS UN `<select>`** : en rendu hors écran, la liste
+       d'un `<select>` ne peut pas s'ouvrir (CEF exige
+       `OnPopupShow`/`OnPopupSize`/`PET_POPUP`, que ce dépôt n'implémente pas).
+       Le piège est masqué deux fois dans l'historique du dépôt : voir la fiche
+       « pas de `<select>` dans une page CEF ». */
+    .outils { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+    .outil {
+      display: flex; align-items: center; justify-content: center;
+      width: 22px; height: 22px; padding: 0; border: 0; border-radius: 4px;
+      background: none; color: inherit; font: inherit; font-size: 12px;
+      line-height: 1; cursor: default; opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+    }
+    .outil:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+    .outil:disabled { opacity: calc(.3 * max(1, var(--popup-alpha, 1))); }
+    /* Le niveau de zoom, entre ses deux boutons. */
+    .niveau-zoom { font-size: 10px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); min-width: 34px; text-align: center; }
+    /* Le champ de recherche prend la largeur disponible. Il vit dans SA rangée
+       plutôt que dans l'en-tête : à 240 px de large, un titre, la troncature,
+       trois boutons ET un champ ne tiennent pas ensemble. */
+    .recherche { display: flex; }
+    .filtre {
+      flex: 1; min-width: 0; padding: 2px 6px;
+      font: inherit; font-size: 11px; color: inherit;
+      background: rgba(255, 255, 255, .08);
+      border: 1px solid rgba(255, 255, 255, .15); border-radius: 4px;
+    }
+    .filtre::placeholder { color: inherit; opacity: calc(.5 * max(1, var(--popup-alpha, 1))); }
+    /* ⛔ **UN ENFANT ÉCARTÉ EST RETIRÉ, PAS ESTOMPÉ** : une case grisée garderait
+       sa place et la grille ne se resserrerait pas — or c'est tout l'intérêt de
+       filtrer. `hidden` sur un `display: flex` demande cette règle explicite. */
+    .enfant[hidden] { display: none; }
+
+    /* LES QUATRE TRIS. Des BOUTONS, pour la même raison que ci-dessus — et parce
+       qu'un menu déroulant demanderait un `<select>`. L'actif se voit : sans ça
+       on ne saurait pas dans quel ordre on lit la liste. */
+    .tris { display: flex; gap: 2px; }
+    .tri {
+      flex: 1; padding: 1px 4px; border: 0; border-radius: 4px;
+      background: rgba(255, 255, 255, .08); color: inherit;
+      font: inherit; font-size: 10px; cursor: default; opacity: calc(.75 * max(1, var(--popup-alpha, 1)));
+    }
+    .tri:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.25 * var(--popup-fond-alpha, 1))); opacity: 1; }
+    /* Le bouton ACTIF se voit, pour les tris comme pour l'épinglage. ⚠️ Pour le
+       « + », c'est plus qu'un confort : le raccourci n'apparaît sur la barre
+       qu'au PROCHAIN LANCEMENT, donc un clic sans retour visuel se lirait comme
+       un échec. */
+    .tri[aria-pressed="true"], .outil[aria-pressed="true"] {
+      background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.35 * var(--popup-fond-alpha, 1)));
+      opacity: 1; font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <!-- ⛔ **LES DEUX MOITIÉS SONT CONSTRUITES PAR UNE SEULE FONCTION**, en JS —
+       voir `construireMoitie`. Deux blocs HTML recopiés auraient divergé : c'est
+       le défaut que ce dépôt paie à chaque fois qu'une même chose est écrite
+       deux fois. -->
+  <div id="panneau"></div>
+  <!-- ⛔ **LE MENU CONTEXTUEL EST CELUI DE TOUTES LES PAGES CEF**
+       (`menu_contextuel.js`, chargé par dix-neuf d'entre elles) : il dessine le
+       menu, le RETOURNE s'il déborde de la fenêtre, et le referme au clic
+       ailleurs, à Échap, au défilement ou à la perte de focus. Le réécrire ici
+       aurait été une deuxième implémentation à faire diverger. -->
+  <script src="menu_contextuel.js"></script>
+  <!-- ⛔ **PAS DE `menu.js` — ET C'EST UN CHANGEMENT, PAS UN OUBLI.**
+       Il avait été mis là, puis retiré, puis remis : son absence avait été
+       « mesurée » comme cassante. **Cette mesure était celle d'un MENU.** À
+       l'époque, ce panneau s'ouvrait sur la CASE DE LA VIGNETTE (64 px) et sa
+       seule façon de grandir était d'ANNONCER sa taille — ce que `menu.js` fait
+       (`__ndMeasure`, `neuradesk://menu/size/…`). D'où « un carré noir » sans
+       lui, et un panneau lisible avec.
+
+       Ce n'est plus le cas : le panneau reçoit `dash_rect`, donc sa taille ne
+       dépend PAS de son contenu. La mesure est devenue inutile, et `cef_popup`
+       l'IGNORE de toute façon — `content_factor` vaut 0 pour un popup de la
+       famille « fenêtre » (voir `PopupSlot::content_factor`).
+
+       ⚠️ **ET ELLE N'EST PAS SEULEMENT INUTILE, ELLE EST À RISQUE** : garder
+       `menu.js` ferait poser un `MutationObserver` sur la boîte, donc émettre un
+       `location.href` à CHAQUE `render()` — c'est-à-dire au moment même où un
+       clic vient d'en émettre un (`go("g", "entrer", …)`), deux navigations
+       d'une même tâche se TÉLESCOPANT en silence (règle du dépôt).
+       **Aucun panneau du dépôt ne le charge**, pour cette raison exacte. -->
+  <script>
+    // ⛔ **AUCUN `<select>` :** en rendu hors écran, la liste d'un `<select>` ne
+    // peut pas s'ouvrir (CEF exige `OnPopupShow`/`OnPopupSize`/`PET_POPUP`, que
+    // ce dépôt n'implémente pas). Tout est bouton.
+    function el(tag, attrs, children) {
+      const node = document.createElement(tag);
+      for (const [key, value] of Object.entries(attrs || {})) {
+        if (key === "class") node.className = value;
+        // `onclick` → `click`, `onchange` → `change`… JAMAIS `setAttribute`, qui
+        // en ferait une chaîne de caractères que le navigateur n'exécute pas.
+        else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+        else node.setAttribute(key, value);
+      }
+      for (const child of children || []) {
+        node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+      }
+      return node;
+    }
+
+    // ---- LE CÔTÉ, DANS TOUT CE QUI PART VERS RUST --------------------------
+    // ⚠️ **LE CÔTÉ EST LE PREMIER SEGMENT**, et il est OBLIGATOIRE : c'est ce qui
+    // permet à la moitié droite de répondre sans que la gauche bouge. Ces clés
+    // sont le miroir exact de `sous_dock::Cote::cle()` côté Rust — les changer
+    // d'un seul côté ferait REFUSER les demandes (le module ne devine pas, voir
+    // `demande_depuis_action`), donc rien ne bougerait et rien ne le dirait.
+    const GAUCHE = "g";
+    const DROITE = "d";
+    // Le nom du champ correspondant dans l'état reçu de Rust.
+    const CHAMP = { g: "gauche", d: "droite" };
+
+    function go(cote, ...segments) {
+      // ⚠️ Chaque segment est encodé, et le bras Rust décode le sien (règle du
+      // dépôt : elle a déjà été oubliée deux fois). ⛔ Et JAMAIS de segment vide
+      // en DERNIER : un `""` disparaît (`trim_end_matches('/')`), donc l'action
+      // n'arrive pas.
+      location.href = "neuradesk://sous-dock/" + [cote, ...segments].map(encodeURIComponent).join("/");
+    }
+
+    // ⚠️ **L'ÉTAT ARRIVE À CHAQUE POUSSÉE** tant que le panneau est visible (voir
+    // `cef_sous_dock::poll`) : sans garde, les grilles seraient reconstruites 60
+    // fois par seconde, ce qui rendrait tout survol impossible.
+    //
+    // ⛔ **IL Y A MAINTENANT DEUX GARDES, ET LE SECOND EST INDISPENSABLE** : le
+    // numéro d'ouverture (`open`) dit « le panneau vient de naître, rends TOUT »,
+    // et la **révision de chaque moitié** dit « seule celle-ci a changé ».
+    // ⚠️ Un garde unique ferait reconstruire la DROITE à chaque changement de la
+    // GAUCHE — et comme le rendu vide le champ de recherche (voir `rendre`), la
+    // recherche de droite repartirait à zéro pendant qu'on explore à gauche.
+    let appliedOpen = -1;
+    const revisions = { g: -1, d: -1 };
+    // Le dernier état connu de chaque moitié — le bouton d'épinglage s'en sert
+    // pour savoir dans quel SENS basculer (voir son `onclick`).
+    const etats = { g: null, d: null };
+    // Les nœuds de chaque moitié, pour ne pas les rechercher par identifiant à
+    // chaque rendu — et parce que DEUX identifiants identiques dans un même
+    // document sont exactement le genre de faute silencieuse que ce dépôt
+    // traque. Il n'y a donc AUCUN `id` dans une moitié.
+    const vues = {};
+
+    const TRIS = [
+      ["nom", "Dossiers d'abord, puis par nom"],
+      ["date", "Le plus récemment modifié d'abord"],
+      ["taille", "Le plus gros d'abord"],
+      ["type", "Par extension, puis par nom"],
+    ];
+
+    // `replier` ramène accents et majuscules à leur lettre de base, comme
+    // `sous_dock::cle_de_tri` côté Rust — sans ça, chercher « ete » ne trouverait
+    // pas « Été », ce que personne n'attend d'une recherche.
+    const replier = (s) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+    // ---- CONSTRUIRE UNE MOITIÉ --------------------------------------------
+    function construireMoitie(cote) {
+      const titre = el("span", { class: "titre" });
+      const tronque = el("span", { class: "tronque" });
+      const remonter = el("button", { class: "outil", title: "Dossier parent" }, ["\u2191"]);
+      // ⚠️ **DEUX FLÈCHES, PAS DES EMOJIS** : `↻` et `↗` sont dans Segoe UI
+      // Symbol, donc rendues à coup sûr. Un emoji (🗁, 📁) serait rendu en
+      // COULEUR par la police emoji et jurerait avec le reste — quand il
+      // n'apparaîtrait pas en carré vide. Le sens est porté par l'infobulle.
+      const actualiser = el("button", { class: "outil", title: "Relire ce dossier" }, ["\u21bb"]);
+      const explorateur = el("button", { class: "outil", title: "Ouvrir dans l'Explorateur" }, ["\u2197"]);
+      const epingler = el("button", { class: "outil" });
+      const entete = el("div", { class: "entete" }, [
+        remonter, titre, tronque,
+        el("span", { class: "outils" }, [actualiser, explorateur, epingler]),
+      ]);
+
+      const filtre = el("input", { class: "filtre", type: "search", placeholder: "Rechercher dans ce dossier…" });
+      const recherche = el("div", { class: "recherche" }, [filtre]);
+
+      const boutonsTri = TRIS.map(([cle, aide]) =>
+        el("button", { class: "tri", "data-tri": cle, title: aide }, [cle.charAt(0).toUpperCase() + cle.slice(1)]));
+      const tris = el("div", { class: "tris" }, boutonsTri);
+
+      const grille = el("div", { class: "grille" });
+      // Le compte rendu vit dans SA rangée, sous l'en-tête : le glisser dans
+      // l'en-tête écraserait le titre, qui est déjà en `flex: 1`.
+      const message = el("div", { class: "message" });
+      // ⭐ **LE CHEMIN COMPLET, SUR SA PROPRE LIGNE** (DEMANDE EXPLICITE :
+      // « j'aimerais avoir le chemin complet dans les navigateurs du dash
+      // dossier »). Le titre ne porte que le NOM du dossier ; ici c'est le chemin
+      // entier, tel que Rust l'envoie déjà dans `state.dossier` — rien n'a été
+      // ajouté côté Rust, seulement affiché.
+      //
+      // ⚠️ **IL SE REPLIE AU LIEU D'ÊTRE TRONQUÉ** : c'est ce qui a été demandé,
+      // et un chemin n'a pas d'espaces où couper — d'où `overflow-wrap: anywhere`,
+      // qui casse n'importe où plutôt que de laisser déborder.
+      const chemin = el("div", { class: "chemin" });
+      const racine = el("div", { class: "moitie" }, [entete, chemin, message, recherche, tris, grille]);
+
+      const vue = { racine, titre, chemin, tronque, remonter, actualiser, explorateur, epingler, filtre, boutonsTri, grille, message };
+
+      // ---- LES GESTES D'UNE MOITIÉ ----------------------------------------
+      // Un bouton n'envoie QU'UN verbe : c'est Rust qui sait quel dossier est
+      // affiché de ce côté-là, et la page n'a jamais à transporter un chemin
+      // qu'elle n'a pas demandé.
+      remonter.onclick = () => go(cote, "remonter");
+      actualiser.onclick = () => go(cote, "actualiser");
+      explorateur.onclick = () => go(cote, "explorateur");
+      // ⛔ **LE CLIC CHOISIT SON VERBE SELON L'ÉTAT AFFICHÉ** — c'est ce qui fait
+      // du bouton une VRAIE bascule. Sans ça, `✓` et l'état « appuyé »
+      // promettaient un retour en arrière que le code ne faisait pas : un
+      // contrôle qui ment sur ce qu'il fait est pire qu'un contrôle absent.
+      epingler.onclick = () => {
+        const etat = etats[cote];
+        go(cote, etat && etat.epingle ? "desepingler" : "epingler");
+      };
+
+      // ⛔ **LA RECHERCHE VIT ENTIÈREMENT ICI.** Filtrer ne demande RIEN à Rust :
+      // un aller-retour par `go(...)` à chaque frappe serait absurde, et deux
+      // navigations rapprochées se TÉLESCOPENT (le second `location.href` de la
+      // même tâche annule le premier, en silence — règle du dépôt).
+      const appliquerFiltre = () => {
+        const aiguille = replier(filtre.value.trim());
+        for (const c of grille.children) {
+          const nom = replier(c.querySelector(".nom").textContent || "");
+          // Un champ vidé REMONTRE tout : c'est le seul état où l'on ne cache rien.
+          c.hidden = aiguille !== "" && !nom.includes(aiguille);
+        }
+      };
+      filtre.addEventListener("input", appliquerFiltre);
+
+      // ⛔ **DES BOUTONS, JAMAIS UN `<select>`**, et chacun n'envoie QU'UNE clé :
+      // c'est Rust qui décide ce qu'elle veut dire, et qui la REFUSE si elle ne
+      // correspond à rien (`Tri::depuis_cle`). La page ne connaît aucun ordre.
+      for (const b of boutonsTri) {
+        b.onclick = () => go(cote, "trier", b.dataset.tri);
+      }
+
+      installerSurvol(vue);
+
+      // ⛔ **SUR LA GRILLE, DONC AVANT LE GESTIONNAIRE DE `document`.** Celui de
+      // `menu_contextuel.js` écoute sur `document` en phase de bouillonnement et
+      // sort si `defaultPrevented` est vrai : notre `preventDefault` lui dit
+      // « c'est déjà traité », et le menu d'édition ne s'ouvre pas par-dessus le
+      // nôtre. C'est le contrat documenté de ce script.
+      //
+      // ⚠️ **DANS LE VIDE DE LA GRILLE, C'EST LE MENU DE CRÉATION** — sauf
+      // s'il y a une SÉLECTION de texte : le menu d'édition commun garde alors
+      // la main, sans quoi on ne pourrait plus copier un nom sélectionné.
+      vue.grille.addEventListener("click", (e) => {
+        coteActif = cote;
+        if (e.target === vue.grille) viderSelection(cote);
+      });
+      vue.grille.addEventListener("contextmenu", (e) => {
+        coteActif = cote;
+        const boite = e.target.closest ? e.target.closest(".enfant") : null;
+        if (boite && boite.classList.contains("provisoire")) return;
+        if (!boite && String(window.getSelection() || "")) return;
+        e.preventDefault();
+        menuContextuel.ouvrir(e, boite ? menuDuFichier(cote, boite) : menuDuVide(cote, vue));
+      });
+
+      vues[cote] = vue;
+      return racine;
+    }
+
+    // ---- LE SURVOL NE FAIT PLUS QU'ÉCLAIRER LA CASE ------------------------
+    //
+    // ⛔ **CE N'EST PLUS LUI QUI OUVRE LES DOSSIERS, ET C'EST UNE CORRECTION
+    // D'USAGE.** La première version faisait de la nappe survolée le dossier
+    // courant de cette moitié, au bout de 150 ms d'arrêt. À l'essai :
+    // « **je n'aime pas que les dossiers s'ouvrent tout seul au survol** » — on
+    // s'arrête tout le temps sans le vouloir, et le dossier changeait sous la
+    // souris. **Un dossier s'ouvre désormais au CLIC**, comme dans l'Explorateur.
+    //
+    // ⚠️ **ON GARDE `mousemove`, ON JETTE LA MINUTERIE.** Le relevé du survol
+    // reste tenu à la main pour DEUX raisons, et aucune n'est décorative :
+    // - **`:hover` N'EST PAS TENU PAR CEF** (mesuré 121 fois sur 121 à
+    //   `dash.html`) — un simple `:hover` CSS peut donc ne rien peindre, et on
+    //   cliquerait à l'aveugle ;
+    // - et surtout, **le geste est devenu inoffensif** : éclairer une case ne
+    //   navigue plus, ne lit plus le disque, n'émet plus rien vers Rust. Les
+    //   trois pièges du survol persistant — la rafale de navigations, les 48
+    //   `SHGetFileInfoW` par case, la grille reconstruite qui boucle sous un
+    //   pointeur immobile — tombent d'un coup, puisqu'il n'y a plus ni
+    //   navigation ni reconstruction.
+    //
+    // ⚠️ **LA BOUCLE RESTE IMPOSSIBLE** pour la même raison qu'avant : on écoute
+    // `mousemove`, jamais `:hover` ni `mouseover`, et un pointeur immobile
+    // n'émet aucun `mousemove`.
+    function installerSurvol(vue) {
+      let survolee = null;
+      const eteindre = () => {
+        if (survolee) survolee.classList.remove("survole");
+        survolee = null;
+      };
+
+      vue.grille.addEventListener("mousemove", (e) => {
+        // ⚠️ `closest` sur la CIBLE, et le repli sur `null` : la cible peut être
+        // le texte d'un nom, qui n'a pas de `closest` s'il n'est pas un élément.
+        const boite = e.target.closest ? e.target.closest(".enfant") : null;
+        if (boite === survolee) return; // Rien de neuf sous le curseur.
+        eteindre();
+        if (!boite) return;
+        survolee = boite;
+        boite.classList.add("survole");
+      });
+
+      // Sortir de la grille éteint — sans quoi la dernière case resterait
+      // éclairée alors que le curseur n'y est plus.
+      vue.grille.addEventListener("mouseleave", eteindre);
+    }
+
+    // ---- LA SÉLECTION MULTIPLE ---------------------------------------------
+    //
+    // ⭐ DEMANDE EXPLICITE (2026-10-11) : « pouvoir faire une sélection multiple
+    // de fichiers et dossiers pour pouvoir les copier coller ». Les gestes de
+    // l'Explorateur : Ctrl+clic ajoute ou retire une case, Maj+clic prend la
+    // plage depuis la dernière case choisie, Ctrl+A prend tout ; Ctrl+C, Ctrl+X
+    // et Ctrl+V copient, coupent et collent ; Échap ou un clic dans le vide
+    // vide la sélection. Un clic SIMPLE ouvre toujours, comme avant.
+    //
+    // Une sélection PAR MOITIÉ, tenue par CHEMIN (la grille est reconstruite à
+    // chaque état). Le clavier vise la moitié touchée en dernier (`coteActif`).
+    // Les chemins d'une sélection voyagent dans UN segment, séparés par un saut
+    // de ligne (voir `plusieurs_chemins` côté Rust).
+    const SEPARATEUR = "\n";
+    const selections = {};
+    const ancres = {};
+    let coteActif = null;
+
+    function selectionDe(cote) {
+      return selections[cote] || (selections[cote] = new Set());
+    }
+
+    // Les cases VISIBLES (la recherche en cache), dans l'ordre affiché.
+    function casesVisibles(cote) {
+      return [...vues[cote].grille.querySelectorAll(".enfant:not(.provisoire)")].filter((b) => !b.hidden);
+    }
+
+    function peindreSelection(cote) {
+      const vue = vues[cote];
+      if (!vue) return;
+      const sel = selectionDe(cote);
+      for (const b of vue.grille.querySelectorAll(".enfant")) b.classList.toggle("choisi", sel.has(b.dataset.chemin));
+    }
+
+    function viderSelection(cote) {
+      if (!selectionDe(cote).size) return false;
+      selectionDe(cote).clear();
+      peindreSelection(cote);
+      return true;
+    }
+
+    function toutSelectionner(cote) {
+      coteActif = cote;
+      const sel = selectionDe(cote);
+      for (const b of casesVisibles(cote)) sel.add(b.dataset.chemin);
+      peindreSelection(cote);
+    }
+
+    function cliquerUneCase(ev, cote, entree) {
+      coteActif = cote;
+      const sel = selectionDe(cote);
+      if (ev.shiftKey && ancres[cote]) {
+        const cases = casesVisibles(cote).map((b) => b.dataset.chemin);
+        const a = cases.indexOf(ancres[cote]);
+        const b = cases.indexOf(entree.chemin);
+        if (a >= 0 && b >= 0) {
+          if (!ev.ctrlKey) sel.clear();
+          for (const c of cases.slice(Math.min(a, b), Math.max(a, b) + 1)) sel.add(c);
+          peindreSelection(cote);
+          return;
+        }
+      }
+      if (ev.ctrlKey || ev.shiftKey) {
+        if (!sel.delete(entree.chemin)) sel.add(entree.chemin);
+        ancres[cote] = entree.chemin;
+        peindreSelection(cote);
+        return;
+      }
+      viderSelection(cote);
+      go(cote, entree.dossier ? "entrer" : "ouvrir", entree.chemin);
+    }
+
+    document.addEventListener("keydown", (e) => {
+      if (!coteActif || !vues[coteActif]) return;
+      const cible = e.target;
+      if (cible && (cible.tagName === "INPUT" || cible.tagName === "TEXTAREA")) return;
+      const sel = selectionDe(coteActif);
+      if (e.key === "Escape" && sel.size) {
+        e.preventDefault();
+        viderSelection(coteActif);
+        return;
+      }
+      if (!e.ctrlKey || e.altKey || e.shiftKey) return;
+      const touche = e.key.toLowerCase();
+      if (touche === "a") {
+        e.preventDefault();
+        toutSelectionner(coteActif);
+      } else if (touche === "c" && sel.size) {
+        e.preventDefault();
+        go(coteActif, "copier", [...sel].join(SEPARATEUR));
+      } else if (touche === "x" && sel.size) {
+        e.preventDefault();
+        go(coteActif, "couper", [...sel].join(SEPARATEUR));
+      } else if (touche === "v") {
+        e.preventDefault();
+        go(coteActif, "coller");
+      }
+    });
+
+    // ---- LE MENU CONTEXTUEL D'UN FICHIER --------------------------------
+    //
+    // ⛔ **DANS LA PAGE, PAS DANS UNE FENÊTRE À PART — ET C'EST DÉLIBÉRÉ.** Ce
+    // panneau ne charge PAS `menu.js`, donc il n'a **aucune mesure à négocier** ;
+    // or c'est la collision mesure/action qui a façonné le menu de dossier de la
+    // barre du bas (« deux `location.href` d'une même tâche se TÉLESCOPENT en
+    // silence »). Une fenêtre de menu séparée coûterait en plus un `SPEC`, un
+    // chemin retenu côté Rust, un ancrage, et **deux entrées de plus dans les
+    // listes du harnais** — pour rien, puisque `menu_contextuel.js` dessine déjà
+    // le menu, le retourne quand il déborde, et le referme au clic ailleurs.
+    //
+    // ⚠️ **ON LIT `e.target`, JAMAIS `:hover`** : CEF ne tient pas l'état survolé
+    // (mesuré 121 fois sur 121 dans `dash.html`). L'évènement `contextmenu` porte
+    // la VRAIE cible, donc le piège ne nous atteint pas ici — il n'atteint que le
+    // code qui interroge `:hover` au moment du clic.
+    function menuDuFichier(cote, boite) {
+      const chemin = boite.dataset.chemin;
+      const estDossier = boite.dataset.dossier === "1";
+      // Un clic droit HORS de la sélection la remplace par la case, comme dans
+      // l'Explorateur ; DANS la sélection, Copier/Couper portent sur toute.
+      const sel = selectionDe(cote);
+      if (!sel.has(chemin)) { sel.clear(); peindreSelection(cote); }
+      const groupe = sel.size > 1 ? [...sel] : [chemin];
+      const combien = groupe.length > 1 ? ` (${groupe.length} éléments)` : "";
+      const lignes = [];
+      // ⛔ **« AFFICHER » EST OFFERT POUR TOUT FICHIER — ET C'EST RUST QUI
+      // RÉPOND.** La page ne tient AUCUNE liste d'extensions : ce serait une
+      // seconde copie de `texte_fichier::est_un_texte`, et deux listes qui
+      // doivent rester d'accord finissent toujours par diverger — c'est le défaut
+      // que ce dépôt a payé le plus souvent. Sur un format qu'on ne sait pas
+      // montrer, Rust REFUSE et le DIT (« format non affichable »), ce qui vaut
+      // mieux qu'une entrée grisée dont la règle vivrait ici.
+      // ⭐ SAUF UNE VIDÉO SANS VLC — DEMANDE EXPLICITE (2026-10-19) : « Voir
+      // l'aide » à la place, qui ouvre la section de l'aide sur l'installation de
+      // VLC. Rust dit ce qui est une vidéo (`video`) et si VLC est là (`vlc`).
+      const moitie = etats[cote];
+      const videoSansVlc = boite.dataset.video === "1" && !(moitie && moitie.vlc);
+      if (videoSansVlc) {
+        lignes.push({ texte: "Voir l'aide", action: () => go(cote, "aide-video") });
+      } else if (!estDossier) {
+        lignes.push({ texte: "Afficher", action: () => go(cote, "afficher", chemin) });
+      }
+      lignes.push({ texte: "Ouvrir", action: () => go(cote, "ouvrir", chemin) });
+      if (!estDossier) {
+        lignes.push({ texte: "Ouvrir avec…", action: () => go(cote, "ouvrir-avec", chemin) });
+      }
+      // ⚠️ **« AFFICHER » N'EST PAS ENCORE OFFERT, ET C'EST VOLONTAIRE.** La
+      // visionneuse est la pièce suivante ; tant qu'elle n'existe pas, le verbe
+      // existe côté Rust mais la page ne l'émet pas. Une entrée qui ne ferait
+      // rien serait pire qu'une entrée absente — même règle que le « + » de
+      // l'épinglage, qui doit DIRE dans quel sens il bascule.
+      lignes.push(
+        "-",
+        { texte: "Copier" + combien, action: () => go(cote, "copier", groupe.join(SEPARATEUR)) },
+        { texte: "Couper" + combien, action: () => go(cote, "couper", groupe.join(SEPARATEUR)) },
+      );
+      // Coller DANS un dossier : le presse-papiers est lu par Rust, qui dit s'il
+      // ne porte rien (voir `Demande::Coller`).
+      if (estDossier) {
+        lignes.push({ texte: "Coller dans ce dossier", action: () => go(cote, "coller", chemin) });
+      }
+      lignes.push(
+        "-",
+        { texte: "Renommer", action: () => renommerDansLaCase(cote, boite) },
+        { texte: "Supprimer", action: () => go(cote, "supprimer", chemin) },
+        "-",
+        { texte: "Copier le chemin", action: () => go(cote, "copier-chemin", chemin) },
+        { texte: "Propriétés", action: () => go(cote, "proprietes", chemin) },
+      );
+      return lignes;
+    }
+
+    // ---- LE MENU CONTEXTUEL DU VIDE : CRÉER --------------------------------
+    //
+    // ⚠️ **LA PAGE N'ENVOIE QU'UN NOM** : le dossier où créer est celui que la
+    // moitié affiche, et c'est Rust qui le sait (voir `Demande::NouveauDossier`).
+    function menuDuVide(cote, vue) {
+      return [
+        { texte: "Nouveau dossier", action: () => nommerUneNouvelleCase(vue, "Nouveau dossier", (nom) => go(cote, "nouveau-dossier", nom)) },
+        { texte: "Nouveau fichier", action: () => nommerUneNouvelleCase(vue, "Nouveau fichier.txt", (nom) => go(cote, "nouveau-fichier", nom)) },
+        "-",
+        { texte: "Coller", action: () => go(cote, "coller") },
+        { texte: "Tout sélectionner", action: () => toutSelectionner(cote) },
+      ];
+    }
+
+    // ⛔ **LE NOM SE TAPE AVANT DE CRÉER, DANS UNE CASE PROVISOIRE.** Créer
+    // d'abord « Nouveau dossier » puis le renommer, comme l'Explorateur,
+    // demanderait de RETROUVER la case neuve après la relecture — et laisserait
+    // un « Nouveau dossier » sur le disque à chaque Échap. Ici, Échap ne laisse
+    // rien. Même champ, mêmes règles que `renommerDansLaCase` : Entrée valide,
+    // Échap et la perte de focus annulent.
+    //
+    // ⚠️ **`envoyer` PORTE LE `go` ENTIER, VERBE LITTÉRAL COMPRIS** : le test de
+    // contrat (`les_verbes_de_la_page_sont_exactement_ceux_du_dispatch`) lit les
+    // littéraux passés à `go(` — un verbe dans une variable lui serait invisible.
+    function nommerUneNouvelleCase(vue, propose, envoyer) {
+      if (vue.grille.querySelector(".provisoire")) return;
+      const champ = el("input", { class: "renommage", value: propose });
+      const boite = el("div", { class: "enfant provisoire" }, [el("span", { class: "vide" }), champ]);
+      vue.grille.prepend(boite);
+      vue.grille.scrollTop = 0;
+      const point = propose.lastIndexOf(".");
+      champ.focus();
+      champ.setSelectionRange(0, point > 0 ? point : propose.length);
+
+      let termine = false;
+      const fermer = () => {
+        if (termine) return;
+        termine = true;
+        boite.remove();
+      };
+      champ.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const nom = champ.value.trim();
+          fermer();
+          // Un nom vide n'est pas envoyé : Rust le refuserait, et il n'y a rien
+          // à dire de plus qu'une case qui disparaît.
+          if (nom) envoyer(nom);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          fermer();
+        }
+      });
+      champ.addEventListener("blur", fermer);
+    }
+
+    // ⛔ **LE RENOMMAGE SE FAIT DANS LA CASE, SANS RECONSTRUIRE LA GRILLE.** Le
+    // fond du défaut : reconstruire la case au moment où on lui donne le focus le
+    // retirerait aussitôt — le champ disparaîtrait sous les doigts. On remplace
+    // donc SEULEMENT le texte par un champ, et la case garde sa place.
+    function renommerDansLaCase(cote, boite) {
+      const span = boite.querySelector(".nom");
+      if (!span || boite.querySelector("input")) return;
+      const ancien = span.textContent;
+      const champ = el("input", { class: "renommage", value: ancien });
+      span.replaceWith(champ);
+      // **LE NOM SANS L'EXTENSION, PRÉ-SÉLECTIONNÉ** : c'est ce qu'on veut
+      // changer neuf fois sur dix. Si le nom commence par un point (`.gitignore`),
+      // il n'y a pas d'extension — tout est sélectionné.
+      const point = ancien.lastIndexOf(".");
+      champ.focus();
+      champ.setSelectionRange(0, point > 0 ? point : ancien.length);
+
+      let termine = false;
+      const rendreLeNom = () => {
+        if (champ.parentNode) {
+          span.textContent = ancien;
+          champ.replaceWith(span);
+        }
+      };
+      const annuler = () => {
+        if (termine) return;
+        termine = true;
+        rendreLeNom();
+      };
+      const valider = () => {
+        if (termine) return;
+        termine = true;
+        const nom = champ.value.trim();
+        if (!nom || nom === ancien) {
+          // Rien à faire : on remet le texte plutôt que d'envoyer un geste qui
+          // ne changerait rien (et que Rust refuserait).
+          rendreLeNom();
+          return;
+        }
+        go(cote, "renommer", boite.dataset.chemin, nom);
+      };
+      champ.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          valider();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          annuler();
+        }
+      });
+      // ⚠️ **LA PERTE DE FOCUS ANNULE, ELLE NE VALIDE PAS.** Valider au blur
+      // ferait qu'un clic ailleurs (dans l'autre moitié, sur un bouton) renomme
+      // le fichier sans qu'on l'ait demandé — un geste qu'on ne peut pas défaire
+      // sans le refaire.
+      champ.addEventListener("blur", annuler);
+    }
+
+    // ---- RENDRE UNE MOITIÉ -------------------------------------------------
+    function rendre(cote, state) {
+      const vue = vues[cote];
+      if (!vue) return;
+      vue.titre.textContent = state.nom || "";
+      // ⭐ **LE CHEMIN COMPLET** — `state.dossier`, que Rust envoyait DÉJÀ pour
+      // d'autres usages (le parent, l'épinglage) : il n'y avait qu'à l'afficher.
+      // ⚠️ Il est aussi posé en `title`, pour qu'un chemin très long reste
+      // lisible d'un survol même replié sur plusieurs lignes.
+      vue.chemin.textContent = state.dossier || "";
+      vue.chemin.title = state.dossier || "";
+      vue.tronque.textContent = state.tronque ? "(liste tronquée)" : "";
+      // Le compte rendu du dernier geste — vide la plupart du temps, et c'est
+      // `:empty` qui le retire alors de la mise en page (voir le CSS).
+      vue.message.textContent = state.message || "";
+
+      // Pas de parent à la racine d'un lecteur (`C:\`) : le bouton disparaît
+      // plutôt que d'offrir un geste qui ne mène nulle part.
+      vue.remonter.style.display = state.parent ? "" : "none";
+
+      const enfants = state.enfants || [];
+      vue.grille.replaceChildren(...enfants.map((e) => {
+        // ⚠️ **LE VISUEL VIENT DU CACHE D'ICÔNES, PAS DE L'ÉTAT** — voir
+        // `visuelDe`. Tant que l'icône n'est pas arrivée, la case montre un carré
+        // en pointillés : l'état et les icônes voyagent par deux canaux
+        // séparés, et celui-ci arrive par lots juste après.
+        const visuel = visuelDe(e.chemin);
+        const boite = el("button", {
+          class: "enfant",
+          title: e.chemin,
+          // ⚠️ Le GESTE suit la NATURE : un dossier s'OUVRE (on entre), un
+          // fichier se LANCE. C'est la seule distinction dont le clic ait besoin.
+          // Ctrl/Maj : la case entre dans la SÉLECTION au lieu de s'ouvrir.
+          onclick: (ev) => cliquerUneCase(ev, cote, e),
+        }, [visuel, el("span", { class: "nom" }, [e.nom])]);
+        // ⚠️ `dataset` et non `setAttribute` : `el` ne connaît que `class` et les
+        // `on…`. Le CHEMIN est la clé du cache d'icônes de la page (voir
+        // `setIcons`), c'est la seule donnée que la case doive porter.
+        boite.dataset.chemin = e.chemin;
+        // ⛔ **LA NATURE DE LA CASE EST PORTÉE PAR LA CASE ELLE-MÊME.** Le menu
+        // contextuel en dépend : un dossier n'a ni « Ouvrir avec… » ni, plus
+        // tard, « Afficher ». Le lire ailleurs (dans l'état reçu) demanderait de
+        // retrouver l'enfant par son chemin à chaque clic droit.
+        boite.dataset.dossier = e.dossier ? "1" : "0";
+        // Même règle pour une VIDÉO (« Voir l'aide » sans VLC, voir le menu).
+        boite.dataset.video = e.video ? "1" : "0";
+        return boite;
+      }));
+
+      // ⛔ **LA RECHERCHE REPART À ZÉRO À CHAQUE CHANGEMENT DE DOSSIER.** Garder
+      // le filtre donnerait un dossier VIDE dont on ne saurait pas pourquoi — et
+      // l'utilisateur n'a aucun moyen de deviner qu'un champ plus haut porte
+      // encore quelque chose.
+      // ⚠️ **C'EST POURQUOI CHAQUE MOITIÉ A SA RÉVISION** : sans elle, explorer à
+      // gauche viderait la recherche de droite à chaque pas.
+      vue.filtre.value = "";
+      for (const c of vue.grille.children) c.hidden = false;
+      // La sélection survit à une relecture du MÊME dossier (après un collage),
+      // pas à un changement de dossier ; un chemin disparu en sort.
+      if (vue.dossierSelection !== state.dossier) selections[cote] = new Set();
+      vue.dossierSelection = state.dossier;
+      const presents = new Set(enfants.map((e) => e.chemin));
+      for (const c of [...selectionDe(cote)]) if (!presents.has(c)) selectionDe(cote).delete(c);
+      peindreSelection(cote);
+
+      const actif = state.tri || "nom";
+      for (const b of vue.boutonsTri) {
+        b.setAttribute("aria-pressed", String(b.dataset.tri === actif));
+      }
+
+      // ⚠️ **LE « + » DIT SON ÉTAT.** Le signe change, pas seulement la couleur :
+      // l'utilisateur a cliqué quatre fois en disant « il ne se passe rien », et
+      // il avait raison de le dire — voir juste en dessous.
+      //
+      // ⛔ **PLUS DE « AU PROCHAIN LANCEMENT » DANS L'INFOBULLE, ET C'EST UNE
+      // CORRECTION.** Elle l'affirmait, et c'était vrai autrefois — plus depuis
+      // l'étape 4 des identités stables : `DossiersVivants` insère l'icône au bon
+      // rang et le rendu de la MÊME frame la peint (voir
+      // `app::basculer_epinglage_du_dossier_affiche`, qui le dit noir sur blanc).
+      // Une infobulle qui annonce un délai qui n'existe plus est pire qu'une
+      // infobulle absente : elle fait douter d'un geste qui a marché, et fait
+      // chercher un redémarrage inutile.
+      vue.epingler.setAttribute("aria-pressed", String(!!state.epingle));
+      vue.epingler.textContent = state.epingle ? "\u2713" : "+";
+      // ⚠️ **L'INFOBULLE DIT CE QUE LE CLIC FERA**, et pas seulement l'état :
+      // « Déjà sur la barre du bas » se lisait comme un constat inerte alors que
+      // le bouton retire — défaut signalé (« je ne peux pas désépingler »).
+      vue.epingler.title = state.epingle
+        ? "Retirer ce dossier de la barre du bas"
+        : "Ajouter ce dossier à la barre du bas";
+    }
+
+    // **NE GARDE QUE LES ICÔNES DES CHEMINS QUE CET ÉTAT AFFICHE.**
+    //
+    // ⛔ **C'EST UN ÉLAGAGE, PAS UN VIDAGE — ET LA DIFFÉRENCE EST UNE CORRECTION
+    // MESURÉE.** Un `icones.clear()` détruisait les icônes reçues AVANT le premier
+    // état d'une ouverture. Or Rust envoie ses lots dès la première frame
+    // (`cef_sous_dock::poll`) et une page FROIDE met parfois plus de temps que cela
+    // à appeler `setState` : tout ce qui était arrivé entre les deux était jeté
+    // ici. Rust, lui, tient ces chemins pour ENVOYÉS (`ICONES_ENVOYEES`) et ne les
+    // renverra JAMAIS — **la moitié entière restait en carrés pointillés pour
+    // toute la session, sans un mot**.
+    //
+    // Mesuré sur le harnais, mêmes fichiers, même dossier : ouverture à la **frame
+    // 0** (page froide) → la moitié DROITE entièrement vide ; à la **frame 60**
+    // (page préchargée) → complète. La moitié perdue est bien celle dont les
+    // icônes partent EN PREMIER, comme l'ordre de la file le prédit
+    // (`cef_sous_dock::ouvrir` rebâtit la file en mettant en tête la moitié qui
+    // vient de changer).
+    //
+    // ⚠️ **LE VIDAGE N'A JAMAIS RIEN RATTRAPÉ** : un vrai rechargement donne un
+    // document neuf, donc un `Map` neuf — il n'y avait rien à vider. Ce qu'il
+    // faisait vraiment, c'était borner la mémoire d'une session qui explore
+    // beaucoup de dossiers : c'est ce que l'élagage continue de faire, sans rien
+    // perdre de ce qui est affiché.
+    function elaguerLesIcones(state) {
+      const affiches = new Set();
+      for (const cote of [GAUCHE, DROITE]) {
+        const moitie = state[CHAMP[cote]];
+        if (!moitie) continue;
+        for (const enfant of (moitie.enfants || [])) affiches.add(enfant.chemin);
+      }
+      for (const cle of [...icones.keys()]) {
+        if (!affiches.has(cle)) icones.delete(cle);
+      }
+    }
+
+    window.setState = function (state) {
+      if (!state) return;
+      document.documentElement.style.setProperty("--text-scale", state.echelle || 1);
+      if (typeof state.zoom === "number") {
+        if (zoomAttendu !== null) {
+          if (state.zoom === zoomAttendu) zoomAttendu = null;
+        } else if (state.zoom !== niveauZoom) {
+          poserZoom(state.zoom);
+        }
+      }
+      // ⚠️ **LA PUNAISE N'EST PLUS POSÉE ICI.** C'est `cef_popup` qui la reflète à
+      // chaque frame (`js_epingle`), pour ce panneau comme pour les quatorze
+      // autres — un seul écrivain de cet attribut, sinon le bouton clignoterait
+      // entre les deux valeurs.
+      if (state.open !== appliedOpen) {
+        appliedOpen = state.open;
+        // **UNE NOUVELLE OUVERTURE REND LES DEUX MOITIÉS.** C'est ce qui fait
+        // survivre la toute première poussée, qui peut arriver avant que la page
+        // n'ait fini de charger (défaut mesuré trois fois dans ce dépôt).
+        revisions.g = -1;
+        revisions.d = -1;
+      }
+      // ⚠️ **L'ÉLAGAGE SE FAIT ICI, PAS DANS LA BRANCHE CI-DESSUS** : il doit
+      // suivre le contenu, pas seulement l'ouverture — sinon une session qui
+      // traverse vingt gros dossiers accumulerait leurs icônes sans jamais les
+      // rendre. Et il ne coûte rien : la rafale repousse le MÊME état soixante
+      // fois, donc `change` n'est vrai qu'une fois par changement réel.
+      const change = [GAUCHE, DROITE].some((cote) => {
+        const moitie = state[CHAMP[cote]];
+        return moitie && moitie.revision !== revisions[cote];
+      });
+      if (change) elaguerLesIcones(state);
+      for (const cote of [GAUCHE, DROITE]) {
+        const moitie = state[CHAMP[cote]];
+        if (!moitie) continue;
+        if (moitie.revision === revisions[cote]) continue;
+        // ⛔ **ON ACQUITTE APRÈS LE RENDU, JAMAIS AVANT.** Acquitter d'abord
+        // marquerait comme « appliqué » un état dont le rendu a pu lever au
+        // milieu : la moitié resterait figée sur l'ancien contenu, et les
+        // soixante poussées de la rafale — même révision — ne la
+        // rattraperaient pas. Seul un changement ULTÉRIEUR la débloquerait, ce
+        // qui rendrait le défaut presque impossible à attribuer à sa cause.
+        // Dans cet ordre, une exception laisse la révision en arrière et la
+        // poussée suivante réessaie.
+        rendre(cote, moitie);
+        etats[cote] = moitie;
+        revisions[cote] = moitie.revision;
+      }
+    };
+
+    // ---- LES ICÔNES VIVENT À PART DE L'ÉTAT --------------------------------
+    // ⛔ **LA RAISON EST MESURÉE : 743 Ko PAR POUSSÉE**, dont ~99 % d'icônes en
+    // `data:` base64 (gauche 289 Ko, droite 453 Ko au journal). Or l'état est
+    // repoussé pendant une rafale d'une seconde à chaque changement, et cette
+    // page JETTE les poussées identiques — on transférait donc 44 Mo pour rien.
+    //
+    // L'état ne porte plus que le NOM et le CHEMIN de chaque enfant ; les images
+    // arrivent par `window.setIcons`, **une fois par chemin**, comme le Dash
+    // (`dash.html`, `win32::cef_dash::load_pending_icons`).
+    //
+    // ⚠️ **LA CLÉ EST LE CHEMIN, PAS UN INDEX** (contrairement au Dash, dont les
+    // tuiles n'ont pas d'identité stable) : le cache survit donc à un changement
+    // d'ordre comme à une entrée dans un dossier.
+    //
+    // ⛔ **ET LE CACHE EST VIDÉ À CHAQUE OUVERTURE**, sur le changement de
+    // `open` — en même temps que Rust vide son propre carnet (voir
+    // `cef_sous_dock::ouvrir`). Les deux repartent donc ensemble, ce qui rattrape
+    // le cas où CETTE PAGE aurait rechargé : elle a tout perdu, et Rust le sait.
+    const icones = new Map();
+
+    // `null` est une VALEUR, pas une absence : elle dit « ce chemin n'a pas
+    // d'icône », et évite de le redemander indéfiniment. `undefined` (jamais
+    // reçue) et `null` (reçue, sans icône) se dessinent pareil — un carré en
+    // pointillés — mais seul le second est définitif.
+    function visuelDe(chemin) {
+      const uri = icones.has(chemin) ? icones.get(chemin) : undefined;
+      return uri ? el("img", { src: uri, alt: "" }) : el("span", { class: "vide" });
+    }
+
+    // Remplace le visuel d'une case DÉJÀ rendue. ⚠️ **DANS LES DEUX SENS** : une
+    // image peut redevenir un carré vide si un lot ultérieur dit « pas d'icône »
+    // — c'est ce qui arrive quand deux dossiers montrent le même chemin.
+    function poserLeVisuel(boite, uri) {
+      const actuel = boite.firstElementChild;
+      const estImage = !!actuel && actuel.tagName === "IMG";
+      if (uri && estImage) {
+        if (actuel.getAttribute("src") !== uri) actuel.setAttribute("src", uri);
+        return;
+      }
+      if (!uri && !estImage) return; // Déjà le carré vide.
+      boite.replaceChild(
+        uri ? el("img", { src: uri, alt: "" }) : el("span", { class: "vide" }),
+        actuel,
+      );
+    }
+
+    // Appelée depuis Rust (`cef_sous_dock::envoyer_des_icones`), par lots de 24.
+    // ⛔ **ON NE RECONSTRUIT PAS LA GRILLE**, à la différence du Dash : une case
+    // est désignée par son CHEMIN dans `dataset.chemin`, donc on retrouve celle
+    // qu'il faut et on ne remplace que son image. Reconstruire 96 cases quatre
+    // fois de suite ferait clignoter la grille et perdrait la position de
+    // défilement — celle des deux moitiés.
+    window.setIcons = function (lot) {
+      for (const [chemin, uri] of lot) icones.set(chemin, uri);
+      for (const cote of [GAUCHE, DROITE]) {
+        const vue = vues[cote];
+        if (!vue) continue;
+        for (const boite of vue.grille.children) {
+          const chemin = boite.dataset.chemin;
+          if (icones.has(chemin)) poserLeVisuel(boite, icones.get(chemin));
+        }
+      }
+    };
+
+    // ---- LE MONTAGE --------------------------------------------------------
+    const panneau = document.getElementById("panneau");
+    const moitieGauche = construireMoitie(GAUCHE);
+    const moitieDroite = construireMoitie(DROITE);
+    // ⚠️ **LE PANNEAU EST UNE COLONNE : [barre][rangée].** La rangée existe pour
+    // que le séparateur mesure SON espace — mesurer `#panneau` décalerait le
+    // partage de la hauteur de la barre.
+    const rangee = el("div", { class: "rangee" });
+    const barre = el("div", { class: "barre" });
+
+    // ---- LE SÉPARATEUR ENTRE LES DEUX MOITIÉS ------------------------------
+    //
+    // ⛔ **LE GESTE EST RECOPIÉ DE `clipboard.html`** (`setupSplitter`, même
+    // motif dans `notes.html` et `ssh.html`) — mêmes écouteurs, même garde, même
+    // raison. Ce n'est PAS un oubli de factorisation : chaque page CEF est un
+    // document indépendant, **il n'existe aucun module JS commun entre popups**
+    // (voir `notes.html`, qui l'écrit noir sur blanc).
+    //
+    // ⚠️ **LE PARTAGE EST UN RATIO, PAS UNE LARGEUR EN PIXELS** — la seule
+    // divergence avec `clipboard.html`, et elle est délibérée :
+    //  - Rust repose la fenêtre depuis `dash_rect` à chaque ouverture : une
+    //    largeur en pixels demanderait d'être reclampée à la main sur `resize`
+    //    (ce que `clipboard.html` fait, faute de mieux) ;
+    //  - ⚠️ **la page est ZOOMÉE** (`#panneau { zoom: var(--text-scale) }`) : un
+    //    calcul en pixels devrait se méfier de l'échelle — le dépôt a déjà payé
+    //    ce piège — alors que le rapport `(clientX - rect.left) / rect.width`
+    //    L'ANNULE, les deux termes étant dans le même espace ;
+    //  - c'est ce qui a été demandé : un PARTAGE, pas une cote.
+    //
+    // ⛔ **ON RÈGLE `flex-grow`, PAS UNE LARGEUR.** La base de `.moitie` vaut 0
+    // (`flex: 1 1 0`), donc les largeurs suivent le rapport des `grow`, et le
+    // partage survit tout seul à un changement de taille de la fenêtre.
+    const PARTAGE_MIN = 0.2;
+    const PARTAGE_MAX = 0.8;
+    const PARTAGE_DEFAUT = 0.5;
+    let partage = PARTAGE_DEFAUT;
+
+    const separateur = el("div", { class: "separateur" });
+    separateur.setAttribute("role", "separator");
+    separateur.setAttribute("aria-orientation", "vertical");
+    separateur.setAttribute("aria-label", "Largeur des deux dossiers");
+    separateur.setAttribute("aria-valuemin", String(PARTAGE_MIN * 100));
+    separateur.setAttribute("aria-valuemax", String(PARTAGE_MAX * 100));
+    separateur.tabIndex = 0;
+    separateur.title =
+      "Glisser pour régler la largeur des deux dossiers (double-clic ou flèches : 50/50)";
+
+    function reglerPartage(rapport) {
+      partage = Math.min(Math.max(rapport, PARTAGE_MIN), PARTAGE_MAX);
+      moitieGauche.style.flexGrow = String(partage);
+      moitieDroite.style.flexGrow = String(1 - partage);
+      separateur.setAttribute("aria-valuenow", String(Math.round(partage * 100)));
+    }
+
+    // ---- LA PUNAISE : MAINTENIR LE PANNEAU OUVERT --------------------------
+    //
+    // ⛔ **CE N'EST PAS LE BOUTON `+`/`✓` DES MOITIÉS.** Celui-là épingle le
+    // DOSSIER affiché à la barre du bas — il écrit `dossiers.toml`. Celui-ci
+    // maintient le PANNEAU ouvert, et rien n'est écrit sur le disque. Deux gestes,
+    // deux mots : ici on dit « maintenir », jamais « épingler ».
+    //
+    // ⚠️ **ELLE EST GLOBALE AU PANNEAU**, pas à une moitié — d'où sa place dans la
+    // barre du haut, au-dessus des deux. Son action n'est PAS un verbe de côté :
+    // voir `cef_popup::est_action_epingle`, qui la reconnaît sur son dernier
+    // segment, et le clic posé plus bas.
+    // ⚠️ **L'`id` N'EST PAS DÉCORATIF** : `cef_popup` injecte dans TOUT panneau un
+    // JS qui ajoute une punaise à côté du bouton de fermeture de la page — et qui
+    // s'efface devant celle-ci si cet `id` existe déjà. Sans lui, ce panneau
+    // aurait DEUX punaises, dont une posée au hasard faute de bouton « Fermer » ici.
+    //
+    // ⚠️ **LE CLIC PASSE PAR LA MÉCANIQUE COMMUNE AUX QUINZE PANNEAUX**
+    // (`neuradesk://nd/epingle`, retirée centralement par
+    // `cef_popup::drain_actions`). Ce panneau a eu sa propre action et son propre
+    // drapeau pendant une heure ; deux drapeaux pour la même idée auraient fini par
+    // diverger, et le bouton — dont l'état est posé par `cef_popup` à chaque
+    // frame — aurait clignoté entre les deux.
+    // ---- LE ZOOM DES DEUX GRILLES -----------------------------------------
+    //
+    // DEMANDE EXPLICITE (2026-10-11) : « pouvoir changer le niveau de zoom ». Il
+    // vaut pour les DEUX moitiés, d'où sa place dans la barre du haut.
+    //
+    // ⛔ **LA TABLE EST AUSSI CÔTÉ RUST** (`cef_sous_dock::TAILLES_CASE`), qui en
+    // tire la taille des images qu'il envoie — un test compare les deux.
+    //
+    // ⚠️ **LA PAGE APPLIQUE TOUT DE SUITE, PUIS PRÉVIENT RUST** (`go("zoom", …)`),
+    // qui retient le niveau et renvoie les images à la nouvelle taille. Tant que
+    // l'état ne rapporte pas le niveau demandé (`zoomAttendu`), une poussée plus
+    // ancienne ne doit pas le défaire — sinon la grille sautillerait.
+    const TAILLES_CASE = [32, 48, 64, 96, 128];
+    let niveauZoom = 0;
+    let zoomAttendu = null;
+    const zoomMoins = el("button", { class: "outil", title: "Réduire les icônes (Ctrl + molette)" }, ["\u2212"]);
+    const zoomPlus = el("button", { class: "outil", title: "Agrandir les icônes (Ctrl + molette)" }, ["+"]);
+    const zoomNiveau = el("span", { class: "niveau-zoom" }, [""]);
+    zoomMoins.type = "button";
+    zoomPlus.type = "button";
+
+    function poserZoom(niveau) {
+      niveauZoom = Math.min(Math.max(niveau, 0), TAILLES_CASE.length - 1);
+      document.documentElement.style.setProperty("--case", TAILLES_CASE[niveauZoom] + "px");
+      zoomNiveau.textContent = Math.round(TAILLES_CASE[niveauZoom] / TAILLES_CASE[0] * 100) + " %";
+      zoomMoins.disabled = niveauZoom === 0;
+      zoomPlus.disabled = niveauZoom === TAILLES_CASE.length - 1;
+    }
+
+    function zoomer(pas) {
+      const niveau = Math.min(Math.max(niveauZoom + pas, 0), TAILLES_CASE.length - 1);
+      if (niveau === niveauZoom) return;
+      poserZoom(niveau);
+      zoomAttendu = niveau;
+      go("zoom", String(niveau));
+    }
+
+    zoomMoins.onclick = () => zoomer(-1);
+    zoomPlus.onclick = () => zoomer(1);
+    // Ctrl + molette, le geste de l'Explorateur. ⚠️ `passive: false`, sinon
+    // `preventDefault` est ignoré et la page zoomerait AUSSI à sa façon.
+    document.addEventListener("wheel", (e) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      zoomer(e.deltaY < 0 ? 1 : -1);
+    }, { passive: false });
+    poserZoom(0);
+    barre.append(zoomMoins, zoomNiveau, zoomPlus);
+
+    const punaise = el("button", { class: "outil punaise" }, ["\u{1F4CC}"]);
+    punaise.id = "nd-punaise";
+    punaise.type = "button";
+    punaise.onclick = () => { location.href = "neuradesk://nd/epingle"; };
+    // La croix — DEMANDE EXPLICITE (2026-10-18) : « que tous les dashs aient une
+    // croix de fermeture ». Globale au panneau, comme la punaise : son action
+    // n'a pas de côté (voir `cef_sous_dock::dispatch_actions`).
+    const croix = el("button", { class: "outil" }, [el("span", { class: "ico ico-x" })]);
+    croix.type = "button";
+    croix.title = "Fermer";
+    croix.onclick = () => { location.href = "neuradesk://sous-dock/close"; };
+    barre.append(punaise, croix);
+
+    rangee.append(moitieGauche, separateur, moitieDroite);
+    panneau.append(barre, rangee);
+    reglerPartage(PARTAGE_DEFAUT);
+
+    // ---- LE GLISSER --------------------------------------------------------
+    // ⚠️ **`mousemove`/`mouseup` SUR `document`, JAMAIS SUR LE SÉPARATEUR** :
+    // sinon le geste s'interrompt dès que le curseur quitte la bande de 6 px, ce
+    // qui arrive à chaque geste un peu vif — c'est la remarque de
+    // `clipboard.html`, et elle vaut ici à l'identique.
+    separateur.addEventListener("mousedown", (debut) => {
+      if (debut.button !== 0) return; // Le bouton droit a d'autres affaires.
+      debut.preventDefault();
+      separateur.classList.add("dragging");
+      // ⛔ **SANS ÇA, LE GLISSER SÉLECTIONNE LE TEXTE DES DEUX GRILLES** —
+      // c'est le comportement par défaut du navigateur sur un glisser maintenu.
+      document.body.style.userSelect = "none";
+
+      function auMouvement(mouvement) {
+        // ⚠️ **POSITION ABSOLUE DU CURSEUR, JAMAIS UN CUMUL** depuis le mouvement
+        // précédent : un cumul dériverait dès qu'un mouvement manque (et le
+        // relais Rust peut en perdre). Même règle que les glissers du dock.
+        // ⛔ **ON MESURE LA RANGÉE, PAS `#panneau`** : celui-ci porte en plus la
+        // barre de la punaise, et le partage se décalerait de sa hauteur.
+        const boite = rangee.getBoundingClientRect();
+        if (boite.width > 0) {
+          reglerPartage((mouvement.clientX - boite.left) / boite.width);
+        }
+      }
+      function auRelachement() {
+        separateur.classList.remove("dragging");
+        document.body.style.userSelect = "";
+        document.removeEventListener("mousemove", auMouvement);
+        document.removeEventListener("mouseup", auRelachement);
+      }
+      document.addEventListener("mousemove", auMouvement);
+      document.addEventListener("mouseup", auRelachement);
+    });
+
+    // Double-clic : retour à 50/50 — le geste qu'on cherche quand on s'est
+    // trompé, et qui évite d'avoir à viser la position d'équilibre à la main.
+    separateur.addEventListener("dblclick", (evenement) => {
+      evenement.preventDefault();
+      reglerPartage(PARTAGE_DEFAUT);
+    });
+
+    // ⚠️ **LE CLAVIER, PARCE QU'UN CONTRÔLE QUI N'OBÉIT QU'À LA SOURIS EST UN
+    // CONTRÔLE INACCESSIBLE** — et ce serait le SEUL du panneau dans ce cas :
+    // tout le reste est en boutons, donc atteignable au clavier.
+    separateur.addEventListener("keydown", (touche) => {
+      const pas = touche.shiftKey ? 0.1 : 0.02;
+      if (touche.key === "ArrowLeft") reglerPartage(partage - pas);
+      else if (touche.key === "ArrowRight") reglerPartage(partage + pas);
+      else if (touche.key === "Home") reglerPartage(PARTAGE_MIN);
+      else if (touche.key === "End") reglerPartage(PARTAGE_MAX);
+      else return;
+      touche.preventDefault();
+    });
+
+    // ⛔ **AUCUN APPEL DE MESURE, ET PAS UN SEUL TÉMOIN DE DIAGNOSTIC.**
+    // Le défaut réel de la veille était ailleurs, et il est instructif :
+    // l'expression JS construite côté Rust retirait l'accolade fermante de son
+    // JSON et ne la remettait jamais, donc **un `SyntaxError`** — un script
+    // rejeté à la COMPILATION, qui n'appelle rien, n'écrit rien, et que
+    // `execute_js` ne signale pas. Voir `win32::cef_sous_dock::expression_js`, où
+    // le pourquoi est écrit, et le TEST qui le garde : c'est le seul garde-fou
+    // possible pour un échec que rien ne signale à l'exécution. Trois témoins à
+    // l'écran ont été essayés avant lui, et aucun n'a rien tranché.
+
+    // ⭐ **LE SIGNAL DE VIE — DERNIÈRE LIGNE DU SCRIPT, ET ELLE EST CAPITALE.**
+    //
+    // Rust envoie les icônes par `window.setIcons`, qui n'existe QU'À PARTIR D'ICI.
+    // Tout lot envoyé avant cette ligne est perdu : l'expression lève, personne ne
+    // la rattrape, et Rust tient pourtant ces chemins pour envoyés
+    // (`cef_sous_dock::ICONES_ENVOYEES`) — donc il ne les renverrait pas de
+    // lui-même. La case restait en carré pointillé.
+    //
+    // ⭐ **CE SIGNAL FAIT RENVOYER CES ICÔNES** (`cef_sous_dock::
+    // remettre_tout_en_file`) : Rust lève la marque des chemins affichés et les
+    // remet en file, maintenant que `window.setIcons` existe pour les recevoir.
+    //
+    // Mesuré sur le harnais, mêmes fichiers, même dossier, ouverture à la frame 0
+    // (page froide) : **les premières cases de la moitié droite étaient vides**,
+    // celles dont les icônes partent en premier ; à la frame 60 (page préchargée)
+    // tout était là. C'est la même classe de panne que celle que `poll` rattrape
+    // pour l'ÉTAT (la rafale de poussée) — sauf que l'état, lui, se rattrape tout
+    // seul, et que rien ne rattrapait les icônes.
+    //
+    // ⚠️ **CE N'EST PAS UNE PORTE FERMÉE EN ATTENTE.** Une porte a été essayée
+    // d'abord, puis retirée : si ce signal manquait un jour, plus AUCUNE icône ne
+    // partirait — pire que le défaut réparé. Ici, sans signal, tout se comporte
+    // comme avant.
+    //
+    // ⚠️ **ELLE EST EN DERNIER, APRÈS TOUT LE RESTE** : `go` est défini plus haut,
+    // et `location.href` ne rend pas la main — ce qui suit cette ligne ne
+    // s'exécuterait pas.
+    go("ready");
+  </script>
+</body>
+</html>

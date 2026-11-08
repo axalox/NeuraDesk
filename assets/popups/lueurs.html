@@ -1,0 +1,1193 @@
+<!doctype html>
+<!--
+  win32::cef_lueurs — l'éditeur des lueurs (voir `gfx::lueur`).
+
+  DEMANDE EXPLICITE (2026-10-14) : « pouvoir éditer l'effet, ajouter des éléments,
+  régler le flou, dans un dash ouvrable depuis une applet dans la zone intégrée ou
+  depuis le dash réglages ».
+
+  Un PANNEAU de la zone libre, comme `shaders.html` : la barre n'a que le titre et
+  le `✕` (`close-btn`, titre « Fermer »), à côté duquel `cef_popup` pose la punaise.
+  En dessous : un APERÇU à la proportion de l'écran principal, où chaque lueur est
+  un disque qu'on fait glisser, puis la liste des lueurs et leurs curseurs.
+
+  ⭐ **L'ANIMATION** (DEMANDE EXPLICITE, 2026-10-14 : « animer les lueurs avec des
+  chemins programmés, des allers et retours et des rotations du fond ») : chaque
+  lueur a un MOUVEMENT (fixe, aller-retour, boucle, orbite, aller simple) et une
+  durée, plus une ATTENTE au départ et, pour l'aller simple, un fondu de
+  disparition et une absence avant la réapparition au départ ; le
+  chemin de la lueur choisie se dessine dans l'aperçu, ses points (carrés) se font
+  glisser. La rotation du fond tourne toute la scène autour de la CROIX. L'aperçu
+  montre les positions de DÉPART : le mouvement, lui, se voit sur les barres.
+
+  ⭐ **APPARAÎTRE ET DISPARAÎTRE EN FONDU** (DEMANDE EXPLICITE, 2026-10-14) : une
+  case par lueur, puis son cycle, sa présence, la part de fondu et un décalage
+  (pour que plusieurs lueurs se relaient). Voir `gfx::lueur::visibilite`.
+
+  ⭐ **LES CYCLES DE COULEURS** (DEMANDE EXPLICITE, 2026-10-14) : une case par
+  lueur, puis ses couleurs en ÉTAPES. L'étape choisie (soulignée) est celle que le
+  nuancier et le code couleur modifient ; l'étape 0 est la couleur principale.
+  Ajouter et retirer une lueur se font en fondu côté Rust (`gfx::lueur::ajouter`).
+
+  ⭐ **LES FIGURES ET LE ZOOM** (DEMANDE EXPLICITE, 2026-10-14) : une lueur est un
+  cercle, un rectangle, un segment ou une droite, avec une inclinaison et une
+  rotation propre. Le ZOOM de l'aperçu montre jusqu'à deux écrans de chaque côté
+  (le CADRE est l'écran principal) : c'est ainsi qu'on place hors écran. ⚠️ Toutes
+  les coordonnées de l'état restent en % de l'ÉCRAN ; seul l'affichage passe par
+  `vue` (`versX`, `versY`, `depuisX`, `depuisY`).
+
+  ⭐ **TOUS LES ÉCRANS** (DEMANDE EXPLICITE, 2026-10-14) : au zoom ×1, l'aperçu
+  couvre la boîte qui contient TOUS les écrans (poussés par Rust en % du
+  principal), et chacun y est dessiné en pointillés avec son nom ; le zoom
+  élargit cette boîte. La proportion de l'aperçu suit donc celle de la boîte.
+
+  ⭐ **LES EFFETS** (DEMANDE EXPLICITE, 2026-10-14 : « sauvegarder et importer mes
+  effets ») : la scène entière s'enregistre sous un nom, se recharge, s'exporte et
+  s'importe (voir `win32::lueurs_effets`). Les Réglages en listent les noms. La
+  liste n'est reconstruite que quand elle CHANGE : le champ du nom garde sa saisie.
+
+  ⚠️ **LA LISTE N'EST RECONSTRUITE QUE QUAND SA FORME CHANGE** (nombre de lueurs,
+  sélection) : Rust repousse l'état après chaque réglage, et reconstruire sous un
+  curseur tenu le lâcherait. Sinon les valeurs sont mises à jour EN PLACE, sauf
+  celle du curseur qui a le focus.
+
+  ⛔ **AUCUN `menu.js`** — c'est un PANNEAU. ⛔ **AUCUN `<select>` ni `type=color`**
+  (rien ne s'y déroule en rendu hors écran) : les couleurs sont des PASTILLES.
+  ⛔ **AUCUN `background` sur `<html>`/`<body>`** : le fond est le bureau flouté.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html { --text-scale: 1; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    flex-direction: column;
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    height: calc(100vh / var(--text-scale));
+    font-family: var(--nd-police);
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+  }
+  #barre {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    user-select: none;
+  }
+  #titre { flex: 1; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* ⚠️ `Segoe UI Symbol` EN CLAIR : `✕` existe aussi dans la police EMOJI. */
+  .close-btn {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+  }
+  .close-btn:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  #corps {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    gap: 10px;
+    padding: 8px;
+  }
+  /* Défile : la liste des effets peut dépasser le panneau. `flex-shrink: 0` :
+     sans lui, l'aperçu (une proportion) se faisait écraser au lieu de défiler. */
+  #gauche { flex: 1 1 55%; min-width: 0; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+  #gauche > * { flex-shrink: 0; }
+  #droite { flex: 1 1 45%; min-width: 0; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+  .ligne-outils { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+  .action {
+    all: unset;
+    padding: 5px 12px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.30 * var(--popup-fond-alpha, 1)));
+    font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .action:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.48 * var(--popup-fond-alpha, 1))); }
+  .action.inactive { opacity: calc(.4 * max(1, var(--popup-alpha, 1))); pointer-events: none; }
+  /* L'APERÇU : la proportion de l'écran principal, fixée par `setState`. Le
+     disque déborde volontiers — comme la lueur, qui peut couvrir un autre écran. */
+  #apercu {
+    position: relative;
+    width: 100%;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(0, 0, 0, 0.45);
+    outline: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.25 * var(--popup-fond-alpha, 1)));
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+  }
+  .disque {
+    position: absolute;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+  /* Une figure autre qu'un cercle : une boîte tournée, floutée selon son `flou`. */
+  .figure { position: absolute; pointer-events: none; }
+  /* Le CADRE de chaque écran ; le principal plus marqué. */
+  .cadre {
+    position: absolute;
+    outline: 1px dashed rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.45 * var(--popup-fond-alpha, 1)));
+    pointer-events: none;
+    font-size: 11px;
+    padding: 2px 5px;
+    box-sizing: border-box;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.6 * var(--popup-alpha, 1)));
+  }
+  .cadre.principal { outline: 1px dashed rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.8 * var(--popup-fond-alpha, 1))); }
+  #zoom-valeur { min-width: 48px; text-align: center; }
+  /* La POIGNÉE au centre du disque : c'est elle qu'on attrape. */
+  .poignee {
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    margin: -9px 0 0 -9px;
+    border-radius: 50%;
+    border: 2px solid rgba(0, 0, 0, .6);
+    cursor: grab;
+  }
+  .poignee.choisie { border-color: rgb(var(--popup-accent-rgb, 255, 255, 255)); box-shadow: 0 0 0 2px rgba(0, 0, 0, .6); }
+  /* Les chemins, en SVG étiré sur l'aperçu (voir `dessinerApercu`). */
+  #apercu svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .point {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    margin: -6px 0 0 -6px;
+    border: 1px solid rgba(0, 0, 0, .7);
+    background: rgb(var(--popup-fg-rgb, 255, 255, 255));
+    cursor: grab;
+  }
+  .croix {
+    position: absolute;
+    width: 22px;
+    height: 22px;
+    margin: -11px 0 0 -11px;
+    cursor: grab;
+    font: 22px/22px "Segoe UI Symbol", sans-serif;
+    text-align: center;
+    /* La couleur du TEXTE, pas l'accent : un accent sombre la rendait invisible
+       sur l'aperçu (capture du 2026-10-14). */
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    text-shadow: 0 0 2px #000, 0 0 4px #000;
+  }
+  .mouvements { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 8px; align-items: center; }
+  .mouvements .action { padding: 4px 9px; }
+  .action.principale { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.62 * var(--popup-fond-alpha, 1))); font-weight: 600; }
+  .lueur {
+    padding: 6px 8px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(0, 0, 0, 0.22);
+    font-size: 12px;
+  }
+  .lueur.choisie { outline: 1px solid rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.8 * var(--popup-fond-alpha, 1))); }
+  .entete { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+  .entete .nom { flex: 1; font-weight: 600; }
+  .reglage { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+  .reglage label { flex: 0 0 82px; opacity: calc(.85 * max(1, var(--popup-alpha, 1))); }
+  .reglage input { flex: 1; min-width: 0; }
+  /* `nowrap` : « +2.5 tr/min » passait à la ligne dans 42 px. */
+  .reglage .valeur { flex: 0 0 auto; min-width: 42px; white-space: nowrap; text-align: right; opacity: calc(.85 * max(1, var(--popup-alpha, 1))); }
+  .nuancier { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+  /* Une rangée = une clarté ; les seize pastilles se partagent la largeur. */
+  .pastilles { display: grid; grid-template-columns: repeat(16, 1fr); gap: 3px; }
+  .pastille {
+    all: unset;
+    aspect-ratio: 1;
+    border-radius: 4px;
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.18 * var(--popup-fond-alpha, 1)));
+    cursor: pointer;
+  }
+  .pastille:hover { border-color: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.7 * var(--popup-fond-alpha, 1))); }
+  .pastille.choisie { border: 2px solid rgb(var(--popup-fg-rgb, 255, 255, 255)); box-shadow: 0 0 0 1px rgba(0, 0, 0, .7); }
+  .hex {
+    flex: 0 0 90px;
+    padding: 3px 6px;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(0, 0, 0, 0.28);
+    color: inherit;
+    font: inherit;
+    font-family: "Cascadia Mono", Consolas, monospace;
+  }
+  .etapes { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; align-items: center; }
+  .etape {
+    all: unset;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.3 * var(--popup-fond-alpha, 1)));
+    cursor: pointer;
+  }
+  .etape.choisie { border: 2px solid rgb(var(--popup-fg-rgb, 255, 255, 255)); box-shadow: 0 0 0 1px rgba(0, 0, 0, .7); }
+  .temoin { width: 22px; height: 22px; border-radius: 4px; border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.3 * var(--popup-fond-alpha, 1))); }
+  .avis { font-size: 12px; opacity: calc(.75 * max(1, var(--popup-alpha, 1))); }
+  #effets { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+  #effets h3 { margin: 4px 0 2px; font-size: 13px; }
+  .effet { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+  .effet .nom { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .effet.actuel .nom { font-weight: 600; }
+  .effet .action { padding: 3px 8px; }
+  #nom-effet {
+    flex: 1;
+    min-width: 80px;
+    padding: 4px 8px;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(0, 0, 0, 0.28);
+    color: inherit;
+    font: inherit;
+    font-size: 12px;
+  }
+</style>
+<!-- Le nuancier, PARTAGÉ avec les terminaux (voir `nuancier.js`). -->
+<script src="nuancier.js"></script>
+</head>
+<body>
+  <div id="barre">
+    <span id="titre">Lueurs</span>
+    <!-- La punaise des panneaux vient se poser JUSTE AVANT ce bouton. -->
+    <button id="fermer" class="close-btn" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="corps">
+    <div id="gauche">
+      <div class="ligne-outils">
+        <label><input id="active" type="checkbox"> Lueurs dessinées</label>
+        <button class="action" id="ajouter" title="Une lueur de plus, à côté de la dernière">+ Ajouter</button>
+        <span style="flex: 1"></span>
+        <button class="action" id="dezoomer" title="Voir plus loin autour de l'écran (molette)">−</button>
+        <span id="zoom-valeur"></span>
+        <button class="action" id="zoomer" title="Revenir vers l'écran (molette)">+</button>
+      </div>
+      <div id="apercu"></div>
+      <div class="reglage">
+        <label for="opacite" title="L'opacité de toutes les lueurs à la fois">Opacité</label>
+        <input id="opacite" type="range" min="0" max="100" step="1">
+        <span class="valeur" id="opacite-valeur"></span>
+      </div>
+      <div class="reglage">
+        <label for="assombrissement">Assombrissement</label>
+        <input id="assombrissement" type="range" min="0" max="100" step="1">
+        <span class="valeur" id="assombrissement-valeur"></span>
+      </div>
+      <div class="reglage">
+        <label for="rotation">Rotation du fond</label>
+        <input id="rotation" type="range" min="-30" max="30" step="0.5">
+        <span class="valeur" id="rotation-valeur"></span>
+      </div>
+      <div id="avis" class="avis"></div>
+      <div id="effets">
+        <h3>Effets enregistrés</h3>
+        <div class="effet">
+          <input id="nom-effet" type="text" maxlength="60" placeholder="Nom de l'effet" spellcheck="false">
+          <button class="action" id="enregistrer-effet" title="Enregistrer toutes les lueurs sous ce nom">Enregistrer</button>
+          <button class="action" id="importer-effet" title="Importer un fichier .lueurs">Importer…</button>
+        </div>
+        <div id="liste-effets"></div>
+      </div>
+      <div class="avis">Faites glisser le point central d'une lueur pour la placer, et les carrés pour tracer son chemin. La croix est le centre de la rotation du fond. Les cadres en pointillés sont vos écrans : zoomez (+, −, ou la molette) pour placer finement, ou au-delà. L'aperçu montre les positions de départ.</div>
+    </div>
+    <div id="droite"></div>
+  </div>
+<script>
+  // Segments ENCODÉS un par un (voir `cef_lueurs::dispatch_actions`).
+  function go(...segments) {
+    location.href = "neuradesk://lueurs/" + segments.map((s) => encodeURIComponent(String(s))).join("/");
+  }
+
+  // Les curseurs d'une lueur : [champ, libellé, min, max] — en POURCENTS, dans les
+  // bornes de `gfx::lueur::CHAMPS`.
+  const CHAMPS = [
+    ["rayon", "Rayon", 0.1, 200],
+    ["intensite", "Intensité", 0, 100],
+    ["flou", "Flou", 0, 100],
+    ["x", "Horizontal", -200, 300],
+    ["y", "Vertical", -200, 300],
+  ];
+  // **LE NUANCIER** — `window.NUANCIER`, dans `nuancier.js` (partagé avec les
+  // terminaux) : 16 teintes × 7 clartés, les gris, puis deux rangées de noirs teintés.
+  // Les figures, dans l'ordre de `gfx::lueur::Figure::TOUTES`, et ce que `rayon`
+  // et `longueur` y désignent.
+  const FIGURES = [["cercle", "Cercle"], ["rectangle", "Rectangle"], ["segment", "Segment"], ["droite", "Droite"], ["image", "Image"]];
+  const LIBELLE_RAYON = { cercle: "Rayon", rectangle: "Demi-hauteur", segment: "Épaisseur", droite: "Épaisseur", image: "Demi-hauteur" };
+  const LIBELLE_LONGUEUR = { rectangle: "Demi-largeur", segment: "Demi-longueur", image: "Demi-largeur" };
+  // ⭐ LES DÉGRADÉS, dans l'ordre de `gfx::lueur::Degrade::TOUS`.
+  const DEGRADES = [["aucun", "Aucun"], ["lineaire", "Linéaire"], ["radial", "Radial"], ["angulaire", "Angulaire"]];
+  // **LE ZOOM** : un facteur sur la boîte de TOUS les écrans (voir l'en-tête).
+  const ZOOMS = [1, 1.5, 2, 3, 5];
+  let zoom = 0;
+  // La boîte de tous les écrans, en FRACTIONS du principal, plus une marge.
+  function boite() {
+    const ecrans = etat.ecrans && etat.ecrans.length ? etat.ecrans : [{ x: 0, y: 0, l: 100, h: 100 }];
+    const g = Math.min(...ecrans.map((e) => e.x)) / 100, d = Math.max(...ecrans.map((e) => e.x + e.l)) / 100;
+    const h = Math.min(...ecrans.map((e) => e.y)) / 100, b = Math.max(...ecrans.map((e) => e.y + e.h)) / 100;
+    const marge = 0.04;
+    return { g: g - marge, h: h - marge, l: d - g + 2 * marge, t: b - h + 2 * marge };
+  }
+  function vue() {
+    const { g, h, l, t } = boite();
+    const z = ZOOMS[zoom];
+    return { minX: g + l / 2 - (l * z) / 2, minY: h + t / 2 - (t * z) / 2, spanX: l * z, spanY: t * z };
+  }
+  // % d'écran → % de l'aperçu, et retour — un axe chacun.
+  const versX = (v) => ((v / 100 - vue().minX) / vue().spanX) * 100;
+  const versY = (v) => ((v / 100 - vue().minY) / vue().spanY) * 100;
+  const depuisX = (p) => (vue().minX + (p / 100) * vue().spanX) * 100;
+  const depuisY = (p) => (vue().minY + (p / 100) * vue().spanY) * 100;
+  // **LE CURSEUR LOGARITHMIQUE** de l'épaisseur : 0,1 % à 200 % sur 1000 crans.
+  const LOG = { rayon: [0.1, 200] };
+  const versCurseur = (champ, v) => LOG[champ] ? Math.round((Math.log(v / LOG[champ][0]) / Math.log(LOG[champ][1] / LOG[champ][0])) * 1000) : v;
+  const depuisCurseur = (champ, s) => LOG[champ] ? Math.round(LOG[champ][0] * Math.pow(LOG[champ][1] / LOG[champ][0], s / 1000) * 100) / 100 : s;
+  // Une décimale sous 10 % : « 0,3 % » ne doit pas s'afficher « 0 % ».
+  const enPourcent = (v) => (Math.abs(v) < 10 ? Number(v).toFixed(1).replace(".0", "") : Math.round(v));
+  const BORNE_MIN = -200, BORNE_MAX = 300;
+  // Les mouvements, dans l'ordre de `gfx::lueur::Mouvement::TOUS`.
+  const MOUVEMENTS = [["fixe", "Fixe"], ["aller-retour", "Aller-retour"], ["boucle", "Boucle"], ["orbite", "Orbite"], ["trajet", "Aller simple"]];
+  // Les mouvements qui suivent un CHEMIN.
+  const SUR_UN_CHEMIN = ["aller-retour", "boucle", "trajet"];
+  // Les curseurs à DÉCIMALES (les autres s'arrondissent à l'entier).
+  const DECIMAUX = ["rotationPropre", "disparition", "defilement", "teinte"];
+  const NUANCIER = window.NUANCIER || [];
+
+  const apercu = document.getElementById("apercu");
+  const droite = document.getElementById("droite");
+  const caseActive = document.getElementById("active");
+  const assombrissement = document.getElementById("assombrissement");
+  const assombrissementValeur = document.getElementById("assombrissement-valeur");
+  // L'OPACITÉ GLOBALE : multiplie l'intensité de toutes les lueurs (voir
+  // `gfx::lueur::Scene::opacite`).
+  const opacite = document.getElementById("opacite");
+  const opaciteValeur = document.getElementById("opacite-valeur");
+  const boutonAjouter = document.getElementById("ajouter");
+  const rotation = document.getElementById("rotation");
+  const rotationValeur = document.getElementById("rotation-valeur");
+  let etat = { elements: [], max: 20, maxPoints: 6, ecran: [16, 9], rotation: 0, centre: [50, 50] };
+  let choisie = 0;
+  // L'étape du cycle de couleurs que le nuancier modifie (0 : la principale).
+  let etapeChoisie = 0;
+  // L'arrêt du DÉGRADÉ que le nuancier modifie (0 : aucun — la couleur principale
+  // ou l'étape choisie). Choisir l'un remet l'autre à 0.
+  let arretChoisi = 0;
+  let forme = "";
+  // Le glisser en cours : ce qu'on tient (`lueur`, `point` ou `centre`), et
+  // l'instant du dernier ENVOI (pas plus d'un toutes les 40 ms — un verbe = une
+  // navigation).
+  let glisse = null;
+
+  document.getElementById("fermer").addEventListener("click", () => go("fermer"));
+  const champEffet = document.getElementById("nom-effet");
+  function enregistrerEffet() {
+    const nom = champEffet.value.trim();
+    if (!nom) { champEffet.focus(); return; }
+    go("enregistrer", nom);
+  }
+  document.getElementById("enregistrer-effet").addEventListener("click", enregistrerEffet);
+  champEffet.addEventListener("keydown", (ev) => { if (ev.key === "Enter") enregistrerEffet(); });
+  document.getElementById("importer-effet").addEventListener("click", () => go("importer"));
+  // La liste des effets — refaite seulement quand elle change (voir l'en-tête).
+  let formeEffets = "";
+  function montrerLesEffets() {
+    const nouvelle = JSON.stringify([etat.effets || [], etat.effet || ""]);
+    if (nouvelle === formeEffets) return;
+    formeEffets = nouvelle;
+    const liste = document.getElementById("liste-effets");
+    liste.replaceChildren();
+    for (const nom of etat.effets || []) {
+      const ligne = document.createElement("div");
+      ligne.className = "effet" + (nom === etat.effet ? " actuel" : "");
+      const libelle = document.createElement("span");
+      libelle.className = "nom";
+      libelle.textContent = (nom === etat.effet ? "● " : "") + nom;
+      libelle.title = nom;
+      ligne.appendChild(libelle);
+      // Chaque verbe ÉCRIT EN CLAIR dans son appel : c'est ainsi que le test de
+      // parité les trouve (voir `cef_lueurs::les_verbes_de_la_page_…`).
+      for (const [texte, titre, agir] of [
+        ["Charger", "Remplacer les lueurs par cet effet, et l'allumer", () => {
+          choisie = 0; etapeChoisie = 0; forme = ""; champEffet.value = nom;
+          go("charger", nom);
+        }],
+        ["Exporter…", "Enregistrer cet effet dans un fichier .lueurs", () => go("exporter", nom)],
+        ["Supprimer", "Retirer cet effet de la liste", () => go("supprimer-effet", nom)],
+      ]) {
+        const bouton = document.createElement("button");
+        bouton.className = "action";
+        bouton.textContent = texte;
+        bouton.title = titre;
+        bouton.addEventListener("click", agir);
+        ligne.appendChild(bouton);
+      }
+      liste.appendChild(ligne);
+    }
+    if (!(etat.effets || []).length) {
+      const vide = document.createElement("div");
+      vide.className = "avis";
+      vide.textContent = "Aucun effet enregistré : donnez un nom, puis « Enregistrer ».";
+      liste.appendChild(vide);
+    }
+  }
+  boutonAjouter.addEventListener("click", () => { choisie = etat.elements.length; go("ajouter"); });
+  caseActive.addEventListener("change", () => go("activer", caseActive.checked ? "1" : "0"));
+  opacite.addEventListener("input", () => {
+    opaciteValeur.textContent = opacite.value + " %";
+    go("opacite", opacite.value);
+  });
+  assombrissement.addEventListener("input", () => {
+    assombrissementValeur.textContent = assombrissement.value + " %";
+    go("assombrir", assombrissement.value);
+  });
+  const zoomValeur = document.getElementById("zoom-valeur");
+  function zoomer(pas) {
+    zoom = Math.min(ZOOMS.length - 1, Math.max(0, zoom + pas));
+    zoomValeur.textContent = "×" + ZOOMS[zoom];
+    dessinerApercu();
+  }
+  document.getElementById("dezoomer").addEventListener("click", () => zoomer(1));
+  document.getElementById("zoomer").addEventListener("click", () => zoomer(-1));
+  apercu.addEventListener("wheel", (ev) => { ev.preventDefault(); zoomer(ev.deltaY > 0 ? 1 : -1); }, { passive: false });
+  zoomValeur.textContent = "×1";
+  const toursParMinute = (v) => (v > 0 ? "+" : "") + Number(v).toFixed(1).replace(".0", "") + " tr/min";
+  rotation.addEventListener("input", () => {
+    rotationValeur.textContent = toursParMinute(rotation.value);
+    etat.rotation = Number(rotation.value);
+    dessinerApercu();
+    go("rotation", rotation.value);
+  });
+
+  function arrondi(v) { return Math.round(v * 10) / 10; }
+
+  // ---- L'APERÇU ----
+  function dessinerApercu() {
+    const { spanX, spanY } = vue();
+    apercu.style.aspectRatio = spanX * etat.ecran[0] + " / " + spanY * etat.ecran[1];
+    apercu.replaceChildren();
+    // Les pixels d'aperçu d'une fraction de LARGEUR d'écran.
+    const pixels = (pct) => ((pct / 100) * (apercu.clientWidth || 1)) / vue().spanX;
+    (etat.ecrans && etat.ecrans.length ? etat.ecrans : [{ x: 0, y: 0, l: 100, h: 100, principal: true }]).forEach((ecran, k, tous) => {
+      const cadre = document.createElement("div");
+      cadre.className = "cadre" + (ecran.principal ? " principal" : "");
+      cadre.style.left = versX(ecran.x) + "%";
+      cadre.style.top = versY(ecran.y) + "%";
+      cadre.style.width = (ecran.l / 100 / vue().spanX) * 100 + "%";
+      cadre.style.height = (ecran.h / 100 / vue().spanY) * 100 + "%";
+      // Un nom seulement s'il y a PLUSIEURS écrans.
+      if (tous.length > 1) {
+        const rang = tous.filter((e) => !e.principal).indexOf(ecran) + 2;
+        cadre.textContent = ecran.principal ? "Écran principal" : "Écran " + rang;
+      }
+      apercu.appendChild(cadre);
+    });
+    etat.elements.forEach((e, i) => {
+      const alpha = e.intensite / 100;
+      if (e.figure === "cercle" || !e.figure) {
+        const disque = document.createElement("div");
+        disque.className = "disque";
+        disque.style.width = disque.style.height = 2 * pixels(e.rayon) + "px";
+        disque.style.left = versX(e.x) + "%";
+        disque.style.top = versY(e.y) + "%";
+        // Le même fondu que le shader : opaque jusqu'à `1 - flou`, nul au rayon.
+        const debut = Math.max(0, 100 - e.flou);
+        if (e.degrade && e.degrade !== "aucun") {
+          // Le dégradé de la forme, puis le fondu du bord en MASQUE.
+          disque.style.background = fondDegrade(e, alpha);
+          disque.style.webkitMaskImage = `radial-gradient(circle closest-side, #000 ${debut}%, transparent 100%)`;
+        } else {
+          disque.style.background = `radial-gradient(circle closest-side, ${couleurAlpha(e.couleur, alpha)} ${debut}%, ${couleurAlpha(e.couleur, 0)} 100%)`;
+        }
+        apercu.appendChild(disque);
+      } else {
+        apercu.appendChild(figureDApercu(e, pixels, alpha));
+      }
+      const poignee = document.createElement("div");
+      poignee.className = "poignee cible-24" + (i === choisie ? " choisie" : "");
+      poignee.style.left = versX(e.x) + "%";
+      poignee.style.top = versY(e.y) + "%";
+      poignee.style.background = e.couleur;
+      poignee.title = "Lueur " + (i + 1);
+      poignee.addEventListener("pointerdown", (ev) => {
+        ev.preventDefault();
+        apercu.setPointerCapture(ev.pointerId);
+        choisir(i);
+        glisse = { sorte: "lueur", i, envoye: 0 };
+      });
+      apercu.appendChild(poignee);
+    });
+    dessinerLesChemins();
+    const e = etat.elements[choisie];
+    if (e && SUR_UN_CHEMIN.includes(e.mouvement)) {
+      e.points.forEach(([x, y], k) => {
+        const point = document.createElement("div");
+        point.className = "point";
+        point.style.left = versX(x) + "%";
+        point.style.top = versY(y) + "%";
+        point.title = "Point " + (k + 1) + " du chemin";
+        point.addEventListener("pointerdown", (ev) => {
+          ev.preventDefault();
+          apercu.setPointerCapture(ev.pointerId);
+          glisse = { sorte: "point", i: choisie, k, envoye: 0 };
+        });
+        apercu.appendChild(point);
+      });
+    }
+    if (etat.rotation) {
+      const croix = document.createElement("div");
+      croix.className = "croix";
+      croix.textContent = "⊕";
+      croix.style.left = versX(etat.centre[0]) + "%";
+      croix.style.top = versY(etat.centre[1]) + "%";
+      croix.title = "Centre de la rotation du fond";
+      croix.addEventListener("pointerdown", (ev) => {
+        ev.preventDefault();
+        apercu.setPointerCapture(ev.pointerId);
+        glisse = { sorte: "centre", envoye: 0 };
+      });
+      apercu.appendChild(croix);
+    }
+  }
+
+  // Une figure (rectangle, segment, droite) : une boîte tournée de son
+  // inclinaison. Son fondu est APPROCHÉ par un flou CSS — l'aperçu situe, le
+  // rendu exact est celui des barres.
+  function figureDApercu(e, pixels, alpha) {
+    const boite = document.createElement("div");
+    boite.className = "figure";
+    const epaisseur = 2 * pixels(e.rayon);
+    const longueur = e.figure === "droite" ? 20 * (apercu.clientWidth || 1)
+      : e.figure === "segment" ? 2 * pixels(e.longueur) + epaisseur
+      : 2 * pixels(e.longueur);
+    boite.style.width = longueur + "px";
+    boite.style.height = epaisseur + "px";
+    boite.style.left = versX(e.x) + "%";
+    boite.style.top = versY(e.y) + "%";
+    boite.style.transform = `translate(-50%, -50%) rotate(${e.inclinaison}deg)`;
+    boite.style.background = e.degrade && e.degrade !== "aucun" ? fondDegrade(e, alpha) : couleurAlpha(e.couleur, alpha);
+    if (e.figure === "image") {
+      // L'aperçu ne montre que le CADRE : l'image elle-même est dans les barres.
+      boite.style.background = couleurAlpha(e.couleur, alpha * 0.5);
+      boite.style.outline = "1px dashed " + e.couleur;
+    }
+    if (e.figure === "segment") boite.style.borderRadius = epaisseur / 2 + "px";
+    boite.style.filter = `blur(${(e.flou / 100) * (epaisseur / 2) * 0.6}px)`;
+    return boite;
+  }
+
+  // Les chemins de TOUTES les lueurs animées (pointillés), plus marqués pour la
+  // lueur choisie. Un SVG étiré : coordonnées en pourcents, trait non étiré.
+  const SVG = "http://www.w3.org/2000/svg";
+  function dessinerLesChemins() {
+    const svg = document.createElementNS(SVG, "svg");
+    // Le viewBox suit la VUE : les coordonnées restent en % d'écran.
+    const { minX, minY, spanX, spanY } = vue();
+    svg.setAttribute("viewBox", `${minX * 100} ${minY * 100} ${spanX * 100} ${spanY * 100}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    etat.elements.forEach((e, i) => {
+      let trace = null;
+      if (e.mouvement === "orbite") {
+        trace = document.createElementNS(SVG, "ellipse");
+        trace.setAttribute("cx", e.x);
+        trace.setAttribute("cy", e.y);
+        // Le rayon d'orbite est une fraction de la LARGEUR : en hauteur, il vaut
+        // d'autant plus de pourcents que l'écran est large.
+        trace.setAttribute("rx", e.orbite);
+        trace.setAttribute("ry", (e.orbite * etat.ecran[0]) / etat.ecran[1]);
+      } else if (SUR_UN_CHEMIN.includes(e.mouvement)) {
+        trace = document.createElementNS(SVG, e.mouvement === "boucle" ? "polygon" : "polyline");
+        trace.setAttribute("points", [[e.x, e.y], ...e.points].map((p) => p.join(",")).join(" "));
+      }
+      if (!trace) return;
+      trace.setAttribute("fill", "none");
+      trace.setAttribute("stroke", e.couleur);
+      trace.setAttribute("stroke-width", i === choisie ? 2 : 1);
+      trace.setAttribute("stroke-dasharray", "5 4");
+      trace.setAttribute("opacity", i === choisie ? 0.95 : 0.5);
+      trace.setAttribute("vector-effect", "non-scaling-stroke");
+      svg.appendChild(trace);
+    });
+    apercu.appendChild(svg);
+  }
+
+  // Le dégradé CSS d'une lueur — l'aperçu situe, le rendu exact est celui des barres.
+  function fondDegrade(e, alpha) {
+    const couleurs = [e.couleur, ...(e.arrets || [])].map((c) => couleurAlpha(c, alpha));
+    if (e.degrade === "radial") return `radial-gradient(circle closest-side, ${couleurs.join(", ")})`;
+    if (e.degrade === "angulaire") return `conic-gradient(from 90deg, ${[...couleurs, couleurs[0]].join(", ")})`;
+    return `linear-gradient(90deg, ${couleurs.join(", ")})`;
+  }
+
+  function couleurAlpha(hex, a) {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+  }
+
+  apercu.addEventListener("pointermove", (ev) => {
+    if (!glisse) return;
+    const r = apercu.getBoundingClientRect();
+    const x = arrondi(depuisX(((ev.clientX - r.left) / r.width) * 100));
+    const y = arrondi(depuisY(((ev.clientY - r.top) / r.height) * 100));
+    const borne = (v) => Math.min(BORNE_MAX, Math.max(BORNE_MIN, v));
+    // L'aperçu suit la main tout de suite ; Rust, au plus toutes les 40 ms.
+    if (glisse.sorte === "centre") {
+      etat.centre = [borne(x), borne(y)];
+    } else {
+      const e = etat.elements[glisse.i];
+      if (!e) return;
+      if (glisse.sorte === "point") {
+        if (!e.points[glisse.k]) return;
+        e.points[glisse.k] = [borne(x), borne(y)];
+      } else {
+        e.x = borne(x);
+        e.y = borne(y);
+      }
+    }
+    dessinerApercu();
+    mettreAJourLesValeurs();
+    const maintenant = performance.now();
+    if (maintenant - glisse.envoye > 40) {
+      glisse.envoye = maintenant;
+      envoyerLeGlisser();
+    }
+  });
+  function envoyerLeGlisser() {
+    if (glisse.sorte === "centre") return go("centre", etat.centre[0], etat.centre[1]);
+    const e = etat.elements[glisse.i];
+    if (!e) return;
+    if (glisse.sorte === "point") {
+      const p = e.points[glisse.k];
+      if (p) go("point", glisse.i, glisse.k, p[0], p[1]);
+    } else {
+      go("deplacer", glisse.i, e.x, e.y);
+    }
+  }
+  function lacher() {
+    if (!glisse) return;
+    envoyerLeGlisser();
+    glisse = null;
+  }
+  apercu.addEventListener("pointerup", lacher);
+  apercu.addEventListener("pointercancel", lacher);
+  new ResizeObserver(dessinerApercu).observe(apercu);
+
+  // ---- LA LISTE ----
+  function choisir(i) {
+    if (choisie === i) return;
+    choisie = i;
+    etapeChoisie = 0;
+    arretChoisi = 0;
+    forme = "";
+    construireLaListe();
+  }
+
+  function construireLaListe() {
+    const actuelle = etat.elements[choisie];
+    const nouvelle = [etat.elements.length, choisie, actuelle ? actuelle.mouvement : "", actuelle ? actuelle.points.length : 0, actuelle ? actuelle.apparition : "", actuelle ? actuelle.cycleCouleur : "", actuelle ? actuelle.etapes.length : 0, etapeChoisie, actuelle ? actuelle.figure : "", actuelle ? actuelle.degrade : "", actuelle ? (actuelle.arrets || []).length : 0, arretChoisi, actuelle ? actuelle.image : "", (etat.images || []).map((m) => m.id).join(",")].join("/");
+    if (nouvelle === forme) return mettreAJourLesValeurs();
+    forme = nouvelle;
+    droite.replaceChildren();
+    etat.elements.forEach((e, i) => {
+      const bloc = document.createElement("div");
+      bloc.className = "lueur" + (i === choisie ? " choisie" : "");
+      const entete = document.createElement("div");
+      entete.className = "entete";
+      const nom = document.createElement("span");
+      nom.className = "nom";
+      nom.textContent = "Lueur " + (i + 1);
+      entete.appendChild(nom);
+      const supprimer = document.createElement("button");
+      supprimer.className = "action";
+      supprimer.textContent = "Supprimer";
+      supprimer.title = "Retirer cette lueur";
+      supprimer.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        choisie = Math.max(0, Math.min(choisie, etat.elements.length - 2));
+        go("retirer", i);
+      });
+      entete.appendChild(supprimer);
+      entete.addEventListener("click", () => choisir(i));
+      bloc.appendChild(entete);
+      // Seule la lueur CHOISIE déplie ses réglages : vingt blocs ouverts ne
+      // tiendraient pas dans le panneau.
+      if (i === choisie) {
+        bloc.appendChild(controlesDeLaFigure(e, i));
+        if (e.figure === "image") bloc.appendChild(controlesDeLImage(e, i));
+        for (const [champ, libelleCommun, min, max] of CHAMPS) {
+          const libelle = champ === "rayon" ? LIBELLE_RAYON[e.figure] || libelleCommun : libelleCommun;
+          const ligne = document.createElement("div");
+          ligne.className = "reglage";
+          const etiquette = document.createElement("label");
+          etiquette.textContent = libelle;
+          const curseur = document.createElement("input");
+          curseur.type = "range";
+          curseur.min = LOG[champ] ? 0 : min;
+          curseur.max = LOG[champ] ? 1000 : max;
+          curseur.step = 1;
+          curseur.dataset.champ = champ;
+          const valeur = document.createElement("span");
+          valeur.className = "valeur";
+          valeur.dataset.valeur = champ;
+          curseur.addEventListener("input", () => {
+            const v = depuisCurseur(champ, Number(curseur.value));
+            valeur.textContent = enPourcent(v) + " %";
+            etat.elements[i][champ] = v;
+            dessinerApercu();
+            go("regler", i, champ, v);
+          });
+          ligne.append(etiquette, curseur, valeur);
+          bloc.appendChild(ligne);
+        }
+        if (LIBELLE_LONGUEUR[e.figure]) {
+          bloc.appendChild(curseurDe(LIBELLE_LONGUEUR[e.figure], "longueur", 1, 150, 1, " %", (v) => {
+            etat.elements[i].longueur = v;
+            dessinerApercu();
+            go("regler", i, "longueur", v);
+          }));
+        }
+        // Un cercle se tourne aussi, dès qu'il porte un dégradé qui a un SENS.
+        if (e.figure !== "cercle" || e.degrade === "lineaire" || e.degrade === "angulaire") {
+          bloc.appendChild(curseurDe("Inclinaison", "inclinaison", -180, 180, 1, "°", (v) => {
+            etat.elements[i].inclinaison = v;
+            dessinerApercu();
+            go("inclinaison", i, v);
+          }));
+          bloc.appendChild(curseurDe("Rotation", "rotationPropre", -30, 30, 0.5, " tr/min", (v) => {
+            etat.elements[i].rotationPropre = v;
+            go("rotation-propre", i, v);
+          }));
+          // Arrêter ET redresser : à 0 tr/min, la figure resterait de travers.
+          const rangee = document.createElement("div");
+          rangee.className = "mouvements";
+          rangee.style.justifyContent = "flex-end";
+          const reinit = document.createElement("button");
+          reinit.className = "action";
+          reinit.textContent = "Réinitialiser la rotation";
+          reinit.title = "Arrêter la rotation et remettre la figure à son inclinaison";
+          reinit.addEventListener("click", () => {
+            etat.elements[i].rotationPropre = 0;
+            go("reinitialiser-rotation", i);
+          });
+          rangee.appendChild(reinit);
+          bloc.appendChild(rangee);
+        }
+        bloc.appendChild(controlesDuMouvement(e, i));
+        bloc.appendChild(controlesDeLApparition(e, i));
+        if (e.figure !== "image") bloc.appendChild(controlesDuDegrade(e, i));
+        bloc.appendChild(controlesDuCycleDeCouleurs(e, i));
+        // Une RANGÉE par ligne du nuancier : les teintes du plus clair au plus
+        // sombre, puis les gris, puis les noirs teintés.
+        const nuancier = document.createElement("div");
+        nuancier.className = "nuancier";
+        for (const rangee of NUANCIER) {
+          const ligne = document.createElement("div");
+          ligne.className = "pastilles";
+          for (const c of rangee) {
+            const p = document.createElement("button");
+            p.className = "pastille";
+            p.dataset.couleur = c;
+            p.style.background = c;
+            p.title = c;
+            p.addEventListener("click", () => colorer(i, c));
+            ligne.appendChild(p);
+          }
+          nuancier.appendChild(ligne);
+        }
+        bloc.appendChild(nuancier);
+        // La saisie LIBRE, pour toute couleur hors du nuancier.
+        const saisie = document.createElement("div");
+        saisie.className = "reglage";
+        const etiquetteHex = document.createElement("label");
+        etiquetteHex.textContent = "Code couleur";
+        const champHex = document.createElement("input");
+        champHex.type = "text";
+        champHex.className = "hex";
+        champHex.maxLength = 7;
+        champHex.spellcheck = false;
+        champHex.placeholder = "#rrggbb";
+        champHex.addEventListener("change", () => {
+          const v = champHex.value.trim().toLowerCase();
+          const hex = v.startsWith("#") ? v : "#" + v;
+          if (/^#[0-9a-f]{6}$/.test(hex)) colorer(i, hex);
+          else champHex.value = couleurChoisie(etat.elements[i]);
+        });
+        const temoin = document.createElement("span");
+        temoin.className = "temoin";
+        saisie.append(etiquetteHex, champHex, temoin);
+        bloc.appendChild(saisie);
+      }
+      droite.appendChild(bloc);
+    });
+    mettreAJourLesValeurs();
+  }
+
+  // Un curseur de réglage : `envoyer(v)` part à chaque mouvement de la main.
+  function curseurDe(libelle, champ, min, max, pas, unite, envoyer) {
+    const ligne = document.createElement("div");
+    ligne.className = "reglage";
+    const etiquette = document.createElement("label");
+    etiquette.textContent = libelle;
+    const curseur = document.createElement("input");
+    curseur.type = "range";
+    curseur.min = min;
+    curseur.max = max;
+    curseur.step = pas;
+    curseur.dataset.champ = champ;
+    const valeur = document.createElement("span");
+    valeur.className = "valeur";
+    valeur.dataset.valeur = champ;
+    valeur.dataset.unite = unite;
+    curseur.addEventListener("input", () => {
+      valeur.textContent = curseur.value + unite;
+      envoyer(Number(curseur.value));
+    });
+    ligne.append(etiquette, curseur, valeur);
+    return ligne;
+  }
+
+  // **LA FIGURE** de la lueur `i` : quatre boutons.
+  function controlesDeLaFigure(e, i) {
+    const rangee = document.createElement("div");
+    rangee.className = "mouvements";
+    const titre = document.createElement("span");
+    titre.textContent = "Figure";
+    titre.style.flex = "0 0 82px";
+    titre.style.opacity = ".85";
+    rangee.appendChild(titre);
+    for (const [nom, libelle] of FIGURES) {
+      const bouton = document.createElement("button");
+      bouton.className = "action" + (e.figure === nom ? " principale" : "");
+      bouton.textContent = libelle;
+      bouton.addEventListener("click", () => go("figure", i, nom));
+      rangee.appendChild(bouton);
+    }
+    return rangee;
+  }
+
+  // **LE MOUVEMENT** de la lueur `i` : quatre boutons, puis ce qui le règle.
+  function controlesDuMouvement(e, i) {
+    const boite = document.createElement("div");
+    const rangee = document.createElement("div");
+    rangee.className = "mouvements";
+    const titre = document.createElement("span");
+    titre.textContent = "Mouvement";
+    titre.style.flex = "0 0 82px";
+    titre.style.opacity = ".85";
+    rangee.appendChild(titre);
+    for (const [nom, libelle] of MOUVEMENTS) {
+      const bouton = document.createElement("button");
+      bouton.className = "action" + (e.mouvement === nom ? " principale" : "");
+      bouton.textContent = libelle;
+      bouton.addEventListener("click", () => go("mouvement", i, nom));
+      rangee.appendChild(bouton);
+    }
+    boite.appendChild(rangee);
+    if (e.mouvement === "fixe") return boite;
+    boite.appendChild(curseurDe(e.mouvement === "trajet" ? "Durée du trajet" : "Durée d'un tour", "periode", 1, 120, 1, " s", (v) => {
+      etat.elements[i].periode = v;
+      go("periode", i, v);
+    }));
+    // Les TEMPS D'ARRÊT : la minuterie avant chaque départ, puis, pour l'aller
+    // simple, le fondu au bout et l'absence avant de reparaître au départ.
+    const pauses = [];
+    if (SUR_UN_CHEMIN.includes(e.mouvement)) pauses.push(["attente", "Attente au départ", 0, 120, 1]);
+    if (e.mouvement === "trajet") {
+      pauses.push(["disparition", "Fondu de disparition", 0, 10, 0.1]);
+      pauses.push(["absence", "Absence avant retour", 0, 120, 1]);
+    }
+    for (const [champ, libelle, min, max, pas] of pauses) {
+      boite.appendChild(curseurDe(libelle, champ, min, max, pas, " s", (v) => {
+        etat.elements[i][champ] = v;
+        go("pause", i, champ, v);
+      }));
+    }
+    if (e.mouvement === "orbite") {
+      boite.appendChild(curseurDe("Rayon d'orbite", "orbite", 1, 100, 1, " %", (v) => {
+        etat.elements[i].orbite = v;
+        dessinerApercu();
+        go("regler", i, "orbite", v);
+      }));
+      return boite;
+    }
+    // Aller-retour, boucle et aller simple : un CHEMIN, que l'on allonge ou raccourcit.
+    const chemin = document.createElement("div");
+    chemin.className = "mouvements";
+    const compte = document.createElement("span");
+    compte.style.flex = "1";
+    compte.style.opacity = ".85";
+    const n = e.points.length;
+    compte.textContent = `Chemin : ${n + 1} points, départ compris`;
+    const plus = document.createElement("button");
+    plus.className = "action" + (n >= etat.maxPoints ? " inactive" : "");
+    plus.textContent = "+ Point";
+    plus.title = "Allonger le chemin d'un point";
+    plus.addEventListener("click", () => go("ajouter-point", i));
+    const moins = document.createElement("button");
+    moins.className = "action" + (n <= 1 ? " inactive" : "");
+    moins.textContent = "− Point";
+    moins.title = "Retirer le dernier point du chemin";
+    moins.addEventListener("click", () => go("retirer-point", i));
+    chemin.append(compte, plus, moins);
+    boite.appendChild(chemin);
+    return boite;
+  }
+
+  // La couleur que modifient le nuancier et le code : la principale, ou l'étape
+  // choisie du cycle.
+  function couleurChoisie(e) {
+    if (arretChoisi > 0 && e.degrade !== "aucun") return (e.arrets || [])[arretChoisi - 1] || e.couleur;
+    return etapeChoisie > 0 && e.cycleCouleur ? e.etapes[etapeChoisie - 1] || e.couleur : e.couleur;
+  }
+  function colorer(i, c) {
+    const e = etat.elements[i];
+    if (arretChoisi > 0 && e.degrade !== "aucun") go("arret", i, arretChoisi, c);
+    else if (etapeChoisie > 0 && e.cycleCouleur) go("etape", i, etapeChoisie, c);
+    else go("couleur", i, c);
+  }
+
+  // ⭐ **LE DÉGRADÉ** de la lueur `i` : quatre boutons, puis ses couleurs — la
+  // principale d'abord. Le nuancier modifie la couleur CHOISIE.
+  function controlesDuDegrade(e, i) {
+    const boite = document.createElement("div");
+    const rangee = document.createElement("div");
+    rangee.className = "mouvements";
+    const titre = document.createElement("span");
+    titre.textContent = "Dégradé";
+    titre.style.flex = "0 0 82px";
+    titre.style.opacity = ".85";
+    rangee.appendChild(titre);
+    for (const [nom, libelle] of DEGRADES) {
+      const bouton = document.createElement("button");
+      bouton.className = "action" + ((e.degrade || "aucun") === nom ? " principale" : "");
+      bouton.textContent = libelle;
+      bouton.addEventListener("click", () => { arretChoisi = nom === "aucun" ? 0 : arretChoisi; go("degrade", i, nom); });
+      rangee.appendChild(bouton);
+    }
+    boite.appendChild(rangee);
+    if (!e.degrade || e.degrade === "aucun") return boite;
+    const arrets = document.createElement("div");
+    arrets.className = "etapes";
+    [e.couleur, ...(e.arrets || [])].forEach((c, k) => {
+      const bouton = document.createElement("button");
+      bouton.className = "etape arret" + (k === arretChoisi || (k === 0 && arretChoisi === 0 && etapeChoisie === 0) ? " choisie" : "");
+      bouton.dataset.arret = k;
+      bouton.style.background = c;
+      bouton.title = k === 0 ? "Couleur principale — cliquer pour la modifier" : `Couleur ${k + 1} du dégradé — cliquer pour la modifier`;
+      bouton.addEventListener("click", () => { arretChoisi = k; etapeChoisie = 0; forme = ""; construireLaListe(); });
+      arrets.appendChild(bouton);
+    });
+    const n = (e.arrets || []).length;
+    const plus = document.createElement("button");
+    plus.className = "action" + (n >= etat.maxArrets ? " inactive" : "");
+    plus.textContent = "+ Couleur";
+    plus.addEventListener("click", () => { arretChoisi = n + 1; etapeChoisie = 0; go("ajouter-arret", i); });
+    const moins = document.createElement("button");
+    moins.className = "action" + (n <= 1 ? " inactive" : "");
+    moins.textContent = "− Couleur";
+    moins.title = "Retirer la dernière couleur du dégradé";
+    moins.addEventListener("click", () => { arretChoisi = Math.min(arretChoisi, n - 1); go("retirer-arret", i); });
+    arrets.append(plus, moins);
+    boite.appendChild(arrets);
+    // ⭐ LE DÉGRADÉ ANIMÉ : il défile dans la forme, et sa teinte tourne.
+    boite.appendChild(curseurDe("Défilement", "defilement", -30, 30, 0.5, " tr/min", (v) => {
+      etat.elements[i].defilement = v;
+      go("animer-degrade", i, "defilement", v);
+    }));
+    boite.appendChild(curseurDe("Teinte", "teinte", -30, 30, 0.5, " tr/min", (v) => {
+      etat.elements[i].teinte = v;
+      go("animer-degrade", i, "teinte", v);
+    }));
+    return boite;
+  }
+
+  // ⭐ **L'IMAGE** de la lueur `i` : importer, ou reprendre une image déjà importée.
+  function controlesDeLImage(e, i) {
+    const boite = document.createElement("div");
+    const rangee = document.createElement("div");
+    rangee.className = "mouvements";
+    const titre = document.createElement("span");
+    titre.textContent = "Image";
+    titre.style.flex = "1";
+    titre.style.opacity = ".85";
+    const importer = document.createElement("button");
+    importer.className = "action principale";
+    importer.textContent = "Importer une image…";
+    importer.title = "PNG (avec transparence), JPEG ou BMP";
+    importer.addEventListener("click", () => go("importer-image", i));
+    rangee.append(titre, importer);
+    boite.appendChild(rangee);
+    // Ses couleurs tournent sur la roue des teintes.
+    boite.appendChild(curseurDe("Teinte", "teinte", -30, 30, 0.5, " tr/min", (v) => {
+      etat.elements[i].teinte = v;
+      go("animer-degrade", i, "teinte", v);
+    }));
+    const images = etat.images || [];
+    if (!images.length) {
+      const vide = document.createElement("div");
+      vide.className = "avis";
+      vide.textContent = "Aucune image importée. Une image PNG transparente donne une lueur détourée.";
+      boite.appendChild(vide);
+      return boite;
+    }
+    const liste = document.createElement("div");
+    liste.className = "etapes";
+    for (const m of images) {
+      const bouton = document.createElement("button");
+      bouton.className = "action" + (m.id === e.image ? " principale" : "");
+      bouton.textContent = m.nom || m.id;
+      bouton.title = "Utiliser cette image";
+      bouton.addEventListener("click", () => go("image", i, m.id));
+      liste.appendChild(bouton);
+    }
+    boite.appendChild(liste);
+    return boite;
+  }
+
+  // **LE CYCLE DE COULEURS** de la lueur `i` : la case, les étapes, la durée.
+  function controlesDuCycleDeCouleurs(e, i) {
+    const boite = document.createElement("div");
+    const rangee = document.createElement("div");
+    rangee.className = "mouvements";
+    const etiquette = document.createElement("label");
+    const caseCycle = document.createElement("input");
+    caseCycle.type = "checkbox";
+    caseCycle.checked = !!e.cycleCouleur;
+    caseCycle.addEventListener("change", () => go("cycle-couleur", i, caseCycle.checked ? "1" : "0"));
+    etiquette.append(caseCycle, " Cycle de couleurs");
+    etiquette.style.flex = "1";
+    const arc = document.createElement("button");
+    arc.className = "action";
+    arc.textContent = "Arc-en-ciel";
+    arc.title = "Remplacer les couleurs du cycle par un arc-en-ciel";
+    arc.addEventListener("click", () => { etapeChoisie = 0; go("arc-en-ciel", i); });
+    rangee.append(etiquette, arc);
+    boite.appendChild(rangee);
+    if (!e.cycleCouleur) return boite;
+    const etapes = document.createElement("div");
+    etapes.className = "etapes";
+    [e.couleur, ...e.etapes].forEach((c, k) => {
+      const bouton = document.createElement("button");
+      bouton.className = "etape" + (k === etapeChoisie ? " choisie" : "");
+      bouton.dataset.etape = k;
+      bouton.style.background = c;
+      bouton.title = k === 0 ? "Couleur principale — cliquer pour la modifier" : `Couleur ${k + 1} — cliquer pour la modifier`;
+      bouton.addEventListener("click", () => { etapeChoisie = k; arretChoisi = 0; forme = ""; construireLaListe(); });
+      etapes.appendChild(bouton);
+    });
+    const n = e.etapes.length;
+    const plus = document.createElement("button");
+    plus.className = "action" + (n >= etat.maxEtapes ? " inactive" : "");
+    plus.textContent = "+ Couleur";
+    plus.addEventListener("click", () => { etapeChoisie = n + 1; go("ajouter-etape", i); });
+    const moins = document.createElement("button");
+    moins.className = "action" + (n <= 1 ? " inactive" : "");
+    moins.textContent = "− Couleur";
+    moins.title = "Retirer la dernière couleur du cycle";
+    moins.addEventListener("click", () => { etapeChoisie = Math.min(etapeChoisie, n - 1); go("retirer-etape", i); });
+    etapes.append(plus, moins);
+    boite.appendChild(etapes);
+    boite.appendChild(curseurDe("Durée du cycle", "dureeCouleur", 1, 120, 1, " s", (v) => {
+      etat.elements[i].dureeCouleur = v;
+      go("duree-couleur", i, v);
+    }));
+    return boite;
+  }
+
+  // **L'APPARITION EN FONDU** de la lueur `i` : la case, puis ses quatre réglages.
+  function controlesDeLApparition(e, i) {
+    const boite = document.createElement("div");
+    const rangee = document.createElement("div");
+    rangee.className = "mouvements";
+    const etiquette = document.createElement("label");
+    const caseApparition = document.createElement("input");
+    caseApparition.type = "checkbox";
+    caseApparition.checked = !!e.apparition;
+    caseApparition.addEventListener("change", () => go("apparition", i, caseApparition.checked ? "1" : "0"));
+    etiquette.append(caseApparition, " Apparaît et disparaît en fondu");
+    rangee.appendChild(etiquette);
+    boite.appendChild(rangee);
+    if (!e.apparition) return boite;
+    boite.appendChild(curseurDe("Cycle", "cycle", 1, 120, 1, " s", (v) => {
+      etat.elements[i].cycle = v;
+      go("cycle", i, v);
+    }));
+    for (const [champ, libelle, min] of [["presence", "Présence", 5], ["fondu", "Part de fondu", 0], ["decalage", "Décalage", 0]]) {
+      boite.appendChild(curseurDe(libelle, champ, min, 100, 1, " %", (v) => {
+        etat.elements[i][champ] = v;
+        go("regler", i, champ, v);
+      }));
+    }
+    return boite;
+  }
+
+  // Les valeurs EN PLACE — sauf le curseur tenu (voir l'en-tête).
+  function mettreAJourLesValeurs() {
+    const e = etat.elements[choisie];
+    if (!e) return;
+    for (const curseur of droite.querySelectorAll("input[data-champ]")) {
+      const brute = e[curseur.dataset.champ];
+      const champ = curseur.dataset.champ;
+      const v = DECIMAUX.includes(champ) ? brute : LOG[champ] ? versCurseur(champ, brute) : Math.round(brute);
+      if (document.activeElement !== curseur) curseur.value = v;
+    }
+    for (const span of droite.querySelectorAll("[data-valeur]")) {
+      const brute = e[span.dataset.valeur];
+      const texte = ["rotationPropre", "defilement", "teinte"].includes(span.dataset.valeur) ? toursParMinute(brute).replace(" tr/min", "") : enPourcent(brute);
+      span.textContent = texte + (span.dataset.unite || " %");
+    }
+    const courante = couleurChoisie(e);
+    for (const p of droite.querySelectorAll(".pastille")) {
+      p.classList.toggle("choisie", p.dataset.couleur === courante);
+    }
+    for (const b of droite.querySelectorAll(".etape:not(.arret)")) {
+      b.style.background = Number(b.dataset.etape) === 0 ? e.couleur : e.etapes[b.dataset.etape - 1];
+    }
+    for (const b of droite.querySelectorAll(".etape.arret")) {
+      b.style.background = Number(b.dataset.arret) === 0 ? e.couleur : (e.arrets || [])[b.dataset.arret - 1];
+    }
+    const champHex = droite.querySelector("input.hex");
+    if (champHex && document.activeElement !== champHex) champHex.value = courante;
+    const temoin = droite.querySelector(".temoin");
+    if (temoin) temoin.style.background = courante;
+  }
+
+  window.setState = function (state) {
+    etat = state;
+    document.documentElement.style.setProperty("--text-scale", state.contentScale || 1);
+    if (choisie >= state.elements.length) choisie = Math.max(0, state.elements.length - 1);
+    const lueurChoisie = state.elements[choisie];
+    if (!lueurChoisie || etapeChoisie > lueurChoisie.etapes.length) etapeChoisie = 0;
+    if (!lueurChoisie || arretChoisi > (lueurChoisie.arrets || []).length) arretChoisi = 0;
+    caseActive.checked = !!state.active;
+    if (document.activeElement !== opacite) opacite.value = Math.round(state.opacite);
+    opaciteValeur.textContent = Math.round(state.opacite) + " %";
+    if (document.activeElement !== assombrissement) assombrissement.value = Math.round(state.assombrissement);
+    assombrissementValeur.textContent = Math.round(state.assombrissement) + " %";
+    if (document.activeElement !== rotation) rotation.value = state.rotation;
+    rotationValeur.textContent = toursParMinute(state.rotation);
+    boutonAjouter.classList.toggle("inactive", state.elements.length >= state.max);
+    // Pendant un glisser, la position de la main prime sur l'écho de Rust.
+    if (!glisse) dessinerApercu();
+    construireLaListe();
+    montrerLesEffets();
+    const avis = document.getElementById("avis");
+    avis.textContent = !state.captureVisible
+      ? "Les lueurs ne se dessinent qu'en mode « visible sur les captures d'écran » (Réglages)."
+      : !state.active ? "Cochez « Lueurs dessinées » pour les voir sur les barres et les panneaux." : "";
+  };
+</script>
+</body>
+</html>

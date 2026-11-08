@@ -1,0 +1,47 @@
+# ⚠️ **CRATE INDÉPENDANTE, ET C'EST VOULU** — comme `shell-hook/` : table
+# `[workspace]` VIDE, sinon cargo remonterait jusqu'au dépôt NeuraDesk et
+# croirait cette crate rattachée à son workspace. `cargo build` à la racine NE
+# la construit PAS.
+#
+# Elle produit DEUX choses :
+#   · `neuradesk-windowhook.dll` — le module INJECTÉ dans les applications ;
+#   · `window-hook-inject`       — le petit injecteur qui la pose sur un pid.
+[workspace]
+
+[package]
+name = "window-hook"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "window_hook"
+crate-type = ["cdylib"]
+
+[[bin]]
+name = "window-hook-inject"
+path = "src/main.rs"
+
+[dependencies]
+minhook = "0.9"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    # `GetTickCount64` — un horodatage commun à tous les processus.
+    "Win32_System_SystemInformation",
+    # `CreateRemoteThread` n'existe QUE sous cette fonctionnalité.
+    "Win32_Security",
+    # ⭐ `DwmSetWindowAttribute(DWMWA_CLOAK)` — PERMIS dans notre propre
+    # processus (il échoue en `E_ACCESSDENIED` depuis l'extérieur) : c'est ce
+    # qui voile la fenêtre AVANT qu'elle ne paraisse, supprimant le flash.
+    "Win32_Graphics_Dwm",
+] }
+
+# ⛔ `panic = "abort"` est DÉLIBÉRÉMENT ABSENT : avec lui, une panique dans notre
+# proc de sous-classe TUE l'application hôte. Le proc attrape donc tout
+# (`catch_unwind`) et appelle TOUJOURS le proc d'origine.

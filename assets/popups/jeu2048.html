@@ -1,0 +1,386 @@
+<!doctype html>
+<!--
+  win32::cef_jeu2048 — un fork web du jeu GNOME 2048, en applet de la zone Intégrés.
+
+  DEMANDE (2026-11-07) : « dans Intégrés avoir des applets pour un fork de gnome
+  2048 et un fork de five-or-more ».
+
+  ⚠️ **LA FACTURE DE `maths.html`** — bande de titre qui DÉPLACE la fenêtre,
+  punaise, croix, et les MÊMES trois verbes de fenêtre (`deplacer`, `epingler`,
+  `fermer`). Ce qui change : le jeu vit ENTIÈREMENT dans cette page (aucune table
+  ni logique côté Rust), piloté au clavier (flèches / ZQSD) et à la souris
+  (glisser). Le meilleur score tient dans `localStorage`.
+
+  ⛔ **AUCUN `menu.js`** : c'est une FENÊTRE, sa taille ne se négocie pas.
+
+  ⚠️ **AUCUN `background` sur `<html>`/`<body>`** : le fond est le BUREAU FLOUTÉ que
+  Rust dessine SOUS la page ; les couleurs du thème viennent des variables CSS
+  `--popup-*` posées par la composition.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: var(--nd-police);
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    user-select: none;
+  }
+  #barre {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    cursor: default;
+  }
+  #titre {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .bouton {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+  }
+  .bouton:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  .bouton[aria-pressed="true"] {
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1)));
+    opacity: 1;
+  }
+  #tete {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px 4px 12px;
+  }
+  .score {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 72px;
+    padding: 4px 10px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.12 * var(--popup-fond-alpha, 1)));
+  }
+  .score .etiq { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
+  .score .val { font-size: 18px; font-weight: 700; line-height: 1.3; }
+  #nouvelle {
+    all: unset;
+    margin-left: auto;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.40 * var(--popup-fond-alpha, 1)));
+  }
+  #nouvelle:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.60 * var(--popup-fond-alpha, 1))); }
+  #scene {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+  }
+  /* La grille est un carré qui prend la plus petite dimension disponible. */
+  #plateau {
+    position: relative;
+    width: min(100%, calc(100vh - 150px));
+    aspect-ratio: 1 / 1;
+    padding: var(--ecart);
+    box-sizing: border-box;
+    border-radius: var(--nd-rayon-grand, 12px);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.14 * var(--popup-fond-alpha, 1)));
+    --ecart: 10px;
+    --n: 4;
+  }
+  .fond, .tuile {
+    position: absolute;
+    box-sizing: border-box;
+    width: calc((100% - var(--ecart) * (var(--n) + 1)) / var(--n));
+    aspect-ratio: 1 / 1;
+    border-radius: var(--nd-rayon-controle);
+  }
+  .fond { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.10 * var(--popup-fond-alpha, 1))); }
+  .tuile {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    transition: left .1s ease, top .1s ease;
+    z-index: 1;
+    color: #3a3330;
+  }
+  .tuile.apparait { animation: pop .14s ease; }
+  .tuile.fusionne { animation: boum .16s ease; }
+  @keyframes pop { from { transform: scale(0); } to { transform: scale(1); } }
+  @keyframes boum { 0% { transform: scale(1); } 50% { transform: scale(1.14); } 100% { transform: scale(1); } }
+  /* La palette classique de 2048, lisible sur le bureau flouté. */
+  .v2    { background: #eee4da; }
+  .v4    { background: #ede0c8; }
+  .v8    { background: #f2b179; color: #f9f6f2; }
+  .v16   { background: #f59563; color: #f9f6f2; }
+  .v32   { background: #f67c5f; color: #f9f6f2; }
+  .v64   { background: #f65e3b; color: #f9f6f2; }
+  .v128  { background: #edcf72; color: #f9f6f2; }
+  .v256  { background: #edcc61; color: #f9f6f2; }
+  .v512  { background: #edc850; color: #f9f6f2; }
+  .v1024 { background: #edc53f; color: #f9f6f2; }
+  .v2048 { background: #edc22e; color: #f9f6f2; }
+  .vmax  { background: #3c3a32; color: #f9f6f2; }
+  #fin {
+    position: absolute;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    border-radius: var(--nd-rayon-grand, 12px);
+    background: rgba(var(--popup-fond-rgb, 20, 20, 20), calc(0.72 * var(--popup-fond-alpha, 1)));
+    z-index: 2;
+  }
+  #fin.vu { display: flex; }
+  #fin .mot { font-size: 30px; font-weight: 800; }
+  #fin button {
+    all: unset;
+    padding: 10px 18px;
+    font-size: 14px;
+    font-weight: 700;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.55 * var(--popup-fond-alpha, 1)));
+  }
+  #aide {
+    flex: 0 0 auto;
+    text-align: center;
+    font-size: 11px;
+    opacity: .6;
+    padding: 0 12px 10px 12px;
+  }
+</style>
+</head>
+<body>
+  <div id="barre">
+    <span id="titre">2048</span>
+    <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
+    <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="tete">
+    <div class="score"><span class="etiq">Score</span><span class="val" id="score">0</span></div>
+    <div class="score"><span class="etiq">Record</span><span class="val" id="record">0</span></div>
+    <button id="nouvelle">Nouvelle partie</button>
+  </div>
+  <div id="scene">
+    <div id="plateau">
+      <div id="fin"><span class="mot" id="fin-mot"></span><button id="rejouer">Rejouer</button></div>
+    </div>
+  </div>
+  <div id="aide">Flèches ou Z Q S D — ou glissez — pour déplacer les tuiles.</div>
+<script>
+  "use strict";
+  const N = 4;
+  const CLE_RECORD = "neuradesk-2048-record";
+
+  function go(action) { location.href = "neuradesk://jeu2048/" + action; }
+  document.getElementById("barre").addEventListener("mousedown", function (e) {
+    if (e.target.closest("button")) return;
+    go("deplacer");
+  });
+  document.getElementById("epingle").addEventListener("click", function () { go("epingler"); });
+  document.getElementById("fermer").addEventListener("click", function () { go("fermer"); });
+
+  const plateau = document.getElementById("plateau");
+  plateau.style.setProperty("--n", N);
+
+  // Les N*N cases de fond, posées une fois.
+  function poser_fonds() {
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        const d = document.createElement("div");
+        d.className = "fond";
+        placer(d, r, c);
+        plateau.appendChild(d);
+      }
+    }
+  }
+  // La position d'une case (r, c) en pourcentage, pour `left`/`top`.
+  function placer(el, r, c) {
+    const pas = "calc((100% - var(--ecart) * (var(--n) + 1)) / var(--n) + var(--ecart))";
+    el.style.left = "calc(var(--ecart) + " + c + " * " + pas + ")";
+    el.style.top = "calc(var(--ecart) + " + r + " * " + pas + ")";
+  }
+
+  let grille, score, record, fini, gagne;
+
+  function neuf() {
+    grille = Array.from({ length: N }, () => Array(N).fill(0));
+    score = 0;
+    fini = false;
+    gagne = false;
+    ajouter(); ajouter();
+    document.getElementById("fin").classList.remove("vu");
+    dessiner();
+  }
+
+  function cases_vides() {
+    const v = [];
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) if (grille[r][c] === 0) v.push([r, c]);
+    return v;
+  }
+  function ajouter() {
+    const v = cases_vides();
+    if (!v.length) return;
+    const [r, c] = v[Math.floor(Math.random() * v.length)];
+    grille[r][c] = Math.random() < 0.9 ? 2 : 4;
+    return [r, c];
+  }
+
+  // Compacte puis fusionne une ligne vers la gauche ; rend [nouvelle, gagne_points].
+  function compacter(ligne) {
+    const nums = ligne.filter((x) => x !== 0);
+    let gagne_points = 0;
+    for (let i = 0; i < nums.length - 1; i++) {
+      if (nums[i] === nums[i + 1]) {
+        nums[i] *= 2;
+        gagne_points += nums[i];
+        if (nums[i] === 2048) gagne = true;
+        nums.splice(i + 1, 1);
+      }
+    }
+    while (nums.length < N) nums.push(0);
+    return [nums, gagne_points];
+  }
+
+  // Tourne la grille de 90° (pour traiter chaque direction comme « gauche »).
+  function tourner(g) {
+    const t = Array.from({ length: N }, () => Array(N).fill(0));
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) t[N - 1 - c][r] = g[r][c];
+    return t;
+  }
+
+  // dir : 0=gauche, 1=haut, 2=droite, 3=bas. Rend true si quelque chose a bougé.
+  function jouer(dir) {
+    if (fini) return;
+    let g = grille.map((l) => l.slice());
+    for (let k = 0; k < dir; k++) g = tourner(g);
+    let bouge = false;
+    for (let r = 0; r < N; r++) {
+      const [nl, pts] = compacter(g[r]);
+      if (nl.some((x, i) => x !== g[r][i])) bouge = true;
+      g[r] = nl;
+      score += pts;
+    }
+    for (let k = 0; k < (4 - dir) % 4; k++) g = tourner(g);
+    if (!bouge) return;
+    grille = g;
+    ajouter();
+    if (score > record) { record = score; try { localStorage.setItem(CLE_RECORD, String(record)); } catch (e) {} }
+    if (!coup_possible()) fini = true;
+    dessiner();
+    if (gagne || fini) terminer();
+  }
+
+  function coup_possible() {
+    if (cases_vides().length) return true;
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+      if (c + 1 < N && grille[r][c] === grille[r][c + 1]) return true;
+      if (r + 1 < N && grille[r][c] === grille[r + 1][c]) return true;
+    }
+    return false;
+  }
+
+  function classe(v) {
+    if (v <= 2048) return "v" + v;
+    return "vmax";
+  }
+  function taille_police(v) {
+    const n = String(v).length;
+    return (n <= 2 ? 30 : n === 3 ? 24 : n === 4 ? 20 : 16) + "px";
+  }
+
+  function dessiner() {
+    document.getElementById("score").textContent = score;
+    document.getElementById("record").textContent = record;
+    plateau.querySelectorAll(".tuile").forEach((t) => t.remove());
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+      const v = grille[r][c];
+      if (!v) continue;
+      const t = document.createElement("div");
+      t.className = "tuile " + classe(v);
+      t.textContent = v;
+      t.style.fontSize = taille_police(v);
+      placer(t, r, c);
+      plateau.appendChild(t);
+    }
+  }
+
+  function terminer() {
+    const fin = document.getElementById("fin");
+    document.getElementById("fin-mot").textContent = gagne ? "Gagné !" : "Partie terminée";
+    fin.classList.add("vu");
+    fini = true;
+  }
+
+  const TOUCHES = {
+    ArrowLeft: 0, ArrowUp: 1, ArrowRight: 2, ArrowDown: 3,
+    q: 0, Q: 0, z: 1, Z: 1, d: 2, D: 2, s: 3, S: 3,
+  };
+  window.addEventListener("keydown", function (e) {
+    const dir = TOUCHES[e.key];
+    if (dir === undefined) return;
+    e.preventDefault();
+    jouer(dir);
+  });
+
+  // Glisser à la souris : la plus grande composante donne la direction.
+  let depart = null;
+  document.getElementById("scene").addEventListener("mousedown", function (e) { depart = [e.clientX, e.clientY]; });
+  window.addEventListener("mouseup", function (e) {
+    if (!depart) return;
+    const dx = e.clientX - depart[0], dy = e.clientY - depart[1];
+    depart = null;
+    if (Math.abs(dx) < 24 && Math.abs(dy) < 24) return;
+    if (Math.abs(dx) > Math.abs(dy)) jouer(dx > 0 ? 2 : 0);
+    else jouer(dy > 0 ? 3 : 1);
+  });
+
+  document.getElementById("nouvelle").addEventListener("click", neuf);
+  document.getElementById("rejouer").addEventListener("click", neuf);
+
+  // L'état de fenêtre que Rust pousse : seulement la punaise.
+  window.setState = function (state) {
+    const epingle = document.getElementById("epingle");
+    epingle.setAttribute("aria-pressed", String(!!state.epingle));
+    epingle.innerHTML = state.epingle ? '<span class="ico ico-push-pin-fill"></span>' : '<span class="ico ico-push-pin"></span>';
+    epingle.title = state.epingle ? "Ne plus rester au premier plan" : "Rester au premier plan";
+  };
+
+  try { record = parseInt(localStorage.getItem(CLE_RECORD), 10) || 0; } catch (e) { record = 0; }
+  poser_fonds();
+  neuf();
+</script>
+</body>
+</html>

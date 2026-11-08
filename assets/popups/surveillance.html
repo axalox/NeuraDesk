@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<!--
+  LA SURVEILLANCE DE SERVEURS — ping et HTTP, avec un an d'historique (voir
+  `win32::cef_surveillance`, qui porte la liste complète des actions, et
+  `win32::surveillance`, le modèle et le fil de mesure).
+
+  ÉTAT REÇU (window.setState) :
+    { cibles: [{ id, nom, adresse, http,
+                 derniere: { instantS, enLigne, ping, httpMesure, http, statut } | null,
+                 disponibilite: % | null,
+                 barres: [[mesures, enLigne, latenceMoyenne|null, latenceMax]] }],
+      plage: "1h"|"24h"|"7j"|"30j"|"1an", debutS, pasS, erreur, max, contentScale,
+      outils: { cibleId, outil|null, enCours, lignes: [[niveau, texte]] } | null,
+      portsMax }
+    et chaque cible porte aussi `portsProposes` (les services courants, "21, 22, 23, …").
+
+  LES OUTILS RÉSEAU (voir `win32::outils_reseau`) : leur section est STATIQUE,
+  comme le formulaire — le champ des ports ne doit pas être reconstruit sous
+  les doigts ; seul le RAPPORT l'est. La page ne désigne qu'un IDENTIFIANT de
+  cible, jamais une adresse.
+
+  ⚠️ **LA PAGE NE REÇOIT QUE DES BARRES** : Rust range les mesures de la plage
+  choisie, la page ne fait que les dessiner. Une barre ROUGE = au moins une
+  mesure hors ligne dans sa tranche ; pleine hauteur si TOUTES l'étaient.
+
+  ⚠️ **LE FORMULAIRE EST STATIQUE** : seule la LISTE est reconstruite à chaque
+  état. Un champ reconstruit sous les doigts perd son focus (la leçon de
+  `notes.html` et du calendrier).
+
+  ⚠️ **PAS DE <select>** : il ne s'ouvre jamais dans une page CEF rendue hors
+  écran. La plage et l'option HTTP se choisissent par BOUTONS.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<script src="menu_contextuel.js"></script>
+<style>
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    overflow-y: auto;
+    /* Même grossissement que le calendrier : `zoom` seul, jamais multiplié
+       dans une taille (voir l'en-tête de `calendar_applet.html`). */
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    min-height: calc(100vh / var(--text-scale));
+  }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 6px; }
+  h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  h2 { margin: 12px 0 6px; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; opacity: calc(.65 * max(1, var(--popup-alpha, 1))); }
+  section { padding: 0 16px 14px; }
+  button {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 5px 10px;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  button.actif { background: rgb(var(--popup-accent-solid-rgb)); }
+  .close-btn { background: none; font-size: 16px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+  .close-btn:hover { background: none; opacity: 1; }
+  input {
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.08 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.18 * var(--popup-fond-alpha, 1)));
+    border-radius: var(--nd-rayon-controle);
+    padding: 5px 8px;
+    font: inherit;
+  }
+  .ligne { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .cache { display: none !important; }
+  #erreur { color: #ff8080; font-size: 12px; margin-bottom: 8px; }
+  .aide { font-size: 12px; opacity: calc(.6 * max(1, var(--popup-alpha, 1))); margin-bottom: 8px; }
+
+  /* ---- LES CIBLES ---- */
+  .cible {
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    border-radius: var(--nd-rayon-surface);
+    background: rgba(var(--popup-accent-rgb), calc(0.14 * var(--popup-fond-alpha, 1)));
+  }
+  .cible.panne { background: rgba(255, 64, 64, .22); }
+  .entete { display: flex; align-items: center; gap: 8px; }
+  .pastille { width: 10px; height: 10px; border-radius: 50%; flex: none; background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.3 * var(--popup-fond-alpha, 1))); }
+  .pastille.ok { background: #4cd964; }
+  .pastille.ko { background: #ff4040; }
+  .texte { flex: 1 1 auto; min-width: 0; }
+  .nom { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+  .detail { font-size: 12px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dispo { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .graphe { display: block; width: 100%; height: 48px; margin-top: 6px; }
+  .lecture { font-size: 12px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); min-height: 16px; font-variant-numeric: tabular-nums; }
+  .vide { opacity: calc(.55 * max(1, var(--popup-alpha, 1))); font-style: italic; }
+  /* Les ALERTES coupées (DEMANDE EXPLICITE, 2026-10-03 : « couper les alertes
+     tout en continuant de surveiller ») : la cloche barrée se voit à côté de la
+     cible, et une cible muette en panne garde son fond rouge — la panne reste
+     un fait, seul le clignotement de l'icône s'éteint. */
+  button.muet { opacity: calc(.55 * max(1, var(--popup-alpha, 1))); }
+
+  /* ---- LES OUTILS RÉSEAU ---- */
+  #outils {
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    border-radius: var(--nd-rayon-surface);
+    background: rgba(var(--popup-accent-rgb), calc(0.2 * var(--popup-fond-alpha, 1)));
+  }
+  #outils h2 { margin-top: 2px; }
+  #rapport {
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 260px;
+    overflow-y: auto;
+  }
+  #rapport .ok { color: #4cd964; }
+  #rapport .alerte { color: #ffb340; }
+  #rapport .erreur { color: #ff8080; }
+  #rapport .attente { opacity: calc(.6 * max(1, var(--popup-alpha, 1))); font-style: italic; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Surveillance</h1>
+  <button class="close-btn" onclick="go('close')" title="Fermer"><span class="ico ico-x"></span></button>
+</header>
+
+<section>
+  <h2 id="form-titre">Ajouter une cible</h2>
+  <div class="ligne">
+    <input id="adresse" type="text" placeholder="IP, nom d'hôte ou https://…" style="flex: 2 1 180px">
+    <input id="nom" type="text" placeholder="Nom (facultatif)" style="flex: 1 1 100px">
+  </div>
+  <div class="aide">Ping toutes les minutes. « HTTP » vérifie aussi que le serveur web répond (statut 2xx ou 3xx).</div>
+  <div class="ligne">
+    <button id="bouton-http" onclick="basculerHttp()">HTTP : non</button>
+    <button onclick="enregistrer()">Enregistrer</button>
+    <button id="annuler" class="cache" onclick="annulerEdition()">Annuler</button>
+  </div>
+  <div id="erreur" class="cache"></div>
+
+  <div id="outils" class="cache">
+    <h2 id="outils-titre">Outils</h2>
+    <div class="ligne">
+      <button data-outil="traceroute" onclick="lancerOutil('traceroute')" title="Chaque routeur traversé jusqu'à la cible">Traceroute</button>
+      <button data-outil="dns" onclick="lancerOutil('dns')" title="Les enregistrements DNS du nom (ou le nom d'une IP)">DNS</button>
+      <button data-outil="ports" onclick="lancerOutil('ports')" title="Les ports ci-dessous sont-ils ouverts ?">Ports</button>
+      <button data-outil="certificat" onclick="lancerOutil('certificat')" title="Le certificat HTTPS : émetteur, validité, expiration">Certificat</button>
+      <button data-outil="familles" onclick="lancerOutil('familles')" title="Chaque adresse IPv4 et IPv6 répond-elle ?">IPv4 / IPv6</button>
+      <span style="flex: 1"></span>
+      <button onclick="go('outils-fermer')" title="Fermer les outils"><span class="ico ico-x"></span></button>
+    </div>
+    <div class="ligne">
+      <input id="ports" type="text" placeholder="22, 80, 443" style="flex: 1 1 160px">
+      <span class="aide" id="ports-aide" style="margin: 0">ports à tester</span>
+    </div>
+    <div id="rapport"></div>
+  </div>
+
+  <h2>Historique</h2>
+  <div class="ligne" id="plages">
+    <button data-plage="1h" onclick="choisirPlage('1h')">1 h</button>
+    <button data-plage="24h" onclick="choisirPlage('24h')">24 h</button>
+    <button data-plage="7j" onclick="choisirPlage('7j')">7 j</button>
+    <button data-plage="30j" onclick="choisirPlage('30j')">30 j</button>
+    <button data-plage="1an" onclick="choisirPlage('1an')">1 an</button>
+    <span style="flex: 1"></span>
+    <button id="alertes" onclick="go('alertes', state.alertesCoupees ? '1' : '0')"></button>
+    <button onclick="go('verifier')" title="Mesurer toutes les cibles maintenant">Vérifier maintenant</button>
+  </div>
+  <div id="liste"></div>
+</section>
+
+<script>
+  // `el` et `go` — MÊMES HELPERS que les autres pages du dépôt (voir
+  // `calendar_applet.html`) : tout `on…` passe par `addEventListener`.
+  function el(tag, attrs, children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (key === "class") node.className = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value);
+    }
+    for (const child of children || []) {
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+    return node;
+  }
+
+  // Segments ENCODÉS un par un — une URL contenant « / » ne doit pas changer
+  // l'arité de l'action.
+  function go(...segments) {
+    location.href = "neuradesk://surveillance/" + segments.map(encodeURIComponent).join("/");
+  }
+
+  const SVG = "http://www.w3.org/2000/svg";
+  function svg(tag, attrs) {
+    const node = document.createElementNS(SVG, tag);
+    for (const [key, value] of Object.entries(attrs || {})) node.setAttribute(key, value);
+    return node;
+  }
+
+  let state = null;
+  let dernierEtatJson = null;
+  // Le brouillon du formulaire : `id` null = nouvelle cible.
+  let brouillon = { id: null, http: false };
+  // Une saisie envoyée dont on attend le verdict : le formulaire ne se vide
+  // qu'une fois Rust d'accord — une adresse refusée reste là, à corriger.
+  let enAttente = false;
+  // La cible dont la suppression attend CONFIRMATION : elle emporte jusqu'à
+  // un an d'historique, un clic égaré ne doit pas suffire.
+  let aSupprimer = null;
+
+  function deux(n) { return String(n).padStart(2, "0"); }
+  function dateCourte(s) {
+    const d = new Date(s * 1000);
+    return `${deux(d.getDate())}/${deux(d.getMonth() + 1)} ${deux(d.getHours())}:${deux(d.getMinutes())}`;
+  }
+
+  // --- LE FORMULAIRE ---
+  function rendreHttp() {
+    const bouton = document.getElementById("bouton-http");
+    bouton.textContent = "HTTP : " + (brouillon.http ? "oui" : "non");
+    bouton.classList.toggle("actif", brouillon.http);
+  }
+
+  function basculerHttp() {
+    brouillon.http = !brouillon.http;
+    rendreHttp();
+  }
+
+  function enregistrer() {
+    const adresse = document.getElementById("adresse").value.trim();
+    if (!adresse) return;
+    const nom = document.getElementById("nom").value.trim();
+    const id = brouillon.id === null ? "nouvelle" : String(brouillon.id);
+    const http = brouillon.http ? "1" : "0";
+    // Jamais de segment vide : il serait mangé en route (voir l'en-tête de
+    // `cef_surveillance.rs`).
+    if (nom) go("enregistrer", id, adresse, http, nom);
+    else go("enregistrer", id, adresse, http);
+    enAttente = true;
+  }
+
+  function commencerEdition(c) {
+    brouillon = { id: c.id, http: c.http };
+    document.getElementById("adresse").value = c.adresse;
+    document.getElementById("nom").value = c.nom;
+    document.getElementById("form-titre").textContent = "Modifier la cible";
+    document.getElementById("annuler").classList.remove("cache");
+    rendreHttp();
+  }
+
+  function annulerEdition() {
+    brouillon = { id: null, http: false };
+    document.getElementById("adresse").value = "";
+    document.getElementById("nom").value = "";
+    document.getElementById("form-titre").textContent = "Ajouter une cible";
+    document.getElementById("annuler").classList.add("cache");
+    rendreHttp();
+  }
+
+  // --- LES OUTILS ---
+  // La cible dont la section est ouverte au dernier état : quand elle change,
+  // le champ des ports reprend les ports proposés pour la nouvelle.
+  let outilsCible = null;
+
+  function lancerOutil(nom) {
+    if (!state || !state.outils) return;
+    const id = String(state.outils.cibleId);
+    const ports = document.getElementById("ports").value.trim();
+    // Jamais de segment vide (voir `enregistrer`).
+    if (nom === "ports" && ports) go("outil", id, nom, ports);
+    else go("outil", id, nom);
+  }
+
+  function rendreOutils() {
+    const section = document.getElementById("outils");
+    const o = state.outils;
+    const c = o && state.cibles.find((x) => x.id === o.cibleId);
+    section.classList.toggle("cache", !c);
+    if (!c) {
+      outilsCible = null;
+      return;
+    }
+    document.getElementById("outils-titre").textContent = "Outils — " + (c.nom || c.adresse);
+    document.getElementById("ports-aide").textContent = `ports à tester (${state.portsMax} au plus)`;
+    if (outilsCible !== c.id) {
+      outilsCible = c.id;
+      document.getElementById("ports").value = c.portsProposes;
+      section.scrollIntoView({ block: "nearest" });
+    }
+    for (const bouton of document.querySelectorAll("[data-outil]")) {
+      bouton.classList.toggle("actif", bouton.dataset.outil === o.outil);
+    }
+    const rapport = document.getElementById("rapport");
+    rapport.replaceChildren();
+    for (const [niveau, texte] of o.lignes) rapport.appendChild(el("div", { class: niveau }, [texte]));
+    if (o.enCours) rapport.appendChild(el("div", { class: "attente" }, ["en cours…"]));
+    else if (!o.outil) rapport.appendChild(el("div", { class: "attente" }, ["Choisissez un outil."]));
+    rapport.scrollTop = rapport.scrollHeight;
+  }
+
+  function choisirPlage(nom) {
+    go("plage", nom);
+  }
+
+  // --- LE GRAPHIQUE ---
+  // Une barre par tranche : hauteur = latence moyenne rapportée à la plus
+  // haute de la plage ; ROUGE si la tranche compte une mesure hors ligne,
+  // pleine hauteur si toutes l'étaient ; un trait gris sans mesure.
+  // Des couleurs d'ÉTAT, FIXES : elles ne suivent PAS le thème — DEMANDE EXPLICITE
+  // (2026-10-12). Un vert d'accent selon le thème se confondait avec le reste du
+  // panneau, et un thème rouge aurait fait lire « hors ligne » une cible en ligne.
+  const VERT_EN_LIGNE = "#4cd964"; // celui de `.pastille.ok`
+  const ROUGE_HORS_LIGNE = "#ff4040";
+
+  function graphe(c, lecture) {
+    const H = 40;
+    const n = c.barres.length;
+    const plafond = Math.max(1, ...c.barres.map((b) => b[2] || 0));
+    const g = svg("svg", { class: "graphe", viewBox: `0 0 ${n} ${H}`, preserveAspectRatio: "none" });
+    c.barres.forEach((b, i) => {
+      const [mesures, enLigne, moyenne] = b;
+      let hauteur, couleur, opacite = 1;
+      if (mesures === 0) {
+        hauteur = 1; couleur = "rgb(var(--popup-fg-rgb, 255, 255, 255))"; opacite = 0.2;
+      } else if (enLigne === 0) {
+        hauteur = H; couleur = ROUGE_HORS_LIGNE;
+      } else {
+        hauteur = Math.max(2, (moyenne || 0) / plafond * (H - 2));
+        couleur = enLigne < mesures ? ROUGE_HORS_LIGNE : VERT_EN_LIGNE;
+      }
+      const barre = svg("rect", { x: i + 0.1, y: H - hauteur, width: 0.8, height: hauteur, fill: couleur, "fill-opacity": opacite });
+      // Une zone de survol pleine hauteur : une barre basse doit se lire aussi.
+      const zone = svg("rect", { x: i, y: 0, width: 1, height: H, fill: "transparent" });
+      zone.addEventListener("mouseenter", () => {
+        const debut = dateCourte(state.debutS + i * state.pasS);
+        if (mesures === 0) lecture.textContent = `${debut} — aucune mesure`;
+        else {
+          const dispo = (enLigne * 100 / mesures).toFixed(enLigne === mesures ? 0 : 1);
+          const lat = moyenne === null ? "—" : `${moyenne} ms (max ${b[3]} ms)`;
+          lecture.textContent = `${debut} — ${dispo} % en ligne · ${lat}`;
+        }
+      });
+      g.appendChild(barre);
+      g.appendChild(zone);
+    });
+    g.addEventListener("mouseleave", () => { lecture.textContent = resumeLecture(c); });
+    return g;
+  }
+
+  function resumeLecture(c) {
+    const plafond = Math.max(0, ...c.barres.map((b) => b[3] || 0));
+    return plafond > 0 ? `latence max sur la période : ${plafond} ms` : "";
+  }
+
+  // --- LA LISTE ---
+  function detailDerniere(c) {
+    const d = c.derniere;
+    if (!d) return "en attente de la première mesure…";
+    const morceaux = [d.ping !== null ? `ping ${d.ping} ms` : "ping : pas de réponse"];
+    if (d.httpMesure) {
+      morceaux.push(d.http !== null ? `HTTP ${d.statut} en ${d.http} ms` : d.statut ? `HTTP ${d.statut}` : "HTTP : pas de réponse");
+    }
+    morceaux.push("à " + dateCourte(d.instantS).slice(6));
+    return morceaux.join(" · ");
+  }
+
+  function rendreListe() {
+    const liste = document.getElementById("liste");
+    liste.replaceChildren();
+    if (state.cibles.length === 0) {
+      liste.appendChild(el("div", { class: "vide" }, ["Aucune cible. Ajoutez une adresse IP, un nom d'hôte ou une URL."]));
+    }
+    for (const c of state.cibles) {
+      const d = c.derniere;
+      const etat = !d ? "" : d.enLigne ? " ok" : " ko";
+      const lecture = el("div", { class: "lecture" }, [resumeLecture(c)]);
+      const dispo = c.disponibilite === null ? "—" : c.disponibilite.toFixed(c.disponibilite === 100 ? 0 : 2) + " %";
+      const id = String(c.id);
+      liste.appendChild(el("div", { class: "cible" + (d && !d.enLigne ? " panne" : "") }, [
+        el("div", { class: "entete" }, [
+          el("span", { class: "pastille" + etat, title: !d ? "Pas encore mesurée" : d.enLigne ? "En ligne" : "Injoignable" }),
+          el("div", { class: "texte" }, [
+            el("div", { class: "nom" }, [c.nom || c.adresse]),
+            el("div", { class: "detail" }, [(c.nom ? c.adresse + " · " : "") + (c.http ? "ping + HTTP" : "ping")]),
+            el("div", { class: "detail" }, [detailDerniere(c)]),
+          ]),
+          el("span", { class: "dispo", title: "Disponibilité sur la période" }, [dispo]),
+          el("button", {
+            class: state.outils && state.outils.cibleId === c.id ? "actif" : "",
+            title: "Outils réseau : traceroute, DNS, ports, certificat, IPv4/IPv6",
+            onclick: () => (state.outils && state.outils.cibleId === c.id ? go("outils-fermer") : go("outils", id)),
+          }, ["Outils"]),
+          el("button", {
+            class: c.alerte ? "" : "muet",
+            title: c.alerte
+              ? "Alerte allumée : l'icône clignote si cette cible tombe. Cliquer pour la couper (la surveillance continue)."
+              : "Alerte coupée : la cible reste surveillée, mais l'icône ne clignote plus pour elle. Cliquer pour la rallumer.",
+            onclick: () => go("alerte", id, c.alerte ? "0" : "1"),
+          }, [c.alerte ? "🔔" : "🔕"]),
+          el("button", { title: "Modifier", onclick: () => commencerEdition(c) }, [el("span", { class: "ico ico-pencil-simple" })]),
+          aSupprimer === c.id
+            ? el("button", { class: "actif", title: "L'historique de cette cible sera effacé", onclick: () => { aSupprimer = null; go("supprimer", id); } }, ["Supprimer ?"])
+            : el("button", { title: "Supprimer (et son historique)", onclick: () => { aSupprimer = c.id; rendreListe(); } }, [el("span", { class: "ico ico-x" })]),
+        ]),
+        graphe(c, lecture),
+        lecture,
+      ]));
+    }
+  }
+
+  window.setState = function (next) {
+    const json = JSON.stringify(next);
+    if (json === dernierEtatJson) return;
+    // Une cible en cours de modification qui a disparu : le brouillon
+    // viserait un identifiant mort.
+    if (brouillon.id !== null && !next.cibles.some((c) => c.id === brouillon.id)) annulerEdition();
+    state = next;
+    document.documentElement.style.setProperty("--text-scale", state.contentScale || 1);
+
+    for (const bouton of document.querySelectorAll("[data-plage]")) {
+      bouton.classList.toggle("actif", bouton.dataset.plage === state.plage);
+    }
+    const alertes = document.getElementById("alertes");
+    alertes.replaceChildren(el("span", { class: "ico ico-" + (state.alertesCoupees ? "bell-slash" : "bell") }), state.alertesCoupees ? " Alertes coupées" : " Alertes");
+    alertes.classList.toggle("actif", !!state.alertesCoupees);
+    alertes.title = state.alertesCoupees
+      ? "Toutes les alertes sont coupées : les cibles restent surveillées. Cliquer pour les rallumer."
+      : "Couper toutes les alertes (l'icône ne clignote plus) sans arrêter la surveillance";
+    const erreur = document.getElementById("erreur");
+    erreur.classList.toggle("cache", !state.erreur);
+    erreur.textContent = state.erreur ? "Refusé : " + state.erreur : "";
+    if (enAttente) {
+      enAttente = false;
+      if (!state.erreur) annulerEdition();
+    }
+
+    rendreListe();
+    rendreOutils();
+    // Marqué EN DERNIER — voir `calendar_applet.html`, même garde.
+    dernierEtatJson = json;
+  };
+
+  rendreHttp();
+  go("ready");
+</script>
+</body>
+</html>

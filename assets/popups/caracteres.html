@@ -1,0 +1,246 @@
+<!doctype html>
+<!--
+  win32::cef_caracteres — la fenêtre des caractères accentués.
+
+  DEMANDE EXPLICITE (2026-10-06) : « une applet qui permette de faire apparaître
+  une fenêtre flottante pour insérer les caractères accentués de la langue
+  française en minuscule et majuscule ainsi que la ligature du o et du e », puis
+  « une fenêtre comme la visionneuse avec la possibilité de la garder au premier
+  plan ».
+
+  ⚠️ **L'HABILLAGE EST CELUI DE LA VISIONNEUSE, ET IL EST RECOPIÉ, PAS INVENTÉ** :
+  bande de titre qui DÉPLACE la fenêtre, punaise `◇`/`◆`, croix `✕`. Mêmes glyphes,
+  mêmes verbes, même mécanique — voir `visionneuse.html`, dont cette page suit la
+  structure ligne pour ligne.
+
+  ⛔ **AUCUN `menu.js`** (comme la visionneuse) : c'est une FENÊTRE, sa taille est
+  celle de la zone cliente et ne se négocie pas. Le charger poserait un
+  `MutationObserver` qui émettrait un `location.href` à chaque rendu.
+
+  DEUX GESTES SUR LA GRILLE :
+    - clic GAUCHE  -> `caracteres/frapper/<code>` : le caractère est FRAPPÉ dans la
+      dernière fenêtre étrangère retenue (voir `cef_caracteres`) ;
+    - clic DROIT   -> `caracteres/copier/<code>` : il est COPIÉ. C'est la voie
+      GARANTIE — Windows refuse les frappes d'un processus non élevé vers une
+      fenêtre ÉLEVÉE, et ce refus est silencieux.
+
+  ⚠️ **LA GRILLE VIENT DE RUST, PAS D'ICI** (`state.familles`) : les 48 caractères
+  sont décidés par l'utilisateur, et les écrire aussi dans cette page en ferait une
+  SECONDE source de vérité — celle qui divergerait au premier ajout.
+
+  ⚠️ **AUCUN `background` sur `<html>`/`<body>`** : le fond d'un panneau est le
+  BUREAU FLOUTÉ que Rust dessine SOUS la page. Une page qui peindrait son propre
+  fond le masquerait.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: var(--nd-police);
+    /* ⛔ **LA COULEUR DE TEXTE VIENT DU THÈME, ET ELLE MANQUAIT ICI.**
+       Toutes les pages de PANNEAU la posent (visionneuse, météo, dash,
+       calculatrice, couleurs…), et toutes les pages de MENU l'héritent de
+       `menu.css`. Cette page-ci ne fait NI l'un NI l'autre : elle charge
+       `style.css` seul, qui ne pose aucune couleur — elle retombait donc sur le
+       DÉFAUT DU NAVIGATEUR, **le noir**. Défaut signalé le 2026-10-06 : « il
+       faudrait que la fenêtre suive le thème de l'application » — les 60
+       caractères, le titre et les deux boutons étaient noirs sur le bureau flouté.
+
+       ⚠️ **ET C'EST LA SEULE** : un balayage des 29 pages le vérifie (voir le test
+       `toute_page_de_panneau_prend_sa_couleur_du_theme` dans `win32::cef_popup`).
+
+       ⚠️ **LE FALLBACK `255,255,255` EST CELUI DES AUTRES PAGES** — il couvre la
+       première frame, avant que `push_window_palette` n'ait posé la variable.
+
+       ⚠️ Les `.case` et les `.bouton` ont `all: unset`, qui remet `color` à sa
+       valeur HÉRITÉE : la poser sur `body` suffit donc pour toute la fenêtre. */
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    user-select: none;
+  }
+  /* LA BANDE DE TITRE — même facture que `visionneuse.html`, réglage pour réglage.
+     ⛔ **`flex: 0 0 auto` N'EST PAS DÉCORATIF** : sans lui, une grille trop grande
+     comprime la bande au lieu de défiler, et la barre de titre disparaît.
+     ⛔ **LE FILET DU BAS EST CE QUI SÉPARE LA BARRE DU CONTENU.** Sans lui, la
+     grille et la barre se lisent comme un seul bloc — c'est ce qui faisait dire
+     « la fenêtre ne suit pas le thème de l'app ». */
+  #barre {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    cursor: default;
+  }
+  #titre {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* ⚠️ **`Segoe UI Symbol` EN CLAIR** : les glyphes `◇`/`◆`/`✕` existent aussi
+     dans la police EMOJI, qui les rendrait EN COULEUR — un losange et une croix
+     bleus et roses dans une fenêtre qui n'a que des teintes de thème. La mémoire du
+     projet porte la règle : « deux glyphes de Segoe UI Symbol, jamais des emojis ».
+     La nommer ici la fait respecter. */
+  .bouton {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+  }
+  .bouton:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  /* ⚠️ `[aria-pressed]` ET NON UNE CLASSE : l'état vient de Rust, qui le pose à
+     chaque poussée — une classe devrait être retirée à la main, et un état qui
+     survit à un clic manqué se lit comme un bouton cassé. */
+  .bouton[aria-pressed="true"] {
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1)));
+  }
+  /* ⭐ **`overflow: auto` EST LE CŒUR DU CORRECTIF, ET IL RÉPOND À DEUX DEMANDES.**
+     Sans lui, une grille plus grande que la fenêtre débordait des DEUX côtés (le
+     centrage la fait dépasser en haut ET en bas) : les rangées du haut passaient
+     **par-dessus la bande de titre**. Un conteneur qui défile CLIPPE — le
+     débordement ne peut plus sortir, et une barre de défilement apparaît quand la
+     fenêtre est trop petite. Signalé le 2026-10-06. */
+  #grille {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    /* ⛔ **`safe` ET NON `center` SEUL** : centré quand tout tient, ramené au DÉBUT
+       quand ça déborde. Un `center` sec, dans un conteneur qui défile, rogne le
+       premier élément — il devient alors inatteignable, même en défilant. */
+    align-items: safe center;
+    justify-content: safe center;
+    /* ⚠️ **LE CENTRAGE RANGÉE PAR RANGÉE EST UN CHOIX, PAS UN OUBLI.** Les sept
+       rangées font 8, 9, 8, 9, 7, 7 et 12 touches, et CHACUNE est centrée pour son
+       compte : la première colonne « danse » donc d'une rangée à l'autre, et ça
+       ressemble à un défaut.
+
+       **ÇA N'EN EST PAS UN — NE PAS « CORRIGER ».** L'alignement à gauche a été
+       PROPOSÉ et REFUSÉ par l'utilisateur le 2026-10-06, pour deux raisons :
+       la silhouette reste équilibrée quand la fenêtre est plus large que la
+       grille (un alignement à gauche collerait les touches au bord et laisserait
+       un grand vide à droite), et le centrage donne une silhouette SYMÉTRIQUE.
+
+       ⚠️ J'ai moi-même été à deux doigts de le corriger sans demander : ce
+       commentaire existe pour que la prochaine session ne refasse pas ce pas. */
+
+    overflow: auto;
+    /* **LA MARGE QUI FACILITE LE REDIMENSIONNEMENT** : sans elle, la première touche
+       touche le bord de la fenêtre, et viser le bord pour l'étirer vise une lettre.
+       C'est elle qui est comptée dans `cef_caracteres::MARGE`. */
+    padding: 8px;
+    gap: 0;
+  }
+  .rang { display: flex; }
+  .case {
+    all: unset;
+    box-sizing: border-box;
+    width: 46px;
+    height: 46px;
+    margin: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    /* Les rayons viennent du STYLE actif — mêmes jetons que le reste des pages. */
+    border-radius: var(--nd-rayon-controle);
+    box-shadow: inset 0 0 0 1px rgba(var(--popup-fg-rgb, 255, 255, 255), var(--nd-bordure-alpha));
+    cursor: pointer;
+  }
+  .case:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.30 * var(--popup-fond-alpha, 1))); }
+  .case:active { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.55 * var(--popup-fond-alpha, 1))); }
+</style>
+</head>
+<body>
+  <!-- ⛔ **AUCUN `menu.js`** — voir l'en-tête. -->
+  <div id="barre">
+    <span id="titre">Caractères</span>
+    <!-- Deux glyphes de Segoe UI Symbol, jamais des emojis : ils seraient rendus en
+         couleur par la police emoji. Le sens est porté par l'infobulle.
+         ⚠️ **LES CARACTÈRES SONT ÉCRITS EN CLAIR ICI, PAS EN `\uXXXX`** : un
+         échappement JavaScript n'est pas interprété dans du HTML — il s'afficherait
+         tel quel. -->
+    <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
+    <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="grille"></div>
+<script>
+  function go(action) {
+    // ⚠️ Un segment, pas d'argument : c'est Rust qui sait QUELLE fenêtre parle.
+    location.href = "neuradesk://caracteres/" + action;
+  }
+
+  // ⛔ **LA BANDE DE TITRE DÉPLACE LA FENÊTRE.** Elle n'a pas de barre de titre
+  // Windows : c'est Rust qui envoie `WM_NCLBUTTONDOWN`/`HTCAPTION`, le geste natif.
+  // On le déclenche au `mousedown` sur la bande, JAMAIS sur un bouton — sinon
+  // épingler déplacerait la fenêtre.
+  document.getElementById("barre").addEventListener("mousedown", function (e) {
+    if (e.target.closest("button")) return;
+    go("deplacer");
+  });
+  document.getElementById("epingle").addEventListener("click", function () { go("epingler"); });
+  document.getElementById("fermer").addEventListener("click", function () { go("fermer"); });
+
+  // Reconstruit la grille à chaque état : c'est ce qui la fait suivre un changement
+  // de style (la police et les rayons sont des variables CSS, donc le navigateur les
+  // réapplique seul — la reconstruction ne sert qu'au CONTENU et à la punaise).
+  window.setState = function (state) {
+    const epingle = document.getElementById("epingle");
+    epingle.setAttribute("aria-pressed", String(!!state.epingle));
+    // ⚠️ **LE SIGNE CHANGE, PAS SEULEMENT LA COULEUR** — un losange plein contre un
+    // losange vide se lit d'un coup d'œil ; une nuance de fond, non.
+    epingle.innerHTML = state.epingle ? '<span class="ico ico-push-pin-fill"></span>' : '<span class="ico ico-push-pin"></span>';
+    epingle.title = state.epingle ? "Ne plus rester au premier plan" : "Rester au premier plan";
+
+    const grille = document.getElementById("grille");
+    // ⛔ **VIDER AVANT DE RECONSTRUIRE — ON APPENDAIT, ON N'ÉCRASAIT PAS.**
+    // `appendChild` AJOUTE : chaque poussée d'état ajoutait une grille ENTIÈRE sous
+    // la précédente. Défaut signalé le 2026-10-06 : « j'ai plusieurs fois le même
+    // contenu quand je clique sur le bouton pour la garder au premier plan » — et
+    // c'est le SEUL geste qui le montre, parce que la punaise est la seule chose qui
+    // change l'état (`PAYLOAD`, côté Rust, rend les autres poussées gratuites).
+    // ⚠️ `replaceChildren()` et non `innerHTML = ""` : pas de HTML recomposé, et le
+    // geste est le même dans toutes les pages du dépôt.
+    grille.replaceChildren();
+    for (const ligne of state.familles || []) {
+      const rang = document.createElement("div");
+      rang.className = "rang";
+      for (const caractere of ligne) {
+        const bouton = document.createElement("button");
+        bouton.className = "case";
+        bouton.textContent = caractere;
+        // Le code passe en HEXADÉCIMAL : de l'ASCII, donc rien à échapper dans
+        // l'URL, et Rust le relit sans ambiguïté.
+        const code = caractere.codePointAt(0).toString(16).toUpperCase().padStart(4, "0");
+        bouton.title = caractere + "  —  clic : insérer, clic droit : copier";
+        bouton.onclick = function () { location.href = "neuradesk://caracteres/frapper/" + code; };
+        bouton.oncontextmenu = function (e) {
+          e.preventDefault();
+          location.href = "neuradesk://caracteres/copier/" + code;
+          return false;
+        };
+        rang.appendChild(bouton);
+      }
+      grille.appendChild(rang);
+    }
+  };
+</script>
+</body>
+</html>

@@ -1,0 +1,1357 @@
+# Fetes francaises - une ligne par jour et par fete.
+#
+# PROVENANCE : DEUX fichiers fournis par l'utilisateur le 2026-09-23.
+#  1. `fetes_francaises_complet.csv` (406 lignes) — la base par DATE.
+#  2. `calendrier_2026_prenoms_francais_exhaustif_et_variantes.xlsx`
+#     (610 formes) — complete la premiere, avec les VARIANTES.
+#  Le xlsx cite ses sources : INSEE (prenoms 1900-2025) et Nominis /
+#  Conference des eveques de France pour le calendrier des saints.
+#
+# ⚠️ LES DEUX SOURCES N'ECRIVENT PAS LEURS DATES DANS LE MEME ORDRE :
+#  le CSV est en `JJ/MM`, le xlsx aussi, mais ce fichier est en `MM<TAB>JJ`.
+#  Confondre les deux a produit DEUX fois une analyse entierement fausse.
+#
+# ⚠️ **LA TABLE A ETE RE-DERIVEE LE 2026-09-24.** Le CSV est un calendrier
+#  UN-SAINT-PAR-JOUR : dans chaque mois les saints sont dans le BON ORDRE
+#  chronologique (2 inversions sur 238 verifiees), mais les JOURS ne sont que
+#  la POSITION dans la liste. Une intruse — un saint qui vit aussi dans son
+#  vrai mois (Gregoire au 3/1 alors qu'il est du 3/9) — consomme un creneau et
+#  decale tout ce qui suit de +1.
+#  DEUX SOURCES DE DATES servent d'ANCRES, et elles epinglent le decalage, ce
+#  qui rend le realignement deterministe :
+#   1. le xlsx (Nominis), qui date 237 entrees ;
+#   2. calendrier.com 2026, dont les 365 jours ajoutent 105 ancres de plus
+#      (voir tools/extraire_reference_calendrier.js).
+#  ⚠️ Les deux s'accordent 227 fois sur 228 ; leur SEUL desaccord est Catherine
+#  (xlsx 24/11, reference 25/11) et c'est la REFERENCE qui a raison — la
+#  tradition francaise la met au 25, et l'ordre du CSV le soutient.
+#  Resultat : 346 des 365 jours de la reference confirmees (19 ecarts), et
+#  AUCUN jour de l'annee sans fete.
+#
+# ⚠️ LES 19 ECARTS RESTANTS NE SONT PAS DES FAUTES, pour trois raisons :
+#  · une dizaine sont des ABREVIATIONS de la reference qui designent le meme
+#    saint (Cath.deSuede, Cath.deSienne, J.-M.Vianney, The.del'E.-Jesus,
+#    J.-B.delaSalle, NativiteN.-D., N.-D.Mont-Car...) ;
+#  · les autres sont des angles morts des DEUX sources, qui ne connaissent qu'un
+#    saint par prenom — Catherine de Sienne (29/04), Antoine-Marie Zaccaria
+#    (05/07), Jean de Dieu (08/03), Augustin de Cantorbery (27/05), Pierre
+#    Fourier (09/12), Jacques de la Marche (28/11), Irenee de Lyon (28/06),
+#    Vincent de Saragosse (22/01), Charles le Bon (02/03), Thomas apotre (03/07),
+#    Therese d'Avila (15/10), Marie Mere de Dieu (01/01) ;
+#  · quelques-unes sont des choix de VOCABULAIRE (notre « Aurore » la ou la
+#    reference dit « Francois d'Assise »).
+#  Les realigner sur la reference les SUPPRIMERAIT.
+#
+# ⚠️ LA 5e COLONNE EST LA FORME DE REFERENCE D'UNE VARIANTE, vide sinon.
+#  Elle est STOCKEE mais PAS AFFICHEE : le 24/06 porte dix-sept formes de
+#  « Jean-X » (avec et sans trait d'union) — les montrer toutes serait
+#  absurde. `fetes_du_jour` les ECARTE, `chercher` les TROUVE (c'est tout
+#  l'interet : taper « Jean Baptiste » ou « Katrin » doit repondre).
+#  ⚠️ « Jean Claude » et « Jean-Claude » sont DEUX lignes : deux graphies,
+#  donc deux cles de recherche. Ne pas dedoublonner sur les accents.
+#  Un nom du CSV est TOUJOURS affiche ; seule une ligne du xlsx peut etre une
+#  variante — « Alix » existe donc deux fois, affiche au 10/01 et variante
+#  d'« Alice » au 16/12.
+#
+# LES FETES A DATE MOBILE NE SONT PAS ICI : elles se CALCULENT (voir
+# `fetes.rs`) — Ascension, lundis de Paques et de Pentecote, Fete des
+# Grands-Meres, des Meres et des Peres.
+#
+# mm <TAB> jj <TAB> nom <TAB> categorie <TAB> variante_de
+# --- IMPORTÉ DE tools/saints.json
+#
+# 719 lignes ajoutées depuis saints.json (923 entrées lues).
+# Le fichier donne PLUSIEURS saints par jour, déjà datés : ses lignes
+# s'AJOUTENT à celles ci-dessus, qui ne sont jamais retirées — un
+# remplacement ferait perdre des noms et casserait les alarmes de
+# `rappels_fetes.toml`, rangées par triplet (mois, jour, nom).
+#
+# · une date impossible est ÉCARTÉE (« 6/31 » — Pétronille est aussi au
+#   5/31 dans ce fichier, donc rien ne se perd) ;
+# · un saint déjà connu du jour n'est PAS ajouté deux fois : la
+#   comparaison ignore accents, parenthèses, préfixe St/Ste, et accepte le
+#   préfixe de mots (« Basile » couvre « Basile le Grand ») ;
+# · les noms importés sont stockés SANS leur « St- »/« Ste- » : la table
+#   écrit des noms nus et la catégorie porte déjà « saint » ;
+# · les entrées sans St/Ste (« Chandeleur », « Toussaint »…) sont classées
+#   `tradition`, et le calcul des fériés reste seul maître des dates
+#   MOBILES (Pâques, Ascension, Pentecôte).
+#
+# RÉPARTITION : au plus 9 fêtes sur un jour (25/5).
+# Rejouer : node tools/importer_saints.js tools/saints.json
+#
+01	01	Jour de l’an / Nouvel An	civil	
+01	01	Marie	saint	
+01	01	Euphrosine	saint	
+01	01	Odilon	saint	
+01	02	Basile	saint	
+01	02	Adélard (ou Adalhard)	saint	
+01	02	Grégoire de Nazianze (le Jeune)	saint	
+01	02	Macaire le Jeune	saint	
+01	03	Genevieve	saint	Geneviève
+01	03	Geneviève	saint	
+01	03	Bertille	saint	
+01	03	Daniel	saint	
+01	04	Odilon	saint	
+01	04	Angèle de Foligno	saint	
+01	04	Grégoire de Langres	saint	
+01	04	Marcien	saint	
+01	04	Robert de Reims	saint	
+01	05	Edouard	saint	Édouard
+01	05	Édouard	saint	
+01	05	Emilienne	saint	
+01	05	Télesphore	saint	
+01	06	Melaine	saint	Mélaine
+01	06	Mélaine	saint	
+01	06	Épiphanie / Galette des Rois	tradition	
+01	06	Balthazar	saint	
+01	06	Gaspard	saint	
+01	06	Guérin	saint	
+01	06	Melchior	saint	
+01	07	Raymond	saint	
+01	07	Aldric	saint	
+01	07	Canut Lavard	saint	
+01	07	Reynold	saint	
+01	08	Lucien	saint	
+01	08	Gudule	saint	
+01	09	Alix	saint	
+01	09	Adrien de Canterbury	saint	
+01	09	Julien l'Hospitalier	saint	
+01	10	Guillaume	saint	
+01	10	Séthride	saint	
+01	11	Paulin	saint	
+01	11	Fidelmie	saint	
+01	11	Théodose le Cénobiarque	saint	
+01	12	Tatiana	saint	
+01	12	Arcade	saint	
+01	12	Césarie	saint	
+01	12	Tatienne (ou Tatiana)	saint	
+01	13	Yvette	saint	
+01	13	Hilaire de Poitiers	saint	
+01	13	Léonce de Césarée	saint	
+01	14	Nina	saint	
+01	14	Engelmar	saint	
+01	14	Félix de Nole	saint	
+01	14	Macrine l'Ancienne	saint	
+01	15	Remi	saint	Rémi
+01	15	Rémi	saint	
+01	15	Paul l'Ermite	saint	
+01	15	Tarcice	saint	
+01	16	Marcel	saint	
+01	17	Roseline	saint	
+01	17	Antoine le Grand	saint	
+01	17	Sulpice le Pieux	saint	
+01	18	Prisca	saint	
+01	18	Prisque (ou Prisca)	saint	
+01	18	Thècle	saint	
+01	19	Marius	saint	
+01	19	Canut	saint	
+01	19	Messaline	saint	
+01	19	Pia	saint	
+01	20	Fabien	saint	
+01	20	Sebastien	saint	Sébastien
+01	20	Sébastien	saint	
+01	21	Agnes	saint	Agnès
+01	21	Agnès	saint	
+01	21	Fructueux	saint	
+01	22	Valerien	saint	Valérien
+01	22	Valérien	saint	
+01	22	Vincent	saint	
+01	23	Barnard	saint	
+01	23	Erémentienne	saint	
+01	23	Ildefonse de Tolède	saint	
+01	23	Lufthilde	saint	
+01	24	Francois	saint	François
+01	24	François	saint	
+01	24	François Marie	saint	François
+01	24	François Xavier	saint	François
+01	24	François-Marie	saint	François
+01	24	François-Xavier	saint	François
+01	25	Ananie	saint	
+01	25	Converstion de St-Paul	tradition	
+01	26	Paule	saint	
+01	26	Pauline	saint	
+01	26	Timothée	saint	
+01	26	Tite	saint	
+01	27	Angele	saint	Angèle
+01	27	Angèle	saint	
+01	27	Julien du Mans	saint	
+01	28	Thomas	saint	
+01	28	Callinique	saint	
+01	28	Cannera	saint	
+01	29	Gildas	saint	
+01	29	Valere	saint	Valère
+01	29	Valère	saint	
+01	29	Sulpice	saint	
+01	30	Martine	saint	
+01	30	Aldegonde	saint	
+01	30	Hyacinthe de Mariscotti	saint	
+01	31	Marcelle	saint	
+01	31	Cyrus	saint	
+01	31	Eusèbe, ermite	saint	
+01	31	Jean Bosco	saint	
+01	31	Zotique	saint	
+02	01	Ella	saint	
+02	01	Brigitte de Kildare	saint	
+02	01	Jean de la Grille	saint	
+02	01	Sévère de Ravenne	saint	
+02	02	Chandeleur / Crêpes	tradition	
+02	02	Théophane	saint	
+02	02	Adalbaud	saint	
+02	02	Hadéloge	saint	
+02	03	Blaise	saint	
+02	03	Anschaire	saint	
+02	04	Veronique	saint	Véronique
+02	04	Véronique	saint	
+02	04	André Corsini	saint	
+02	04	Gilbert de Sempringham	saint	
+02	04	Jeanne de Valois	saint	
+02	05	Agathe	saint	
+02	06	Gaston	saint	
+02	06	Dorothée	saint	
+02	06	Paul Miki	saint	
+02	07	Eugenie	saint	Eugénie
+02	07	Eugénie	saint	
+02	07	Julienne de Bologne	saint	
+02	07	Chryseuil	saint	
+02	08	Jacqueline	saint	
+02	08	Jean de Matha	saint	
+02	08	Jérôme Emiliani	saint	
+02	09	Apolline	saint	
+02	10	Arnaud	saint	
+02	10	Scholastique	saint	
+02	11	Héloïse	saint	
+02	11	Adolphe	saint	
+02	11	Notre-Dame de Lourdes	tradition	
+02	12	Felix	saint	Félix
+02	12	Félix	saint	
+02	12	Eulalie de Barcelone	saint	
+02	13	Beatrice	saint	Béatrice
+02	13	Béatrice	saint	
+02	13	Polyeucte	saint	
+02	14	Saint-Valentin	civil	
+02	14	Valentin	saint	
+02	14	Méthode	saint	
+02	15	Claude	saint	
+02	15	Faustin	saint	
+02	15	Jovite	saint	
+02	16	Julienne	saint	
+02	16	Onésime	saint	
+02	17	Alexi	saint	Alexis
+02	17	Alexis	saint	
+02	17	Polychrone	saint	
+02	17	Théodule	saint	
+02	18	Bernadette	saint	
+02	18	Claude	saint	
+02	18	Flavien de Constantinople	saint	
+02	18	Fructule	saint	
+02	18	Gertrude Comensoli	saint	
+02	19	Gabin	saint	
+02	19	Boniface de Lausanne	saint	
+02	19	Conrad de Plaisance	saint	
+02	20	Aimée	saint	
+02	21	Pierre-Damien	saint	
+02	22	Isabelle	saint	
+02	22	Iseult	saint	
+02	22	Chaire St-Pierre Apôtre	tradition	
+02	22	Marguerite de Cortone	saint	
+02	23	Lazare	saint	
+02	23	Polycarpe de Smyrne	saint	
+02	24	Modeste	saint	
+02	24	Primitive	saint	
+02	25	Romeo	saint	Roméo
+02	25	Roméo	saint	
+02	25	Césaire de Nazianze	saint	
+02	25	Tarasius	saint	
+02	25	Walburge	saint	
+02	26	Nestor	saint	
+02	26	Alexandre	saint	
+02	27	Honorine	saint	
+02	27	Gabriel de l'Addolorata	saint	
+02	28	Romain	saint	
+02	28	Hilaire, pape	saint	
+02	28	Théophile d'Adana	saint	
+02	29	Auguste	saint	
+02	29	Oswald de Worcester	saint	
+03	01	Albin	saint	
+03	01	Aubin	saint	
+03	01	Charles le bon	saint	
+03	01	Guénolé	saint	
+03	01	Cunégonde	saint	
+03	02	Charles	saint	
+03	02	Siméon le Juste	saint	
+03	03	Guénolé	saint	
+03	03	Cunégonde	saint	
+03	04	Casimir	saint	
+03	05	Olive	saint	
+03	05	Eusèbe de Crémone	saint	
+03	05	Jean-Joseph de la Croix	saint	
+03	05	Théophile de Césarée	saint	
+03	06	Colette	saint	
+03	06	Agnès de Bohème	saint	
+03	06	Chrodegang (ou Rotgang)	saint	
+03	06	Fridolin	saint	
+03	07	Félicité	saint	
+03	07	Perpétue	saint	
+03	07	Révocat	saint	
+03	07	Saturnin	saint	
+03	07	Secondule	saint	
+03	07	Thomas D'Aquin	saint	
+03	08	Jean	saint	
+03	08	Journée internationale des droits des femmes	civil	
+03	08	Julien de Tolède	saint	
+03	09	Francoise	saint	Françoise
+03	09	Françoise	saint	
+03	09	Catherine de Bologne	saint	
+03	09	Dominique Savio	saint	
+03	09	Grégoire de Nysse	saint	
+03	10	Vivien	saint	
+03	10	Crescent	saint	
+03	10	Droctovée	saint	
+03	11	Rosine	saint	
+03	11	Euloge de Cordoue	saint	
+03	11	Euthyme de Sardes	saint	
+03	12	Justine	saint	
+03	12	Maximilien de théveste	saint	
+03	12	Séraphine	saint	
+03	13	Rodrigue	saint	
+03	13	Euphrasie	saint	
+03	13	Roderick	saint	
+03	14	Mathilde	saint	
+03	15	Louise	saint	
+03	15	Longin	saint	
+03	16	Benedicte	saint	Bénédicte
+03	16	Bénédicte	saint	
+03	16	Eusébie	saint	
+03	16	Héribert	saint	
+03	17	Patrice	saint	
+03	17	Gertrude de Nivelle	saint	
+03	17	Patrick d'Irlande	saint	
+03	18	Cyrille	saint	
+03	19	Joseph	saint	
+03	20	Herbert	saint	
+03	20	Rémy de Strasbourg	saint	
+03	20	Wulfran	saint	
+03	21	Clemence	saint	Clémence
+03	21	Clémence	saint	
+03	21	Birillus	saint	
+03	21	Endée	saint	
+03	21	Philémon	saint	
+03	22	Lea	saint	Léa
+03	22	Léa	saint	
+03	22	Octavien	saint	
+03	23	Victorien	saint	
+03	23	Toribio de Mogrovejo	saint	
+03	24	Catherine	saint	
+03	24	Pigmène	saint	
+03	24	Romule	saint	
+03	25	Humbert	saint	
+03	25	Dismas	saint	
+03	26	Larissa	saint	
+03	26	Bathuse	saint	
+03	26	Dizier	saint	
+03	26	Emmanuel	saint	
+03	27	Habib	saint	
+03	27	Jean d'Egypte	saint	
+03	27	Rupert de Salzbourg	saint	
+03	28	Gontran	saint	
+03	28	Gundelinde	saint	
+03	29	Gwladys	saint	
+03	29	Gladys	saint	
+03	29	Ludolphe	saint	
+03	30	Amedee	saint	Amédée
+03	30	Amédée	saint	
+03	30	Jean Climaque	saint	
+03	31	Benjamin	saint	
+03	31	Balbine	saint	
+04	01	Hugues	saint	
+04	01	Poisson d’avril	tradition	
+04	01	Catherine Thomas	saint	
+04	02	Alexandrine	saint	
+04	02	Sandrine	saint	
+04	02	François de Paule	saint	
+04	02	Théodosie	saint	
+04	02	Urbain de Langres	saint	
+04	03	Richard	saint	
+04	03	Agape	saint	
+04	04	Isidore	saint	
+04	04	Benoît Le More	saint	
+04	05	Irene	saint	Irène
+04	05	Irenee	saint	Irénée
+04	05	Irène	saint	
+04	05	Irénée	saint	
+04	05	Ethelburge	saint	
+04	05	Gérard de Sauve-Majeure	saint	
+04	05	Vincent Ferrier	saint	
+04	06	Celestin	saint	Célestin
+04	06	Célestin	saint	
+04	06	Marcellin	saint	
+04	06	Amand	saint	
+04	06	Modérate	saint	
+04	07	Jean-Baptiste	saint	
+04	07	Hégésippe	saint	
+04	08	Julie	saint	
+04	08	Hérodion	saint	
+04	09	Gauthier	saint	
+04	09	Gautier	saint	
+04	09	Marcel	saint	
+04	09	Marie de Cléophas	saint	
+04	10	Fulbert	saint	
+04	10	Badème	saint	
+04	10	Ezéchiel	saint	
+04	11	Stanislas	saint	
+04	11	Gemma Galgani	saint	
+04	12	Jules	saint	
+04	12	Wigbert	saint	
+04	13	Ida	saint	
+04	13	Hermenegild	saint	
+04	13	Martin 1er	saint	
+04	14	Maxime	saint	
+04	14	Lidwine	saint	
+04	14	Valérien	saint	
+04	15	Paterne	saint	
+04	15	Anastasie	saint	
+04	15	Basilisse	saint	
+04	16	Benoît-Joseph	saint	
+04	16	Bernadette Soubirous	saint	
+04	16	Crémence	saint	
+04	16	Drogon	saint	
+04	16	Encratide	saint	
+04	17	Anicet	saint	
+04	17	Hermogène	saint	
+04	17	Wandon	saint	
+04	18	Parfait	saint	
+04	18	Eleuthère	saint	
+04	19	Emma	saint	
+04	19	Expédit	saint	
+04	19	Ursmer	saint	
+04	20	Odette	saint	
+04	20	Agnès de Monte Pulciano	saint	
+04	20	Hildegonde	saint	
+04	20	Théodore Trichinas	saint	
+04	20	Théotime le Philosophe	saint	
+04	21	Anselme	saint	
+04	21	Conrad de Parhzam	saint	
+04	22	Alexander	saint	Alexandre
+04	22	Alexandre	saint	
+04	22	Alexandre Jean	saint	Alexandre
+04	22	Alexandre Paul	saint	Alexandre
+04	22	Alexandre-Jean	saint	Alexandre
+04	22	Alexandre-Paul	saint	Alexandre
+04	22	Caïus	saint	
+04	22	Léonide	saint	
+04	22	Soter	saint	
+04	22	Tarbula	saint	
+04	23	Georges	saint	
+04	23	Fortunat	saint	
+04	23	Pusinne	saint	
+04	24	Fidèle	saint	
+04	24	Beuve	saint	
+04	25	Marc	saint	
+04	25	Phébade	saint	
+04	26	Alida	saint	
+04	26	Clet (ou Anaclet)	saint	
+04	26	Exupérance	saint	
+04	26	Marcellin	saint	
+04	27	Zita	saint	
+04	27	Anthime	saint	
+04	28	Valerie	saint	Valérie
+04	28	Valérie	saint	
+04	28	Pierre Chanel	saint	
+04	28	Prudence	saint	
+04	28	Vital de Milan	saint	
+04	29	Catherine	saint	
+04	29	Pierre de Vérone	saint	
+04	30	Robert	saint	
+04	30	Pie V	saint	
+04	30	Sophie	saint	
+05	01	Fête du Travail	ferie	
+05	01	Jeremie	saint	Jérémie
+05	01	Jérémie	saint	
+05	01	Caprais	saint	
+05	01	Clair	saint	
+05	01	Justin le Philosophe	saint	
+05	01	Marcellin	saint	
+05	01	Pierre	saint	
+05	02	Boris	saint	
+05	02	Blandine	saint	
+05	02	Erasme	saint	
+05	02	Eugène 1er	saint	
+05	02	Marcellin	saint	
+05	02	Pothin	saint	
+05	02	Sadoc	saint	
+05	03	Jacques	saint	
+05	03	Philippe	saint	
+05	03	Charles Lwanga	saint	
+05	03	Clotilde	saint	
+05	03	Kévin	saint	
+05	04	Sylvain	saint	
+05	04	Burienne	saint	
+05	04	François de Caracciolo	saint	
+05	04	Métrophane	saint	
+05	04	Quirin	saint	
+05	04	Rutilus	saint	
+05	05	Judith	saint	
+05	05	Boniface	saint	
+05	05	Dorothée de Tyr	saint	
+05	05	Dorothée l'Archimandrite	saint	
+05	05	Dorothée le Jeune	saint	
+05	05	Marcia	saint	
+05	05	Valérie	saint	
+05	06	Prudence	saint	
+05	06	Bertrand	saint	
+05	06	Marcellin Champagnat	saint	
+05	06	Norbert de Xanten	saint	
+05	06	Pauline	saint	
+05	07	Gisele	saint	Gisèle
+05	07	Gisèle	saint	
+05	07	Mériadec	saint	
+05	07	Potamienne la Jeune	saint	
+05	08	Desire	saint	Désiré
+05	08	Désiré	saint	
+05	08	Victoire de 1945	ferie	
+05	08	Eustadiole	saint	
+05	08	Médard de Noyon	saint	
+05	08	Mélanie l'Ancienne	saint	
+05	09	Pacôme	saint	
+05	09	Cumian	saint	
+05	09	Ephrem le Syrien	saint	
+05	09	Félicien	saint	
+05	09	Prime	saint	
+05	10	Solange	saint	
+05	10	Bogomile	saint	
+05	10	Gétule	saint	
+05	10	Landry	saint	
+05	11	Estelle	saint	
+05	11	Barnabé, apôtre	saint	
+05	11	Hérébald	saint	
+05	12	Achille	saint	
+05	12	Gaspard Bertoni	saint	
+05	12	Gerbaud	saint	
+05	12	Guy	saint	
+05	13	Rolande	saint	
+05	13	Antoine de Padoue	saint	
+05	13	Aquiline	saint	
+05	13	Fandilas	saint	
+05	13	Pérégrin	saint	
+05	13	Triphyllius	saint	
+05	14	Matthias	saint	
+05	14	Elisée	saint	
+05	14	Rufin	saint	
+05	14	Valère	saint	
+05	15	Denise	saint	
+05	15	Bénilde	saint	
+05	15	Eutrope	saint	
+05	15	Germaine Cousin	saint	
+05	16	Honore	saint	Honoré
+05	16	Honoré	saint	
+05	16	Cyr	saint	
+05	16	Lutgarde	saint	
+05	16	Simplice de Bourges	saint	
+05	17	Pascal	saint	
+05	17	Hervé	saint	
+05	17	Raynier	saint	
+05	18	Eric	saint	Éric
+05	18	Éric	saint	
+05	18	Amand de Bordeaux	saint	
+05	18	Léonce de Tripoli	saint	
+05	19	Yves	saint	
+05	19	Gervais	saint	
+05	19	Innocent	saint	
+05	19	Romuald	saint	
+05	20	Bernardin	saint	
+05	20	Florence	saint	
+05	20	Hélène	saint	
+05	20	Sylvère	saint	
+05	21	Constantin	saint	
+05	21	Aloysius de Gonzague (ou Louis)	saint	
+05	21	Démétrie	saint	
+05	21	Eusèbe de Samosate	saint	
+05	21	Radulphe	saint	
+05	22	Émile	saint	
+05	22	Jean Fisher	saint	
+05	22	Paulin de Nole	saint	
+05	22	Thomas Moore	saint	
+05	23	Didier	saint	
+05	23	Etheldrède	saint	
+05	23	Libert	saint	
+05	24	Donatien	saint	
+05	24	Jean le Baptiste (naissance de)	tradition	
+05	25	Sophie	saint	
+05	25	Adalbert d'Egmond	saint	
+05	25	Fébronie	saint	
+05	25	Gallican	saint	
+05	25	Guillaume d'Orange, dit le Grand	saint	
+05	25	Maxime de Turin	saint	
+05	25	Molock	saint	
+05	25	Prosper	saint	
+05	25	Sts-Salomon Ier et Salomon III	saint	
+05	26	Berenger	saint	Bérenger
+05	26	Bérenger	saint	
+05	26	Anthelme de Chignin	saint	
+05	26	Baboléin	saint	
+05	26	Maxence	saint	
+05	26	Persévérande	saint	
+05	27	Augustin	saint	
+05	27	Cyrille d'Alexandrie	saint	
+05	27	Ferdinand d'Aragon	saint	
+05	27	Ladislas	saint	
+05	28	Germain	saint	
+05	28	Irénée de Lyon	saint	
+05	29	Aymard	saint	
+05	29	Pierre, apôtre	saint	
+05	29	Paul, apôtre	saint	
+05	30	Ferdinand	saint	
+05	30	Fernand	saint	
+05	30	Clotsende	saint	
+05	30	Erentrude	saint	
+05	30	Martial de Limoges	saint	
+05	30	Premiers martyrs de Rome	tradition	
+05	31	Perrine	saint	
+05	31	Pétronille	saint	
+06	01	Justin	saint	
+06	01	Joseph	saint	
+06	01	Panacée	saint	
+06	01	Sigismond	saint	
+06	02	Blandine	saint	
+06	02	Athanase d'Alexandrie	saint	
+06	02	Célestin	saint	
+06	02	Zoé	saint	
+06	03	Kévin	saint	
+06	03	Adalsinde	saint	
+06	03	Alexandre 1er, pape	saint	
+06	03	Jacques le Mineur, apôtre	saint	
+06	03	Juvénal de Narni	saint	
+06	03	Philippe, apôtre	saint	
+06	04	Clotilde	saint	
+06	04	Florian	saint	
+06	04	Godard	saint	
+06	04	Silvain	saint	
+06	05	Igor	saint	
+06	05	Ange de Jérusalem	saint	
+06	05	Jutta	saint	
+06	05	Pérégrin	saint	
+06	06	Norbert	saint	
+06	06	Bénédicte	saint	
+06	06	Héliodore	saint	
+06	07	Gilbert	saint	
+06	07	Augustin de Nicomédie	saint	
+06	07	Sérène	saint	
+06	07	Villain	saint	
+06	08	Medard	saint	Médard
+06	08	Médard	saint	
+06	08	Désiré, évêque de Bourges	saint	
+06	08	Hellade d'Auxerre	saint	
+06	08	Wiron	saint	
+06	09	Diane	saint	
+06	09	Béat	saint	
+06	09	Géronce	saint	
+06	10	Landry	saint	
+06	10	Antonin	saint	
+06	10	Isidore le Laboureur	saint	
+06	10	Solange	saint	
+06	11	Barnabe	saint	Barnabé
+06	11	Barnabé	saint	
+06	11	Gengoul	saint	
+06	11	Mayeul	saint	
+06	11	Mamert	saint	
+06	12	Guy	saint	
+06	12	Achilée	saint	
+06	12	Nérée	saint	
+06	12	Pancrace	saint	
+06	12	Rictrude	saint	
+06	13	Antoine	saint	
+06	13	Glycérie	saint	
+06	13	Mael	saint	
+06	13	Servais	saint	
+06	14	Élisée	saint	
+06	14	Matthias	saint	
+06	15	Germaine	saint	
+06	15	Césarie	saint	
+06	15	Crésiphon	saint	
+06	15	Denise	saint	
+06	16	Jean-François	saint	
+06	16	Honorat d'Amiens	saint	
+06	16	Jean Népomucène	saint	
+06	16	Ubald Baldassini	saint	
+06	17	Hervé	saint	
+06	17	Adrion	saint	
+06	17	Héradius	saint	
+06	17	Pascal Baylon	saint	
+06	18	Leonce	saint	Léonce
+06	18	Léonce	saint	
+06	18	Eric	saint	
+06	18	Félix de Cantalice	saint	
+06	18	Jean 1er	saint	
+06	18	Juliette d'Ancyre	saint	
+06	18	Venance	saint	
+06	19	Romuald	saint	
+06	19	Pierre Célestin	saint	
+06	19	Pudentienne	saint	
+06	19	Yves de Kermartin	saint	
+06	20	Silvere	saint	Silvère
+06	20	Silvère	saint	
+06	20	Bernardin de Sienne	saint	
+06	20	Plautilla	saint	
+06	21	Fête de la Musique	civil	
+06	21	Rodolphe	saint	
+06	21	Constantin 1er le Grand	saint	
+06	21	Nicostrate	saint	
+06	21	Théopompe	saint	
+06	22	Alban	saint	
+06	22	Emile	saint	
+06	22	Julie	saint	
+06	22	Rita de Cascia	saint	
+06	23	Audrey	saint	
+06	23	Eutyche	saint	
+06	23	Mercurial	saint	
+06	23	Yves de Chartres	saint	
+06	24	Jean	saint	
+06	24	Jean Baptiste	saint	Jean-Baptiste
+06	24	Jean Claude	saint	Jean
+06	24	Jean François	saint	Jean
+06	24	Jean Luc	saint	Jean
+06	24	Jean Marc	saint	Jean
+06	24	Jean Michel	saint	Jean
+06	24	Jean Noël	saint	Jean
+06	24	Jean Pierre	saint	Jean
+06	24	Jean Yves	saint	Jean
+06	24	Jean-Baptiste	saint	
+06	24	Jean-Claude	saint	Jean
+06	24	Jean-Luc	saint	Jean
+06	24	Jean-Marc	saint	Jean
+06	24	Jean-Michel	saint	Jean
+06	24	Jean-Noël	saint	Jean
+06	24	Jean-Pierre	saint	Jean
+06	24	Jean-Yves	saint	Jean
+06	24	Saint-Jean	tradition	
+06	24	Donatien	saint	
+06	24	Rogatien	saint	
+06	25	Prosper	saint	
+06	25	Bède le Vénérable	saint	
+06	25	Grégoire VII	saint	
+06	25	Injurieux	saint	
+06	25	Marie-Madeleine de Pazzi	saint	
+06	26	Anthelme	saint	
+06	26	Bérenger	saint	
+06	26	Philippe de Néri	saint	
+06	27	Fernand	saint	
+06	27	Augustin de Cantorbéry	saint	
+06	27	Ranulphe	saint	
+06	27	Restitute	saint	
+06	28	Irénée	saint	
+06	28	Chéron	saint	
+06	28	Germain de Paris	saint	
+06	29	Paul	saint	
+06	29	Pierre	saint	
+06	29	Pierre Louis	saint	Pierre
+06	29	Pierre-Louis	saint	Pierre
+06	29	Conon	saint	
+06	29	Martyrius	saint	
+06	29	Maximin de Trèves	saint	
+06	29	Sisinnius	saint	
+06	30	Martial	saint	
+06	30	Emmélie de Césarée	saint	
+06	30	Ferdinand III	saint	
+06	30	Jeanne D'Arc	saint	
+07	01	Thierry	saint	
+07	01	Domitien	saint	
+07	01	Gall de Clermont	saint	
+07	01	Théodoric (ou Thierry)	saint	
+07	02	Martinien	saint	
+07	02	Monégonde	saint	
+07	02	Othon de Bamberg	saint	
+07	02	Symphorose	saint	
+07	03	Thomas	saint	
+07	03	Anatole	saint	
+07	04	Florent	saint	
+07	04	Berthe	saint	
+07	04	Elisabeth du Portugal	saint	
+07	05	Antoine	saint	
+07	05	Blanche	saint	
+07	05	Modivène	saint	
+07	06	Mariette	saint	
+07	06	Dominique	saint	
+07	06	Lucie	saint	
+07	06	Maria Goretti	saint	
+07	07	Raoul	saint	
+07	07	Félix de Nantes	saint	
+07	07	Prosper d'Aquitaine	saint	
+07	08	Thibaut	saint	
+07	08	Edgar le Pacifique	saint	
+07	08	Landrade	saint	
+07	08	Priscilla	saint	
+07	08	Procope	saint	
+07	08	Withburge	saint	
+07	09	Amandine	saint	
+07	09	Evrilde	saint	
+07	09	Procule	saint	
+07	09	Véronique Giuliani	saint	
+07	10	Ulrich	saint	
+07	10	Rufine	saint	
+07	10	Seconde	saint	
+07	11	Benoit	saint	Benoît
+07	11	Benoît	saint	
+07	11	Hidulphe	saint	
+07	11	Jean de Bergame	saint	
+07	11	Olga de Russie	saint	
+07	11	Pie 1er	saint	
+07	11	Savin (ou Sabin)	saint	
+07	12	Olivier	saint	
+07	12	Jean Gualbert	saint	
+07	12	Marcienne	saint	
+07	12	Nabor	saint	
+07	12	Véronique	saint	
+07	13	Henri	saint	
+07	13	Joel	saint	Joël
+07	13	Joël	saint	
+07	14	Camille	saint	
+07	14	Fête nationale	ferie	
+07	15	Donald	saint	
+07	15	Bonaventure	saint	
+07	16	Carmen	saint	
+07	16	Marie-Madeleine Postel	saint	
+07	17	Charlotte	saint	
+07	17	Alexis	saint	
+07	17	Ennode	saint	
+07	17	Léon IV	saint	
+07	17	Marcelline	saint	
+07	18	Frederic	saint	Frédéric
+07	18	Frédéric	saint	
+07	18	Arnoul de Metz	saint	
+07	19	Arsene	saint	Arsène
+07	19	Arsène	saint	
+07	19	Macrine la Jeune	saint	
+07	19	Marie d'Espagne	saint	
+07	20	Marina	saint	
+07	20	Joseph Barsabas	saint	
+07	20	Marguerite d'Antioche	saint	
+07	20	Sévère	saint	
+07	21	Victor	saint	
+07	21	Laurent de Brindisi	saint	
+07	21	Praxède	saint	
+07	22	Marie-Madeleine	saint	
+07	22	Wandrille	saint	
+07	23	Brigitte	saint	
+07	23	Apollinaire	saint	
+07	24	Christine	saint	
+07	24	Wulfhad	saint	
+07	25	Jacques	saint	
+07	25	Christophe	saint	
+07	25	Valentine	saint	
+07	26	Anne	saint	
+07	26	Anne Claire	saint	Anne
+07	26	Anne Laure	saint	Anne
+07	26	Anne Marie	saint	Anne
+07	26	Anne Sophie	saint	Anne
+07	26	Anne-Claire	saint	Anne
+07	26	Anne-Laure	saint	Anne
+07	26	Anne-Marie	saint	Anne
+07	26	Anne-Sophie	saint	Anne
+07	26	Joachim	saint	
+07	27	Nathalie	saint	
+07	27	Désiré	saint	
+07	27	Natalie	saint	
+07	27	Panthaléon	saint	
+07	28	Samson	saint	
+07	28	Botwin	saint	
+07	28	Nazaire	saint	
+07	28	Victor 1er	saint	
+07	29	Marthe	saint	
+07	30	Juliette	saint	
+07	30	Pierre Chrysologue	saint	
+07	31	Ignace	saint	
+07	31	Germain d'Auxerre	saint	
+08	01	Alphonse	saint	
+08	01	Almède	saint	
+08	01	Exupère	saint	
+08	02	Julien	saint	
+08	02	Eusèbe de Verceil	saint	
+08	03	Lydie	saint	
+08	04	Jean-Marie	saint	
+08	05	Abel	saint	
+08	05	Memmius	saint	
+08	05	Oswald	saint	
+08	06	Octavien	saint	
+08	06	Sixte II	saint	
+08	06	Transfiguration	tradition	
+08	07	Gaétan	saint	
+08	07	Albert	saint	
+08	07	Donat	saint	
+08	08	Dominique	saint	
+08	08	Cyriaque	saint	
+08	09	Amour	saint	
+08	10	Laurent	saint	
+08	10	Blain	saint	
+08	10	Deusdedit (ou Dieudonné)	saint	
+08	11	Claire	saint	
+08	11	Suzanne	saint	
+08	12	Clarisse	saint	
+08	12	Jeanne	saint	
+08	12	Euplius	saint	
+08	12	Julienne	saint	
+08	13	Cassien	saint	
+08	13	Hippolyte	saint	
+08	13	Concordia	saint	
+08	13	Jean Berchmans	saint	
+08	13	Radegonde	saint	
+08	14	Évrard	saint	
+08	14	Eusèbe de Rome	saint	
+08	14	Hippolyte	saint	
+08	14	Maximien Kolbe	saint	
+08	14	Radegonde	saint	
+08	15	Assomption	ferie	
+08	15	Marie	saint	
+08	15	Marie Christine	saint	Marie
+08	15	Marie Pierre	saint	Marie
+08	15	Marie Thérèse	saint	Marie
+08	15	Marie-Christine	saint	Marie
+08	15	Marie-Pierre	saint	Marie
+08	15	Alfred	saint	
+08	15	Eusèbe	saint	
+08	15	Tarcisius	saint	
+08	16	Armel	saint	
+08	16	Armagillus	saint	
+08	16	Etienne de Hongrie	saint	
+08	16	Frimbaud	saint	
+08	16	Roch	saint	
+08	17	Hyacinthe	saint	
+08	18	Helene	saint	Hélène
+08	18	Hélène	saint	
+08	18	Agapet	saint	
+08	19	Jean-Eudes	saint	
+08	20	Bernard	saint	
+08	21	Christophe	saint	
+08	21	Pie X	saint	
+08	22	Fabrice	saint	
+08	22	Philibert	saint	
+08	22	Symphorien	saint	
+08	23	Rose	saint	
+08	24	Barthelemy	saint	Barthélemy
+08	24	Barthélemy	saint	
+08	24	Barthélémy	saint	
+08	24	Ouen	saint	
+08	25	Louis	saint	
+08	25	Joseph de Calsanz	saint	
+08	26	Natacha	saint	
+08	26	Zéphirin	saint	
+08	27	Monique	saint	
+08	28	Augustin	saint	
+08	28	Julien de Brioude	saint	
+08	29	Sabine	saint	
+08	30	Fiacre	saint	
+08	31	Aristide	saint	
+08	31	Raymond Nonnat	saint	
+09	01	Gilles	saint	
+09	01	Vérène	saint	
+09	02	Ingrid	saint	
+09	02	Agricole	saint	
+09	02	Concorde	saint	
+09	02	Elpide	saint	
+09	03	Gregoire	saint	Grégoire
+09	03	Grégoire	saint	
+09	03	Theotime	saint	Théotime
+09	03	Théotime	saint	
+09	03	Siméon stylite le Jeune	saint	
+09	04	Rosalie	saint	
+09	04	Boniface 1er	saint	
+09	04	Calétric	saint	
+09	04	Vitalique	saint	
+09	05	Raïssa	saint	
+09	05	Bertin	saint	
+09	05	Laurent Justinien	saint	
+09	06	Bertrand	saint	
+09	06	Eustache	saint	
+09	07	Reine	saint	
+09	07	Régine	saint	
+09	07	Cloud	saint	
+09	08	Marie	saint	
+09	08	Marie Christine	saint	Marie
+09	08	Marie Pierre	saint	Marie
+09	08	Marie Thérèse	saint	Marie
+09	08	Marie-Christine	saint	Marie
+09	08	Marie-Pierre	saint	Marie
+09	08	Réjane	saint	
+09	08	Adrien	saint	
+09	08	Naissance de Marie	tradition	
+09	09	Alain	saint	
+09	09	Gorgon	saint	
+09	09	Omer	saint	
+09	09	Pierre Claver	saint	
+09	09	Tiburce	saint	
+09	10	Ines	saint	Inès
+09	10	Inès	saint	
+09	10	Aubert	saint	
+09	10	Nicolas de Tolentino	saint	
+09	10	Pulchérie Auguste	saint	
+09	11	Adelphe	saint	
+09	11	Patient	saint	
+09	11	Protus	saint	
+09	12	Apollinaire	saint	
+09	12	Autonome	saint	
+09	12	Curonote	saint	
+09	12	Théodule	saint	
+09	13	Aimé	saint	
+09	13	Israël	saint	
+09	13	Jean Chrysostome	saint	
+09	13	Macrobe	saint	
+09	13	Nectaire	saint	
+09	14	Cyprien	saint	
+09	14	Materne	saint	
+09	14	Croix Glorieuse	tradition	
+09	14	Céréal	saint	
+09	14	Général	saint	
+09	15	Roland	saint	
+09	15	Alfred le Grand	saint	
+09	15	Nicomède	saint	
+09	16	Edith	saint	Édith
+09	16	Édith	saint	
+09	16	Corneille	saint	
+09	16	Cyprien	saint	
+09	16	Victor III	saint	
+09	17	Renaud	saint	
+09	17	Hildegarde	saint	
+09	17	Lambert	saint	
+09	18	Nadege	saint	Nadège
+09	18	Nadège	saint	
+09	18	Hygbald	saint	
+09	18	Joseph de Cupertino	saint	
+09	18	Richarde	saint	
+09	19	Emilie	saint	Émilie
+09	19	Émilie	saint	
+09	19	Constancia	saint	
+09	19	Janvier	saint	
+09	19	Théodore de Tarse	saint	
+09	20	Davy	saint	
+09	20	André Kim	saint	
+09	20	Eustache	saint	
+09	20	Jacques Chastan	saint	
+09	20	Laurent Imbert	saint	
+09	20	Pierre Maubant	saint	
+09	21	Matthieu	saint	
+09	22	Maurice	saint	
+09	22	Salaberge	saint	
+09	22	Thomas de Villeneuve	saint	
+09	23	Constant	saint	
+09	23	Constance	saint	
+09	23	Lin	saint	
+09	24	Thècle	saint	
+09	24	Cuniald	saint	
+09	24	Isarne de Toulouse	saint	
+09	25	Hermann	saint	
+09	25	Cléophas	saint	
+09	25	Firmin 1er Damien	saint	
+09	26	Come	saint	Côme
+09	26	Côme	saint	
+09	26	Damien	saint	
+09	27	Vincent	saint	
+09	28	Venceslas	saint	
+09	28	Annemond	saint	
+09	28	Eustochium	saint	
+09	28	Wanceslas	saint	
+09	29	Gabriel	saint	
+09	29	Michel	saint	
+09	29	Raphael	saint	Raphaël
+09	29	Raphaël	saint	
+09	29	Gudélie	saint	
+09	30	Jerome	saint	Jérôme
+09	30	Jérôme	saint	
+09	30	Grégoire l'Illuminateur	saint	
+09	30	Léopard	saint	
+10	01	Therese	saint	Thérèse
+10	01	Thérèse	saint	
+10	02	Léger	saint	
+10	03	Gerard	saint	Gérard
+10	03	Gérard	saint	
+10	03	Ewald	saint	
+10	04	Aurore	saint	
+10	04	Aurora	saint	
+10	04	Aurée	saint	
+10	04	François d'Assise	saint	
+10	05	Fleur	saint	
+10	05	Flavie	saint	
+10	05	Placide	saint	
+10	06	Bruno	saint	
+10	07	Serge	saint	
+10	07	N. Dame du Rosaire	tradition	
+10	08	Pelagie	saint	Pélagie
+10	08	Pélagie	saint	
+10	09	Denis	saint	
+10	09	Dominin	saint	
+10	09	Eleuthère	saint	
+10	09	Jean Léonardi	saint	
+10	09	Rustique	saint	
+10	10	Ghislain	saint	
+10	10	Eulampie	saint	
+10	10	François de Borgia	saint	
+10	10	Gédéon	saint	
+10	11	Firmin	saint	
+10	11	Anastase 1er	saint	
+10	11	Zénaïde	saint	
+10	12	Wilfried	saint	
+10	12	Pantale	saint	
+10	12	Séraphin du Mont Granario	saint	
+10	13	Géraud	saint	
+10	13	Théophile d'Antioche	saint	
+10	14	Aurélie	saint	
+10	14	Calixte	saint	
+10	14	Juste	saint	
+10	15	Thérèse	saint	
+10	15	Agilée	saint	
+10	16	Edwige	saint	
+10	16	Bertrand de Comminges	saint	
+10	16	Eremberte	saint	
+10	16	Gall	saint	
+10	16	Gérard Magella	saint	
+10	16	Hedwige	saint	
+10	16	Marguerite-Marie Alacoque	saint	
+10	17	Baudouin	saint	
+10	17	Ignace de Constantinople	saint	
+10	18	Luc	saint	
+10	18	Gwendolène	saint	
+10	18	Tryphonie	saint	
+10	19	Rene	saint	René
+10	19	René	saint	
+10	19	Isaac Jogues	saint	
+10	19	Jean de Bréboeuf	saint	
+10	19	Paul de la croix	saint	
+10	19	Pierre d'Alcantara	saint	
+10	20	Adeline	saint	
+10	20	Irène	saint	
+10	21	Celine	saint	Céline
+10	21	Céline	saint	
+10	21	Hilarion	saint	
+10	21	Ursule	saint	
+10	22	Elodie	saint	Élodie
+10	22	Élodie	saint	
+10	22	Philippe	saint	
+10	22	Vallier	saint	
+10	23	Jean	saint	
+10	23	Hyacinthe	saint	
+10	24	Florentin	saint	
+10	24	Antoine-Marie Claret	saint	
+10	25	Crépin	saint	
+10	25	Enguerrand	saint	
+10	25	Chrysanthe	saint	
+10	25	Darie	saint	
+10	26	Albine	saint	
+10	26	Dimitri	saint	
+10	26	Evariste	saint	
+10	26	Rustique	saint	
+10	27	Emeline	saint	
+10	27	Émeline	saint	
+10	27	Antoinette	saint	
+10	27	Frumence	saint	
+10	28	Jude	saint	
+10	28	Simon	saint	
+10	28	Cyrille	saint	
+10	29	Narcisse	saint	
+10	30	Bienvenue	saint	
+10	30	Alphonse Rodriguez	saint	
+10	31	Halloween	tradition	
+10	31	Quentin	saint	
+10	31	Foillan	saint	
+11	01	Harold	saint	
+11	01	Toussaint	ferie	
+11	01	Austremoine	saint	
+11	01	Floribert	saint	
+11	01	Mathurin	saint	
+11	02	Océane	saint	
+11	02	Anempodiste	saint	
+11	02	Défunts	tradition	
+11	02	Elpidephore	saint	
+11	03	Hubert	saint	
+11	03	Gwénaël	saint	
+11	03	Martin de Porrès	saint	
+11	04	Charles	saint	
+11	04	Charles Henri	saint	Charles
+11	04	Charles Édouard	saint	Charles
+11	04	Charles-Henri	saint	Charles
+11	04	Charles-Édouard	saint	Charles
+11	04	Porphyre	saint	
+11	05	Sylvie	saint	
+11	05	Elisabeth (mère de Jean-Baptiste)	saint	
+11	05	Zacharie (père de Jean-Baptiste)	saint	
+11	06	Bertille	saint	
+11	06	Leonard	saint	Léonard
+11	06	Léonard	saint	
+11	07	Carine	saint	
+11	07	Ernest	saint	
+11	07	Florent de Strasbourg	saint	
+11	07	Willibrord	saint	
+11	08	Geoffroy	saint	
+11	08	Godefroy	saint	
+11	08	Maur	saint	
+11	09	Theodore	saint	Théodore
+11	09	Theodule	saint	Théodule
+11	09	Théodore	saint	
+11	09	Théodule	saint	
+11	10	Leon	saint	Léon
+11	10	Léon	saint	
+11	10	Virgile	saint	
+11	10	André Avellin	saint	
+11	10	Tryphon	saint	
+11	11	Armistice de 1918	ferie	
+11	11	Martin	saint	
+11	11	Théodore le Studite	saint	
+11	12	Christian	saint	
+11	12	Christin	saint	
+11	12	Josaphat	saint	
+11	13	Brice	saint	
+11	13	Didace	saint	
+11	13	Nicolas 1er le Grand	saint	
+11	14	Sidoine	saint	
+11	14	Saens	saint	
+11	14	Sérapion	saint	
+11	15	Albert	saint	
+11	16	Marguerite	saint	
+11	16	Gertrude la Grande	saint	
+11	17	Élisabeth	saint	
+11	17	Aignan	saint	
+11	17	Grégoire le Thaumaturge	saint	
+11	18	Aude	saint	
+11	18	Hésyque d'Antioche	saint	
+11	18	Mummole	saint	
+11	18	Pierre, apôtre	saint	
+11	18	Tanguy	saint	
+11	19	Tanguy	saint	
+11	19	Ermenburge	saint	
+11	19	Exupère	saint	
+11	20	Edmond	saint	
+11	20	Octave	saint	
+11	20	Félix de Valois	saint	
+11	21	Rufus	saint	
+11	21	Amalberge	saint	
+11	21	Présence de Marie	tradition	
+11	22	Cecile	saint	Cécile
+11	22	Cécile	saint	
+11	22	Appia	saint	
+11	22	Philémon	saint	
+11	23	Clement	saint	Clément
+11	23	Clément	saint	
+11	24	Flora	saint	
+11	24	Chrysogone	saint	
+11	24	Maria	saint	
+11	24	Romain du Mans	saint	
+11	25	Catherine	saint	
+11	25	Joconde	saint	
+11	25	Moïse	saint	
+11	26	Delphine	saint	
+11	26	Conrad de Constance	saint	
+11	26	Gautier d'Aulne	saint	
+11	27	Séverin	saint	
+11	27	Maxime de Riez	saint	
+11	28	Jacques	saint	
+11	28	Catherine Labouré	saint	
+11	28	Sosthène	saint	
+11	29	Saturnin	saint	
+11	29	Hilaire	saint	
+11	29	Illuminée	saint	
+11	30	Andre	saint	André
+11	30	André	saint	
+11	30	Justine	saint	
+12	01	Florence	saint	
+12	01	Diodore	saint	
+12	01	Eloi	saint	
+12	02	Viviane	saint	
+12	02	Aurélie	saint	
+12	03	Xavier	saint	
+12	03	François-Xavier	saint	
+12	04	Barbara	saint	
+12	04	Barbe	saint	
+12	04	Jean Damascène	saint	
+12	05	Agathon	saint	
+12	05	Gerald	saint	Gérald
+12	05	Gérald	saint	
+12	05	Gérard	saint	
+12	05	Nicet	saint	
+12	05	Sabbas	saint	
+12	06	Nicolas	saint	
+12	06	Saint-Nicolas (surtout Est et Nord)	tradition	
+12	07	Ambroise	saint	
+12	07	Agathon	saint	
+12	08	Elfried	saint	
+12	08	Gonthilde	saint	
+12	08	Immaculée conception	tradition	
+12	08	Romaric	saint	
+12	09	Pierre	saint	
+12	09	Léocadie	saint	
+12	10	Romaric	saint	
+12	10	Miltiade	saint	
+12	11	Daniel	saint	
+12	11	Damasse 1er	saint	
+12	12	Corentin	saint	
+12	12	Jeanne-Françoise de Chantal	saint	
+12	13	Lucie	saint	
+12	13	Josse de Bretagne	saint	
+12	13	Odile	saint	
+12	14	Odile	saint	
+12	14	Jean de la Croix	saint	
+12	15	Ninon	saint	
+12	15	Marie Crucifiée de Rose	saint	
+12	16	Alberic	saint	Albéric
+12	16	Albéric	saint	
+12	16	Alice	saint	
+12	16	Alix	saint	Alice
+12	16	Adélaïde	saint	
+12	16	Adon	saint	
+12	17	Gael	saint	Gaël
+12	17	Gaël	saint	
+12	17	Calanique	saint	
+12	17	Judicaël	saint	
+12	17	Olympiade	saint	
+12	18	Gatien	saint	
+12	18	Zozime	saint	
+12	19	Urbain	saint	
+12	19	Nemèse	saint	
+12	20	Theophile	saint	Théophile
+12	20	Théophile	saint	
+12	20	Ammon	saint	
+12	21	Pierre	saint	
+12	21	Dioscore	saint	
+12	21	Honorat de Toulouse	saint	
+12	21	Thémistocle	saint	
+12	22	Françoise-Xavière	saint	
+12	22	Flavien	saint	
+12	22	Zénon	saint	
+12	23	Armand	saint	
+12	23	Anatolie	saint	
+12	23	Servule	saint	
+12	23	Victoire	saint	
+12	24	Adele	saint	Adèle
+12	24	Adèle	saint	
+12	24	Delphin	saint	
+12	24	Irmine	saint	
+12	24	Métrobe	saint	
+12	25	Emmanuel	saint	
+12	25	Noël	ferie	
+12	25	Adalsinde	saint	
+12	25	Alburge	saint	
+12	26	Étienne	saint	
+12	26	Denys	saint	
+12	27	Jean	saint	
+12	27	Jean Claude	saint	Jean
+12	27	Jean François	saint	Jean
+12	27	Jean Luc	saint	Jean
+12	27	Jean Marc	saint	Jean
+12	27	Jean Michel	saint	Jean
+12	27	Jean Noël	saint	Jean
+12	27	Jean Pierre	saint	Jean
+12	27	Jean Yves	saint	Jean
+12	27	Jean-Claude	saint	Jean
+12	27	Jean-Luc	saint	Jean
+12	27	Jean-Marc	saint	Jean
+12	27	Jean-Michel	saint	Jean
+12	27	Jean-Noël	saint	Jean
+12	27	Jean-Pierre	saint	Jean
+12	27	Jean-Yves	saint	Jean
+12	28	Gaspard	saint	
+12	28	Sts-Innocents	saint	
+12	29	David	saint	
+12	29	Thomas Becket	saint	
+12	30	Roger	saint	
+12	30	Sabin (ou Sabinien)	saint	
+12	31	Sylvestre	saint	
+12	31	Colombe de Sens	saint	
+12	31	Mélanie la Jeune	saint	
+12	31	Potentin	saint	

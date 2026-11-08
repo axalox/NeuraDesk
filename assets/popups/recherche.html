@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<!--
+  LA RECHERCHE DE FICHIERS (voir `win32::cef_recherche`, qui porte la liste des
+  actions, et `win32::everything`, le canal vers Everything).
+
+  ÉTAT REÇU (window.setState) : { contentScale }
+
+  APPELS DE RUST (window.recherche.*) :
+    montre()      — le panneau vient de s'ouvrir : focus dans le champ ;
+    reponse(r)    — { numero, total, resultats: [{ nom, dossier, chemin,
+                    estDossier, taille, modifie, icone }] } ou { numero, erreur } ;
+    icones(p)     — [[clé, data-URI | null]] : les icônes, chacune UNE fois.
+                    Gardées ici (`ICONES`) : un résultat d'une recherche
+                    suivante qui a la même clé les reprend sans rien redemander.
+
+  ⚠️ **CHAQUE RECHERCHE EST NUMÉROTÉE** : une réponse dont le numéro n'est pas
+  celui de la DERNIÈRE recherche envoyée est ignorée — une frappe plus récente
+  l'a dépassée.
+
+  ⚠️ **LA RECHERCHE PART APRÈS UNE COURTE PAUSE** (`PAUSE_MS`), pas à chaque
+  touche : Everything répond en quelques millisecondes, mais chaque envoi est une
+  navigation (`go`), et deux navigations dans la même tâche se télescopent.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<script src="menu_contextuel.js"></script>
+<style>
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    display: flex;
+    flex-direction: column;
+    /* Même grossissement que la calculatrice : `zoom` seul. */
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    height: calc(100vh / var(--text-scale));
+    overflow: hidden;
+  }
+  header { display: flex; align-items: center; gap: 10px; padding: 12px 16px 8px; flex: 0 0 auto; }
+  h1 { margin: 0; font-size: 17px; font-weight: 600; white-space: nowrap; }
+  button {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    color: inherit; border: none; border-radius: var(--nd-rayon-controle);
+    padding: 4px 10px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  button:hover { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  button.actif { background: rgb(var(--popup-accent-solid-rgb)); }
+  .close-btn { background: none; font-size: 16px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); margin-left: auto; }
+  .close-btn:hover { background: none; opacity: 1; }
+  .cache { display: none !important; }
+
+  #champ {
+    flex: 1 1 auto; min-width: 0;
+    font: inherit; font-size: 16px; color: inherit;
+    padding: 7px 12px; border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.08 * var(--popup-fond-alpha, 1)));
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.25 * var(--popup-fond-alpha, 1)));
+    outline: none;
+  }
+  #champ:focus { border-color: rgba(var(--popup-accent-rgb), calc(.9 * var(--popup-fond-alpha, 1))); }
+  #champ::placeholder { color: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.45 * var(--popup-alpha, 1))); }
+
+  #barre { display: flex; align-items: center; gap: 4px; padding: 0 16px 8px; flex: 0 0 auto; font-size: 12px; }
+  #barre .libelle { opacity: calc(.65 * max(1, var(--popup-alpha, 1))); margin-right: 4px; }
+  #compte { margin-left: auto; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); }
+  #message { padding: 4px 16px; font-size: 13px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); flex: 0 0 auto; }
+  #message.erreur { color: rgb(255, 130, 120); opacity: 1; }
+
+  #liste {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto;
+    padding: 0 8px 12px;
+    border-top: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+  }
+  .resultat {
+    display: grid; grid-template-columns: 22px minmax(0, 1fr) auto auto; gap: 2px 12px; align-items: center;
+    padding: 5px 8px; border-radius: 4px; cursor: pointer;
+  }
+  .resultat:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.06 * var(--popup-fond-alpha, 1))); }
+  .resultat.choisi { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  .resultat .type { grid-row: span 2; font-size: 16px; text-align: center; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+  /* L'icône du type (lot 2) — elle REMPLACE l'emoji dès qu'elle arrive. */
+  .resultat .type img { width: 20px; height: 20px; object-fit: contain; display: block; margin: auto; }
+  .resultat .type.avec-icone { opacity: 1; }
+  .resultat .nom { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .resultat .dossier {
+    grid-column: 2 / span 3; font-size: 11px; opacity: calc(.55 * max(1, var(--popup-alpha, 1)));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .resultat .taille, .resultat .date { font-size: 12px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); white-space: nowrap; text-align: right; }
+  .aide { padding: 16px; font-size: 13px; opacity: calc(.6 * max(1, var(--popup-alpha, 1))); line-height: 1.5; }
+  .aide code { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.1 * var(--popup-fond-alpha, 1))); padding: 0 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<header class="zoome">
+  <h1>Recherche</h1>
+  <input id="champ" type="text" spellcheck="false" autocomplete="off"
+         placeholder="Nom de fichier ou de dossier — syntaxe d'Everything (*.pdf, ext:mp4…)">
+  <button class="close-btn" onclick="go('close')" title="Fermer (Échap)"><span class="ico ico-x"></span></button>
+</header>
+<div id="barre" class="zoome">
+  <span class="libelle">Trier par</span>
+  <button data-tri="nom">Nom</button>
+  <button data-tri="chemin">Chemin</button>
+  <button data-tri="taille">Taille</button>
+  <button data-tri="date">Date</button>
+  <span id="compte"></span>
+</div>
+<div id="message" class="cache"></div>
+<div id="liste">
+  <div class="aide">
+    Tapez pour chercher sur tous les disques indexés par Everything.<br>
+    <b>Entrée</b> ouvre, <b>Ctrl+Entrée</b> ouvre l'emplacement, <b>↑ ↓</b> pour choisir,
+    clic droit pour copier le chemin.<br>
+    Exemples : <code>*.pdf facture</code>, <code>ext:mp4;mkv</code>, <code>size:>1gb</code>,
+    <code>dm:today</code>, <code>"D:\Photos\" vacances</code>.
+  </div>
+</div>
+
+<script>
+  // `el` et `go` — MÊMES HELPERS que `calculatrice.html`.
+  function el(tag, attrs, children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (key === "class") node.className = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value);
+    }
+    for (const child of children || []) {
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+    return node;
+  }
+
+  // Segments ENCODÉS : une recherche ou un chemin porte des « / » et des « \ ».
+  function go(...segments) {
+    location.href = "neuradesk://recherche/" + segments.map(encodeURIComponent).join("/");
+  }
+
+  const PAUSE_MS = 120;
+  const champ = document.getElementById("champ");
+  const liste = document.getElementById("liste");
+  const message = document.getElementById("message");
+  const compte = document.getElementById("compte");
+  const aide = liste.firstElementChild;
+
+  let tri = "nom";
+  try { tri = localStorage.getItem("recherche-tri") || "nom"; } catch (_) {}
+  let numero = 0;          // la dernière recherche ENVOYÉE
+  let minuterie = null;
+  let resultats = [];
+  let choisi = -1;
+  // clé d'icône → data-URI (ou null : le shell n'en a pas, l'emoji reste).
+  const ICONES = new Map();
+
+  // Pose l'icône de `cle` dans la case `type` si elle est connue.
+  function poserIcone(type, cle) {
+    const uri = ICONES.get(cle);
+    if (!uri) return;
+    type.replaceChildren(el("img", { src: uri, alt: "" }));
+    type.classList.add("avec-icone");
+  }
+
+  function rendreTri() {
+    for (const b of document.querySelectorAll("#barre button")) b.classList.toggle("actif", b.dataset.tri === tri);
+  }
+
+  function dire(texte, erreur = false) {
+    message.textContent = texte;
+    message.classList.toggle("cache", !texte);
+    message.classList.toggle("erreur", erreur);
+  }
+
+  function lancer() {
+    clearTimeout(minuterie);
+    minuterie = null;
+    const texte = champ.value.trim();
+    if (!texte) {
+      numero++;
+      resultats = [];
+      choisi = -1;
+      liste.replaceChildren(aide);
+      compte.textContent = "";
+      dire("");
+      return;
+    }
+    numero++;
+    go("chercher", String(numero), tri, texte);
+  }
+
+  function planifier() {
+    clearTimeout(minuterie);
+    minuterie = setTimeout(lancer, PAUSE_MS);
+  }
+
+  const UNITES = ["o", "Ko", "Mo", "Go", "To"];
+  function taille(octets) {
+    if (octets === null || octets === undefined) return "";
+    let v = octets, u = 0;
+    while (v >= 1024 && u < UNITES.length - 1) { v /= 1024; u++; }
+    return (u === 0 ? v : v.toFixed(v < 10 ? 1 : 0)).toString().replace(".", ",") + " " + UNITES[u];
+  }
+  function date(ms) {
+    if (ms === null || ms === undefined) return "";
+    const d = new Date(ms);
+    return d.toLocaleDateString("fr-FR") + " " + d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function choisir(i, defiler = true) {
+    const lignes = liste.querySelectorAll(".resultat");
+    if (!lignes.length) { choisi = -1; return; }
+    choisi = Math.max(0, Math.min(lignes.length - 1, i));
+    lignes.forEach((l, j) => l.classList.toggle("choisi", j === choisi));
+    if (defiler) lignes[choisi].scrollIntoView({ block: "nearest" });
+  }
+
+  function ouvrir(r) { go("ouvrir", r.chemin); }
+  function emplacement(r) { go("emplacement", r.chemin); }
+
+  function rendre(r) {
+    resultats = r.resultats;
+    const n = resultats.length;
+    compte.textContent = r.total === 0 ? "Aucun résultat"
+      : r.total > n ? `${n} premiers sur ${r.total.toLocaleString("fr-FR")}`
+      : `${n} résultat${n > 1 ? "s" : ""}`;
+    liste.replaceChildren(...resultats.map((x, i) => {
+      const type = el("span", { class: "type", "data-icone": x.icone || "" }, [x.estDossier ? "📁" : "📄"]);
+      poserIcone(type, x.icone);
+      const ligne = el("div", {
+        class: "resultat",
+        title: x.chemin + "\nEntrée / double-clic : ouvrir · Ctrl+Entrée : emplacement",
+        onclick: () => choisir(i, false),
+        ondblclick: () => ouvrir(x),
+      }, [
+        type,
+        el("span", { class: "nom" }, [x.nom]),
+        el("span", { class: "taille" }, [taille(x.taille)]),
+        el("span", { class: "date" }, [date(x.modifie)]),
+        el("span", { class: "dossier" }, [x.dossier]),
+      ]);
+      ligne.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        choisir(i, false);
+        menuContextuel.ouvrir(e, [
+          { texte: "Ouvrir", raccourci: "Entrée", action: () => ouvrir(x) },
+          { texte: "Ouvrir l'emplacement", raccourci: "Ctrl+Entrée", action: () => emplacement(x) },
+          { texte: "Copier le chemin", action: () => go("copier", x.chemin) },
+          { texte: "Copier le nom", action: () => go("copier", x.nom) },
+        ]);
+      });
+      return ligne;
+    }));
+    liste.scrollTop = 0;
+    choisi = -1;
+    if (n) choisir(0, false);
+  }
+
+  champ.addEventListener("input", planifier);
+  champ.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); choisir(choisi + 1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); choisir(choisi - 1); }
+    else if (e.key === "PageDown") { e.preventDefault(); choisir(choisi + 10); }
+    else if (e.key === "PageUp") { e.preventDefault(); choisir(choisi - 10); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      // Entrée avant la fin de la pause : la recherche part tout de suite, et
+      // l'ouverture attendra le prochain Entrée (le résultat affiché pourrait
+      // être celui d'une saisie plus ancienne).
+      if (minuterie && champ.value.trim()) { lancer(); return; }
+      const r = resultats[choisi];
+      if (r) (e.ctrlKey ? emplacement : ouvrir)(r);
+    }
+    else if (e.key === "Escape") {
+      e.preventDefault();
+      if (champ.value) { champ.value = ""; lancer(); } else go("close");
+    }
+  });
+  for (const b of document.querySelectorAll("#barre button")) {
+    b.addEventListener("click", () => {
+      tri = b.dataset.tri;
+      try { localStorage.setItem("recherche-tri", tri); } catch (_) {}
+      rendreTri();
+      lancer();
+      champ.focus();
+    });
+  }
+
+  window.recherche = {
+    montre() {
+      champ.focus();
+      champ.select();
+    },
+    reponse(r) {
+      if (r.numero !== numero) return;
+      if (r.erreur) { dire(r.erreur, true); return; }
+      dire("");
+      rendre(r);
+    },
+    icones(paires) {
+      for (const [cle, uri] of paires) ICONES.set(cle, uri);
+      const recues = new Set(paires.map(([cle]) => cle));
+      for (const type of liste.querySelectorAll(".type[data-icone]")) {
+        if (recues.has(type.dataset.icone)) poserIcone(type, type.dataset.icone);
+      }
+    },
+  };
+
+  let dernierJson = null;
+  window.setState = function (next) {
+    const json = JSON.stringify(next);
+    if (json === dernierJson) return;
+    dernierJson = json;
+    document.documentElement.style.setProperty("--text-scale", next.contentScale || 1);
+  };
+
+  rendreTri();
+  go("ready");
+</script>
+</body>
+</html>

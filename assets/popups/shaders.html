@@ -1,0 +1,423 @@
+<!doctype html>
+<!--
+  win32::cef_shaders — l'éditeur de shaders du dégradé animé.
+
+  DEMANDE EXPLICITE (2026-10-10) : « une applet pour disposer d'un éditeur de shader
+  qui permette de les utiliser dans les dégradés animés de l'app ».
+
+  ⭐ **UN DASH** (DEMANDE EXPLICITE, 2026-10-10 : « je voudrais que l'éditeur de
+  shaders soit dans un dash ») — un panneau de la zone libre, comme `meteo.html`.
+  La barre n'a que le titre et le `✕` (`close-btn`, titre « Fermer ») : c'est À
+  CÔTÉ de lui que `cef_popup` pose la punaise commune aux panneaux. Le reste est un
+  éditeur : la liste des motifs du dossier à gauche, le code à droite, le compte
+  rendu du moteur en bas.
+
+  ⛔ **LE CODE NE PASSE PAS PAR L'URL** : il est POSTÉ sur le canal des données
+  (`shaders/code`), et le verbe part dans le `.then()` — le corps doit être arrivé
+  quand Rust le prend (voir `cef_shaders::enregistrer`).
+
+  ⚠️ **LA SAISIE N'EST JAMAIS ÉCRASÉE PAR UNE POUSSÉE** : Rust repousse l'état à
+  chaque compte rendu ; la page ne recharge le code que quand `state.charge` change
+  (un motif OUVERT), jamais pour un message.
+
+  ⛔ **AUCUN `menu.js`** — c'est un PANNEAU, pas un menu. ⛔ **AUCUN `<select>`** (rien ne s'y
+  déroule en rendu hors écran). ⛔ **AUCUN `background` sur `<html>`/`<body>`** : le
+  fond est le BUREAU FLOUTÉ que Rust dessine sous la page.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html { --text-scale: 1; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    flex-direction: column;
+    /* Même grossissement que les autres panneaux : `zoom` seul (voir `meteo.html`). */
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    height: calc(100vh / var(--text-scale));
+    font-family: var(--nd-police);
+    /* ⛔ La couleur de texte vient du thème : sans `menu.css`, le navigateur met du
+       NOIR (voir `toute_page_de_panneau_prend_sa_couleur_du_theme`). */
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+  }
+  #barre {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    user-select: none;
+  }
+  #titre {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* ⚠️ `Segoe UI Symbol` EN CLAIR : `✕` existe aussi dans la police EMOJI. */
+  .close-btn {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+  }
+  .close-btn:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  #corps {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    gap: 8px;
+    padding: 8px;
+  }
+  /* La liste des motifs du dossier. */
+  #cote {
+    flex: 0 0 170px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    overflow-y: auto;
+    user-select: none;
+  }
+  .motif {
+    all: unset;
+    padding: 6px 8px;
+    border-radius: var(--nd-rayon-controle);
+    font-size: 13px;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .motif:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.14 * var(--popup-fond-alpha, 1))); }
+  .motif.ouvert { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.35 * var(--popup-fond-alpha, 1))); }
+  .motif .pastille { opacity: calc(.8 * max(1, var(--popup-alpha, 1))); margin-left: 4px; }
+  #principal {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .ligne-outils {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .action {
+    all: unset;
+    padding: 5px 12px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.30 * var(--popup-fond-alpha, 1)));
+    font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .action:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.48 * var(--popup-fond-alpha, 1))); }
+  .action.principale { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.55 * var(--popup-fond-alpha, 1))); font-weight: 600; }
+  #nom {
+    flex: 0 1 220px;
+    min-width: 100px;
+    padding: 5px 8px;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(0, 0, 0, 0.28);
+    color: inherit;
+    font: inherit;
+    font-size: 13px;
+  }
+  /* L'éditeur : une gouttière de numéros de ligne, et le code. */
+  #editeur {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(0, 0, 0, 0.34);
+    overflow: hidden;
+  }
+  #gouttiere, #code {
+    font-family: "Cascadia Mono", Consolas, monospace;
+    font-size: 13px;
+    line-height: 18px;
+    padding: 8px 0;
+    margin: 0;
+  }
+  #gouttiere {
+    flex: 0 0 auto;
+    min-width: 32px;
+    padding-left: 6px;
+    padding-right: 8px;
+    /* ⚠️ La barre de défilement HORIZONTALE du code (10 px, plus bas) allonge
+       sa course verticale d'autant : sans ces 10 px de plus, la gouttière
+       butait avant le code, et les numéros tombaient sous leurs lignes. */
+    padding-bottom: 18px;
+    text-align: right;
+    opacity: calc(.45 * max(1, var(--popup-alpha, 1)));
+    white-space: pre;
+    overflow: hidden;
+    user-select: none;
+  }
+  #code {
+    flex: 1;
+    min-width: 0;
+    padding-left: 8px;
+    padding-right: 8px;
+    border: none;
+    outline: none;
+    resize: none;
+    background: transparent;
+    color: inherit;
+    white-space: pre;
+    overflow: auto;
+    tab-size: 4;
+  }
+  #compte-rendu {
+    flex: 0 0 auto;
+    max-height: 30%;
+    overflow-y: auto;
+    font-size: 12px;
+    line-height: 17px;
+    white-space: pre-wrap;
+    opacity: calc(.9 * max(1, var(--popup-alpha, 1)));
+  }
+  /* Une erreur qui désigne une ligne : un clic y amène le curseur. */
+  #compte-rendu .renvoi { text-decoration: underline; cursor: pointer; }
+  .avis { font-size: 12px; opacity: calc(.75 * max(1, var(--popup-alpha, 1))); }
+</style>
+</head>
+<body>
+  <div id="barre">
+    <span id="titre">Éditeur de shaders</span>
+    <!-- ÉCRIT EN CLAIR (un `\uXXXX` ne s'interprète pas dans du HTML). La punaise
+         des panneaux vient se poser JUSTE AVANT ce bouton. -->
+    <button id="fermer" class="close-btn" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="corps">
+    <div id="cote"></div>
+    <div id="principal">
+      <div class="ligne-outils">
+        <input id="nom" type="text" maxlength="60" placeholder="Nom du motif" spellcheck="false">
+        <button class="action" id="nouveau" title="Un motif neuf, à partir du modèle">Nouveau</button>
+        <button class="action" id="enregistrer" title="Enregistrer (Ctrl+S)">Enregistrer</button>
+        <button class="action principale" id="appliquer" title="Enregistrer, compiler et dessiner (Ctrl+Entrée)">Appliquer</button>
+        <button class="action" id="retirer" title="Revenir au motif intégré choisi dans les Réglages">Motif intégré</button>
+        <!-- DEMANDE EXPLICITE (2026-10-12). Fige le TEMPS du dégradé : tout motif,
+             le sien comme un intégré. Le libellé suit l'état poussé par Rust. -->
+        <button class="action" id="pause" title="Figer l'animation du dégradé (Ctrl+Espace)"><span class="ico ico-pause-fill"></span> Pause</button>
+        <button class="action" id="dossier" title="Ouvrir le dossier des shaders">Dossier</button>
+      </div>
+      <div id="editeur">
+        <div id="gouttiere">1</div>
+        <textarea id="code" spellcheck="false" autocomplete="off" wrap="off"></textarea>
+      </div>
+      <!-- La LANGUE du code, lue comme le fait Rust (`shadertoy::est_shadertoy`) :
+           un shader Shadertoy collé tel quel est traduit à l'application. -->
+      <div id="langue" class="avis"></div>
+      <div id="avis" class="avis"></div>
+      <div id="compte-rendu"></div>
+    </div>
+  </div>
+<script>
+  // Segments ENCODÉS un par un : un nom de motif peut porter une espace.
+  function go(...segments) {
+    location.href = "neuradesk://shaders/" + segments.map(encodeURIComponent).join("/");
+  }
+  const CANAL = "http://neuradesk-data.invalid/";
+  const encodeur = new TextEncoder();
+
+  const champNom = document.getElementById("nom");
+  const champCode = document.getElementById("code");
+  const gouttiere = document.getElementById("gouttiere");
+  const compteRendu = document.getElementById("compte-rendu");
+  const avis = document.getElementById("avis");
+  let etat = { motifs: [], charge: -1 };
+  let dejaCharge = -1;
+  // Le code tel qu'il a été chargé ou enregistré — ce qui permet de savoir s'il y
+  // a des modifications à ne pas perdre.
+  let reference = "";
+  // **ABANDONNER DES MODIFICATIONS SE DEMANDE EN DEUX CLICS** : le motif cliqué une
+  // première fois est retenu ici, et seul un second clic l'ouvre.
+  let abandon = null;
+
+  const modifie = () => champCode.value !== reference;
+
+  document.getElementById("fermer").addEventListener("click", () => go("fermer"));
+  document.getElementById("dossier").addEventListener("click", () => go("dossier"));
+  document.getElementById("retirer").addEventListener("click", () => go("retirer"));
+  document.getElementById("nouveau").addEventListener("click", () => {
+    if (modifie() && abandon !== "nouveau") {
+      abandon = "nouveau";
+      dire("Le code a des modifications non enregistrées — cliquez encore sur « Nouveau » pour les abandonner.");
+      return;
+    }
+    abandon = null;
+    champNom.value = "";
+    champCode.value = etat.modele || "";
+    reference = "";
+    numeroter();
+    champNom.focus();
+    dire("Donnez un nom au motif, puis « Appliquer ».");
+  });
+
+  function dire(texte) { avis.textContent = texte; }
+
+  // **ENVOIE LE CODE, PUIS LE VERBE** — voir l'en-tête : le verbe ne part qu'une
+  // fois le corps arrivé.
+  function envoyer(verbe) {
+    const nom = champNom.value.trim();
+    if (!nom) { dire("Donnez d'abord un nom au motif."); champNom.focus(); return; }
+    const code = champCode.value;
+    fetch(CANAL + "shaders/code", { method: "POST", body: encodeur.encode(code) })
+      .then(() => {
+        reference = code;
+        abandon = null;
+        if (verbe === "appliquer") go("appliquer", nom);
+        else go("enregistrer", nom);
+      }, () => dire("Le code n'a pas pu être envoyé."));
+  }
+  document.getElementById("enregistrer").addEventListener("click", () => envoyer("enregistrer"));
+  document.getElementById("appliquer").addEventListener("click", () => envoyer("appliquer"));
+  const boutonPause = document.getElementById("pause");
+  boutonPause.addEventListener("click", () => go("pause"));
+
+  // **LE CLAVIER DE L'ÉDITEUR** : Tab indente (quatre espaces), Ctrl+S enregistre,
+  // Ctrl+Entrée applique, Ctrl+Espace met en pause.
+  champCode.addEventListener("keydown", (e) => {
+    if (e.key === "Tab" && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      const a = champCode.selectionStart, b = champCode.selectionEnd;
+      champCode.setRangeText("    ", a, b, "end");
+      numeroter();
+    } else if (e.ctrlKey && e.key === " ") {
+      e.preventDefault();
+      go("pause");
+    } else if (e.ctrlKey && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      envoyer("enregistrer");
+    } else if (e.ctrlKey && e.key === "Enter") {
+      e.preventDefault();
+      envoyer("appliquer");
+    }
+  });
+
+  // **LES NUMÉROS DE LIGNE** suivent le code et son défilement — c'est par eux que
+  // se lisent les erreurs du compilateur (« ligne 12, colonne 5 »).
+  const langue = document.getElementById("langue");
+  function numeroter() {
+    langue.textContent = champCode.value.includes("mainImage")
+      ? "GLSL Shadertoy (mainImage) — traduit en HLSL à l'application. Les textures iChannel ne sont pas prises en charge."
+      : "HLSL — une fonction float4 Motif(float2 p, float aspect, float t). Un shader Shadertoy peut aussi être collé tel quel.";
+    const n = champCode.value.split("\n").length;
+    if (gouttiere.dataset.n !== String(n)) {
+      gouttiere.textContent = Array.from({ length: n }, (_, i) => i + 1).join("\n");
+      gouttiere.dataset.n = String(n);
+    }
+    gouttiere.scrollTop = champCode.scrollTop;
+  }
+  champCode.addEventListener("input", numeroter);
+  champCode.addEventListener("scroll", () => { gouttiere.scrollTop = champCode.scrollTop; });
+
+  // Amène le curseur au début de la ligne `ligne` (1 = la première).
+  function allerALaLigne(ligne, colonne) {
+    const lignes = champCode.value.split("\n");
+    let position = 0;
+    for (let i = 0; i < Math.min(ligne - 1, lignes.length); i++) position += lignes[i].length + 1;
+    position += Math.max(0, Math.min((colonne || 1) - 1, (lignes[ligne - 1] || "").length));
+    champCode.focus();
+    champCode.setSelectionRange(position, position);
+    champCode.scrollTop = Math.max(0, (ligne - 4) * 18);
+    numeroter();
+  }
+
+  // Le compte rendu du moteur — chaque « ligne N, colonne C » devient un renvoi.
+  function montrerLeCompteRendu(texte) {
+    compteRendu.replaceChildren();
+    for (const ligne of (texte || "").split("\n")) {
+      const renvoi = /^ligne (\d+)(?:, colonne (\d+))?/.exec(ligne);
+      const bloc = document.createElement("div");
+      bloc.textContent = ligne;
+      if (renvoi) {
+        bloc.className = "renvoi";
+        bloc.addEventListener("click", () => allerALaLigne(Number(renvoi[1]), Number(renvoi[2] || 1)));
+      }
+      compteRendu.appendChild(bloc);
+    }
+  }
+
+  function ouvrir(nom) {
+    if (modifie() && abandon !== nom) {
+      abandon = nom;
+      dire(`Le code a des modifications non enregistrées — cliquez encore sur « ${nom} » pour les abandonner.`);
+      return;
+    }
+    abandon = null;
+    go("ouvrir", nom);
+  }
+
+  function montrerLaListe() {
+    const cote = document.getElementById("cote");
+    cote.replaceChildren();
+    for (const nom of etat.motifs || []) {
+      const bouton = document.createElement("button");
+      bouton.className = "motif" + (nom === champNom.value.trim() ? " ouvert" : "");
+      bouton.textContent = nom;
+      if (nom === etat.actif) {
+        const pastille = document.createElement("span");
+        pastille.className = "pastille";
+        pastille.textContent = "●";
+        pastille.title = "Dessiné en ce moment";
+        bouton.appendChild(pastille);
+      }
+      if (nom === etat.enCompilation) bouton.appendChild(document.createTextNode(" …"));
+      bouton.title = nom === etat.actif ? "Dessiné en ce moment" : "Ouvrir ce motif";
+      bouton.addEventListener("click", () => ouvrir(nom));
+      cote.appendChild(bouton);
+    }
+  }
+
+  champNom.addEventListener("input", montrerLaListe);
+
+  window.setState = function (state) {
+    etat = state;
+    document.documentElement.style.setProperty("--text-scale", state.contentScale || 1);
+    // Le code ne se remplace QUE pour un motif ouvert (voir l'en-tête).
+    if (state.charge !== dejaCharge) {
+      dejaCharge = state.charge;
+      if (state.charge > 0) {
+        champNom.value = state.nom;
+        champCode.value = state.code;
+        reference = state.code;
+        champCode.scrollTop = 0;
+      } else if (!champCode.value) {
+        champCode.value = state.modele || "";
+      }
+      numeroter();
+    }
+    montrerLaListe();
+    montrerLeCompteRendu(state.message);
+    boutonPause.innerHTML = state.enPause ? '<span class="ico ico-play-fill"></span> Reprendre' : '<span class="ico ico-pause-fill"></span> Pause';
+    boutonPause.classList.toggle("principale", !!state.enPause);
+    boutonPause.title = state.enPause ? "Relancer l'animation du dégradé (Ctrl+Espace)" : "Figer l'animation du dégradé (Ctrl+Espace)";
+    // Un motif ne se voit que si le dégradé est DESSINÉ — le dire plutôt que de
+    // laisser croire que « Appliquer » n'a rien fait.
+    const absent = "Le dégradé animé n'est pas dessiné : cochez-le dans les Réglages, en mode « visible sur les captures ».";
+    if (!state.degradeVisible && !avis.textContent) dire(absent);
+    else if (state.degradeVisible && avis.textContent === absent) dire("");
+  };
+</script>
+</body>
+</html>

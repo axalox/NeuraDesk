@@ -1,0 +1,1035 @@
+<!DOCTYPE html>
+<!--
+  TERMINAL (voir `win32::cef_terminal`, qui porte la liste des actions, et
+  `win32::pty` les shells sous pseudo-console). Même terminal que l'applet
+  SSH (voir `ssh.html`) : un onglet par shell local.
+
+  ÉTAT REÇU (window.setState) :
+
+    { shells: [{ id: "pwsh" | "powershell" | "cmd", nom }], contentScale, policeTerminal }
+
+  Le premier shell de la liste est celui du premier onglet. `policeTerminal` : la
+  police réglée dans Réglages → Style, qui PRECÈDE la pile par défaut
+  (`terminal_theme.js`) ; vide = cette pile telle quelle. La même clé gouverne
+  `ssh.html` — le réglage se dit « des terminaux », il doit les couvrir les deux.
+
+  APPELS DE RUST (window.terminal.*) : montre(), sortie(onglet, base64),
+  fin(onglet), erreur(onglet, message), coller(onglet, texte).
+
+  ⚠️ **LA PAGE EST PRÉCHARGÉE** : aucun shell n'est lancé avant `montre()`,
+  appelé quand le panneau devient visible.
+
+  ⚠️ **LES FRAPPES** partent par `fetch` (canal POST), **UN SEUL ENVOI EN
+  VOL** — voir `ssh.html`.
+
+  ⚠️ **LE TERMINAL N'EST PAS GROSSI PAR `zoom`** (voir `ssh.html`) : la taille
+  de police suit `contentScale`.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<script src="menu_contextuel.js"></script>
+<link rel="stylesheet" href="xterm.css">
+<script src="xterm.js"></script>
+<script src="xterm-addon-fit.js"></script>
+<script src="nuancier.js"></script>
+<script src="terminal_theme.js"></script>
+<link rel="stylesheet" href="volet_commandes.css">
+<script src="volet_commandes.js"></script>
+<script src="sphere_source.js"></script>
+<script src="sphere_vue.js"></script>
+<!-- Les quatre graisses embarquées (Nordwand Mono) — une feuille POUR LES DEUX
+     pages de terminal, voir `fonts/polices.css`. -->
+<link rel="stylesheet" href="fonts/polices.css">
+<style>
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .zoome { zoom: var(--text-scale); }
+  button {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 5px 10px;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  .cache { display: none !important; }
+
+  #haut { display: flex; align-items: center; gap: 4px; padding: 8px 10px 0; flex: 0 0 auto; }
+  #onglets { display: flex; gap: 2px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .onglet {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 6px 6px 10px;
+    border-radius: var(--nd-rayon-controle) var(--nd-rayon-controle) 0 0;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.05 * var(--popup-fond-alpha, 1)));
+    white-space: nowrap; cursor: pointer; flex: 0 1 auto; min-width: 60px; max-width: 240px;
+  }
+  .onglet:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.10 * var(--popup-fond-alpha, 1))); }
+  .onglet.actif { background: rgba(var(--popup-accent-rgb), calc(0.35 * var(--popup-fond-alpha, 1))); }
+  .onglet .textes { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+  .onglet .titre { overflow: hidden; text-overflow: ellipsis; }
+  .onglet .nom { font-size: 11px; opacity: calc(.75 * max(1, var(--popup-alpha, 1))); overflow: hidden; text-overflow: ellipsis; }
+  /* Un onglet SCINDÉ : le nombre de terminaux qu'il contient. */
+  .onglet .compte { font-size: 11px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); margin-left: 6px; align-self: center; }
+  .onglet .nom-champ {
+    font: inherit; font-size: 11px; width: 130px; color: inherit;
+    background: rgba(0, 0, 0, .35); border: 1px solid rgba(var(--popup-accent-rgb), calc(.8 * var(--popup-fond-alpha, 1)));
+    border-radius: 3px; padding: 0 3px; outline: none;
+  }
+  .onglet.admin .titre::before { content: "🛡 "; }
+  .onglet .fermer { background: none; padding: 0 5px; opacity: calc(.6 * max(1, var(--popup-alpha, 1))); font-size: 12px; }
+  .onglet .fermer:hover { opacity: 1; background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1))); }
+  #nouveaux { display: flex; gap: 4px; flex: 0 0 auto; }
+  #nouveaux button { padding: 3px 8px; font-size: 12px; }
+  #nouveaux .shell { display: flex; gap: 1px; }
+  #nouveaux .shell > button:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  #nouveaux .admin { border-top-left-radius: 0; border-bottom-left-radius: 0; padding: 3px 6px; }
+  #fermer-panneau { background: none; font-size: 16px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+
+  #corps {
+    flex: 1 1 auto; min-height: 0; position: relative;
+    border-top: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+  }
+  /* LE FOND DU TERMINAL EST LA SURFACE DU THÈME — DEMANDE EXPLICITE (2026-10-15) :
+     « des fonds colorés utilisant le thème plutôt que noir ». `--popup-tint-rgb`
+     est poussée par `cef_popup::window_palette_js` ; les couleurs du texte
+     viennent de `terminal_theme.js`. */
+  .terminal-hote {
+    padding: 28px 0 4px 8px;
+    background-color: rgba(var(--popup-tint-rgb, 32, 32, 36), calc(.92 * var(--popup-fond-alpha, 1)));
+    /* LA TEXTURE DES TERMINAUX (voir `poserTextureDesTerminaux`) : une image
+       posée sur la couleur, fixée à la fenêtre — continue d'une case à l'autre. */
+    background-image: var(--texture-terminaux, none);
+    background-size: var(--texture-terminaux-taille, auto);
+    background-attachment: fixed;
+  }
+  /* ⚠️ xterm.css peint `.xterm-viewport` en NOIR (#000) : sans cette règle, le
+     fond du thème ne se voit que dans la marge. */
+  .terminal-hote .xterm, .terminal-hote .xterm-viewport, .terminal-hote .xterm-screen,
+  .terminal-hote .xterm-scrollable-element { background-color: transparent !important; }
+  /* LA SCISSION — DEMANDES EXPLICITES (2026-10-03) : « afficher plusieurs
+     terminaux sur la même page », puis « que les boutons pour scinder
+     apparaissent dans la barre supérieure de chaque terminal pour pouvoir
+     scinder où je le souhaite ». Un onglet scindé est un ARBRE : chaque
+     `.split` range ses enfants côte à côte (`colonnes`) ou empilés (`rangees`),
+     à parts égales. `min-width/height: 0` est ce qui laisse une case descendre
+     sous la largeur de son contenu : sans lui, un terminal large pousserait les
+     autres hors du panneau. Le terminal qui reçoit les frappes est encadré. */
+  #corps { display: flex; }
+  #corps.scinde { padding: 4px; }
+  #corps > .terminal-hote, #corps > .split { flex: 1 1 0; }
+  .terminal-hote { position: relative; min-width: 0; min-height: 0; }
+  .split { display: flex; min-width: 0; min-height: 0; flex: 1 1 0; }
+  .split.colonnes { flex-direction: row; }
+  .split.rangees { flex-direction: column; }
+  .split > .terminal-hote, .split > .split { flex: 1 1 0; }
+  /* LES SÉPARATEURS RÉGLABLES — DEMANDE EXPLICITE (2026-10-23). Entre deux
+     cases d'une scission, une poignée de la largeur de l'ancien `gap` : tirée,
+     elle partage la place entre ses deux voisines (`parts` du nœud), double-
+     cliquée elle remet les parts égales. */
+  .separateur { flex: 0 0 4px; border-radius: 2px; }
+  .split.colonnes > .separateur { cursor: col-resize; }
+  .split.rangees > .separateur { cursor: row-resize; }
+  .separateur:hover, .separateur.tire {
+    background: rgba(var(--popup-accent-rgb), calc(.55 * var(--popup-fond-alpha, 1)));
+  }
+  #corps.scinde .terminal-hote {
+    border-radius: 4px; outline: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+  }
+  /* L'ÉTIQUETTE DE CHAQUE TERMINAL — son nom (ou le titre du shell), en BANDEAU
+     au-dessus de sa case. DEMANDES EXPLICITES (2026-10-03) : « que je puisse
+     nommer les terminaux », puis « que le nom de chaque terminal apparaisse au
+     dessus de son propre terminal » — un badge posé SUR le texte ne suffisait
+     pas. Le bandeau prend sa place dans le `padding-top` de la case : FitAddon
+     retranche ce padding, le terminal s'arrête donc sous le bandeau au lieu de
+     passer dessous. Double-clic pour renommer, comme sur l'onglet. Il est
+     TOUJOURS là : il porte les boutons pour scinder CE terminal. */
+  .etiquette {
+    position: absolute; top: 0; left: 0; right: 0; height: 22px; z-index: 5; display: flex;
+    padding: 0 10px; line-height: 22px; border-radius: 4px 4px 0 0; font-size: 12px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: text;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.08 * var(--popup-fond-alpha, 1)));
+  }
+  .etiquette { align-items: center; gap: 2px; }
+  /* ⭐ Hors de `.zoome` (la case du terminal ne doit pas l'être), le bandeau
+     ignorait la taille du contenu : il prend le zoom pour lui seul, et la case
+     lui réserve une place à sa taille (`padding-top` ci-dessous). */
+  .etiquette { zoom: var(--text-scale); }
+  .terminal-hote { padding-top: calc(6px + 22px * var(--text-scale)); }
+  .etiquette .texte { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .etiquette button { background: none; padding: 0 6px; font-size: 12px; line-height: 20px; opacity: calc(.75 * max(1, var(--popup-alpha, 1))); }
+  .etiquette button:hover { opacity: 1; }
+  #corps.scinde .terminal-hote.actif { outline: 2px solid rgba(var(--popup-accent-rgb), calc(.9 * var(--popup-fond-alpha, 1))); }
+  #corps.scinde .terminal-hote.actif .etiquette {
+    background: rgba(var(--popup-accent-rgb), calc(0.55 * var(--popup-fond-alpha, 1)));
+  }
+  .etiquette .zoom { opacity: calc(.7 * max(1, var(--popup-alpha, 1))); margin-left: 6px; }
+  /* LE CHOIX DU TERMINAL À AJOUTER — DEMANDE EXPLICITE (2026-10-03) : « quand
+     un scindage est fait, qu'un choix me soit proposé sur ce que je souhaite
+     ajouter comme terminal ». Des BOUTONS, jamais de `<select>` dans une page
+     CEF. */
+  .choix {
+    position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 2px;
+    padding: 6px; border-radius: 6px; min-width: 180px;
+    background: rgb(var(--popup-bg-rgb, 32, 32, 36));
+    outline: 1px solid rgba(var(--popup-accent-rgb), calc(.7 * var(--popup-fond-alpha, 1)));
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+  }
+  .choix .entete { font-size: 11px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); padding: 0 4px 4px; }
+  .choix .ligne { display: flex; gap: 2px; }
+  .choix .ligne button:first-child { flex: 1 1 auto; text-align: left; }
+  /* LE NOM PERSONNALISÉ EN GRAS — DEMANDE EXPLICITE (2026-10-15). Sur l'étiquette
+     et sur l'onglet ; le titre du shell, lui, reste maigre. */
+  .perso { font-weight: 700; }
+  /* LA PALETTE DE CTRL + CLIC DROIT (voir `proposerCouleur`) : le nuancier des
+     lueurs, seize pastilles par rangée. */
+  .choix .nuancier { display: grid; grid-template-columns: repeat(16, 22px); gap: 4px; padding: 2px 4px 4px; }
+  .choix .nuancier button {
+    width: 22px; height: 22px; padding: 0; border-radius: 4px;
+    outline: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.25 * var(--popup-fond-alpha, 1)));
+  }
+  .choix .nuancier button:hover { outline: 2px solid rgb(var(--popup-fg-rgb, 255, 255, 255)); }
+  .choix .nuancier button.choisie { outline: 2px solid rgb(var(--popup-accent-solid-rgb, 96, 160, 255)); outline-offset: 1px; }
+</style>
+</head>
+<body>
+<div id="haut" class="zoome">
+  <div id="onglets"></div>
+  <div id="nouveaux"></div>
+<button id="fermer-panneau" title="Masquer le panneau (les shells continuent)"><span class="ico ico-x"></span></button>
+</div>
+<div id="milieu"><div id="corps"></div></div>
+
+<script>
+  // `el` et `go` — MÊMES HELPERS que `ssh.html`.
+  function el(tag, attrs, children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (key === "class") node.className = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value);
+    }
+    for (const child of children || []) {
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+    return node;
+  }
+
+  // Chaque action part dans sa propre tâche (voir `ssh.html`).
+  const actions = [];
+  let actionsPrevues = false;
+  function go(...segments) {
+    actions.push("neuradesk://terminal/" + segments.map((s) => encodeURIComponent(String(s))).join("/"));
+    if (!actionsPrevues) viderActions();
+  }
+  function viderActions() {
+    const suivante = actions.shift();
+    if (!suivante) { actionsPrevues = false; return; }
+    actionsPrevues = true;
+    location.href = suivante;
+    setTimeout(viderActions, 0);
+  }
+
+  const CANAL = "http://neuradesk-data.invalid/";
+  const encodeur = new TextEncoder();
+  function poster(route, texte) {
+    return fetch(CANAL + route, { method: "POST", body: encodeur.encode(texte) });
+  }
+
+  let state = { shells: [], contentScale: 1, policeTerminal: "" };
+  const $ = (id) => document.getElementById(id);
+
+  // numéro → { id, shell, titre, nom, term, fit, hote, ouvert }. `nom` : le
+  // nom donné par l'utilisateur (double-clic sur l'onglet), sur une SECONDE
+  // ligne sous le titre du shell — il ne vit que le temps de l'onglet.
+  const sessions = new Map();
+  // Les terminaux suivent le thème (voir `terminal_theme.js`).
+  suivreLeThemeDesTerminaux(() => [...sessions.values()].map((s) => s.term).filter(Boolean));
+  let prochainOnglet = 1;
+  let actif = 0;
+  // L'onglet dont le nom est en cours de saisie (0 : aucun). Tant qu'il y en
+  // a un, rien ne reconstruit la barre sous les doigts.
+  let edition = 0;
+  // **LES ONGLETS SONT DES GROUPES.** DEMANDES EXPLICITES (2026-10-03) : « je
+  // voudrais pouvoir choisir moi-même si je scinde ou pas », puis « pour
+  // pouvoir scinder où je le souhaite ». « + shell » ouvre un onglet SEUL ;
+  // ⇆ / ⇅ sur le bandeau d'un terminal scindent CE terminal, et rien d'autre.
+  // ⇱ le sort dans son propre onglet.
+  // numéro → { id, racine, focus }. `racine` : l'ARBRE de l'onglet — une
+  // feuille `{ feuille: numéro de session }` ou une scission
+  // `{ sens: "colonnes" | "rangees", enfants: [nœuds] }`. `focus` : le terminal
+  // de l'onglet qui avait la main en dernier.
+  const groupes = new Map();
+  let prochainGroupe = 1;
+
+  function groupeDe(id) {
+    const s = sessions.get(id);
+    return s ? groupes.get(s.groupe) : undefined;
+  }
+
+  // Les terminaux d'un nœud, dans l'ordre de lecture.
+  function feuilles(n) {
+    return n.feuille ? [n.feuille] : n.enfants.flatMap(feuilles);
+  }
+
+  // `nouveau` à côté de `cible` dans le sens donné. Dans une scission du MÊME
+  // sens, il s'y range juste après elle (trois colonnes plutôt qu'une colonne
+  // dans une colonne) ; sinon la feuille devient une scission à deux.
+  function inserer(n, cible, nouveau, sens) {
+    if (n.feuille) return n.feuille === cible ? { sens, enfants: [n, { feuille: nouveau }] } : n;
+    const i = n.enfants.findIndex((e) => e.feuille === cible);
+    if (i >= 0 && n.sens === sens) {
+      return { sens, enfants: [...n.enfants.slice(0, i + 1), { feuille: nouveau }, ...n.enfants.slice(i + 1)] };
+    }
+    return { sens: n.sens, parts: n.parts, enfants: n.enfants.map((e) => inserer(e, cible, nouveau, sens)) };
+  }
+
+  // L'arbre sans `cible` (null s'il ne reste rien). Une scission réduite à un
+  // enfant s'efface devant lui ; un enfant du même sens que son parent s'y
+  // fond.
+  function retirer(n, cible) {
+    if (n.feuille) return n.feuille === cible ? null : n;
+    const enfants = n.enfants
+      .map((e) => retirer(e, cible))
+      .filter(Boolean)
+      .flatMap((e) => (e.sens === n.sens ? e.enfants : [e]));
+    if (!enfants.length) return null;
+    if (enfants.length === 1) return enfants[0];
+    return enfants.length === n.enfants.length ? { sens: n.sens, parts: n.parts, enfants } : { sens: n.sens, enfants };
+  }
+
+  function taillePolice(s) {
+    return Math.round(13 * (state.contentScale || 1) * (s ? s.zoom : 1));
+  }
+
+  // **LE ZOOM DE CHAQUE TERMINAL** — DEMANDE EXPLICITE (2026-10-03) : « zoomer
+  // dézoomer dans les terminaux en utilisant Ctrl + roulette ». Propre à chaque
+  // terminal (un shell de logs en petit, un éditeur en grand), multiplié à la
+  // taille du contenu réglée dans Réglages. Ctrl+0 le remet à 100 %.
+  const ZOOM_MIN = 0.5, ZOOM_MAX = 3, ZOOM_PAS = 1.1;
+  function zoomer(s, facteur) {
+    const avant = s.zoom;
+    s.zoom = facteur === null ? 1 : Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s.zoom * facteur));
+    if (s.zoom === avant) return;
+    s.term.options.fontSize = taillePolice(s);
+    // La nouvelle taille de police change le nombre de lignes et de colonnes :
+    // `fit` les recalcule, et `onResize` les transmet au shell.
+    ajuster(s);
+    etiqueter(s);
+  }
+
+  function etiqueter(s) {
+    const zoom = Math.round(s.zoom * 100);
+    const texte = el("span", { class: s.nom ? "texte perso" : "texte" }, [s.nom || s.titre]);
+    if (zoom !== 100) texte.appendChild(el("span", { class: "zoom" }, [zoom + " %"]));
+    texte.title = (s.nom || s.titre) + "\nDouble-clic : renommer · Ctrl + roulette : zoom · Ctrl+0 : 100 %"
+      + "\nCtrl + clic droit sur le terminal : sa couleur";
+    const bouton = (titre, glyphe, action) => {
+      const b = el("button", { title: titre, onclick: (e) => { e.stopPropagation(); action(); } }, [glyphe]);
+      b.addEventListener("dblclick", (e) => e.stopPropagation());
+      return b;
+    };
+    s.boutonCote = bouton("Scinder : un terminal à côté de celui-ci (Ctrl+Maj+D)", "⇆", () => proposer(s.id, "colonnes"));
+    s.boutonBas = bouton("Scinder : un terminal sous celui-ci (Ctrl+Maj+E)", "⇅", () => proposer(s.id, "rangees"));
+    const boutons = [texte, s.boutonCote, s.boutonBas];
+    const g = groupes.get(s.groupe);
+    if (g && !g.racine.feuille) {
+      boutons.push(bouton("Sortir ce terminal dans son propre onglet", "⇱", () => detacher(s.id)));
+    }
+    boutons.push(bouton("Fermer ce terminal (Ctrl+Maj+W)", "✕", () => fermerOnglet(s.id)));
+    s.etiquette.replaceChildren(...boutons);
+  }
+
+  function nomDuShell(id) {
+    const s = state.shells.find((x) => x.id === id);
+    return s ? s.nom : id;
+  }
+
+  function renderOnglets() {
+    const barre = $("onglets");
+    barre.replaceChildren();
+    if (!sessions.has(edition)) edition = 0;
+    for (const s of sessions.values()) etiqueter(s);
+    // Un onglet par GROUPE ; il porte le titre et le nom du terminal du groupe
+    // qui a la main (celui qu'un double-clic renomme).
+    for (const g of groupes.values()) {
+      const membres = feuilles(g.racine);
+      const s = sessions.get(membres.includes(actif) ? actif : g.focus) || sessions.get(membres[0]);
+      if (!s) continue;
+      const textes = [el("span", { class: "titre" }, [s.titre])];
+      if (edition === s.id) textes.push(champNom(s));
+      else if (s.nom) textes.push(el("span", { class: "nom perso" }, [s.nom]));
+      const n = membres.length;
+      const contenu = [el("div", { class: "textes" }, textes)];
+      if (n > 1) contenu.push(el("span", { class: "compte", title: n + " terminaux dans cet onglet" }, ["⊞ " + n]));
+      contenu.push(el("button", {
+        class: "fermer",
+        title: n > 1 ? "Fermer cet onglet et ses " + n + " terminaux" : "Fermer ce shell",
+        onclick: (e) => { e.stopPropagation(); fermerGroupe(g.id); },
+      }, ["✕"]));
+      barre.appendChild(el("div", {
+        class: "onglet" + (membres.includes(actif) ? " actif" : "") + (s.admin ? " admin" : ""),
+        title: s.titre + (s.nom ? "\n" + s.nom : "") + "\nDouble-clic : renommer",
+        onclick: () => activer(s.id),
+        ondblclick: (e) => { if (e.button === 0) renommer(s.id); },
+        onauxclick: (e) => { if (e.button === 1) fermerGroupe(g.id); },
+      }, contenu));
+    }
+    voletCommandes.cible();
+    if (window.sphereSource) sphereSource.rafraichir();
+  }
+
+  function champNom(s) {
+    const champ = el("input", {
+      class: "nom-champ", type: "text", maxlength: "60",
+      placeholder: "Nom du terminal", value: s.nom || "",
+    });
+    champ.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") finirRenommage(s.id, champ.value);
+      else if (e.key === "Escape") finirRenommage(s.id, null);
+    });
+    champ.addEventListener("blur", () => finirRenommage(s.id, champ.value));
+    // Un clic DANS le champ ne doit pas réactiver l'onglet (ce qui reconstruit
+    // la barre et emporte le champ).
+    for (const type of ["click", "dblclick", "mousedown", "auxclick"]) {
+      champ.addEventListener(type, (e) => e.stopPropagation());
+    }
+    return champ;
+  }
+
+  function renommer(id) {
+    if (!sessions.has(id)) return;
+    edition = id;
+    renderOnglets();
+    // Après le `focus` du terminal que les deux clics ont demandé (`activer`).
+    requestAnimationFrame(() => {
+      const champ = $("onglets").querySelector(".nom-champ");
+      if (champ) { champ.focus(); champ.select(); }
+    });
+  }
+
+  // `valeur` null : Échap, le nom ne change pas. Un nom vide l'efface.
+  function finirRenommage(id, valeur) {
+    if (edition !== id) return;
+    edition = 0;
+    const s = sessions.get(id);
+    if (s && valeur !== null) s.nom = valeur.trim().slice(0, 60);
+    renderOnglets();
+    if (s && actif === id) s.term.focus();
+  }
+
+  function renderNouveaux() {
+    // 🛡 : un onglet ADMINISTRATEUR, après l'UAC (voir `pty::ouvrir_admin`).
+    $("nouveaux").replaceChildren(...state.shells.map((shell) => el("div", { class: "shell" }, [
+      el("button", {
+        title: "Nouvel onglet : " + shell.nom,
+        onclick: () => nouvelOnglet(shell.id),
+      }, ["+ " + shell.nom]),
+      el("button", {
+        class: "admin",
+        title: shell.nom + " en administrateur",
+        onclick: () => nouvelOnglet(shell.id, true),
+      }, [el("span", { class: "ico ico-shield" })]),
+    ])));
+  }
+
+  function activer(id) {
+    if (!sessions.has(id)) return;
+    actif = id;
+    groupeDe(id).focus = id;
+    disposer();
+    renderOnglets();
+    // La vue vient d'apparaître : ses dimensions ne sont connues que maintenant.
+    requestAnimationFrame(() => {
+      const s = sessions.get(actif);
+      if (s && !edition) s.term.focus();
+    });
+  }
+
+  // **QUI EST MONTRÉ, ET OÙ.** L'arbre de l'onglet actif, et lui seul : les
+  // terminaux des autres onglets restent dans `#corps`, cachés (un terminal
+  // xterm se déplace dans la page sans rien perdre). Chaque terminal garde SA
+  // taille, transmise à son shell par `onResize` : rien ne change côté Rust.
+  function disposer() {
+    const corps = $("corps");
+    const g = groupeDe(actif);
+    const construire = (n) => {
+      if (n.feuille) return sessions.get(n.feuille).hote;
+      const parts = partsDe(n);
+      const cases = n.enfants.map(construire);
+      cases.forEach((c, i) => { c.style.flexGrow = parts[i]; });
+      const enfants = cases.flatMap((c, i) => (i ? [separateur(n, i - 1, cases), c] : [c]));
+      return el("div", { class: "split " + n.sens }, enfants);
+    };
+    const arbre = g ? construire(g.racine) : null;
+    const autres = [...sessions.values()].filter((x) => !g || x.groupe !== g.id).map((x) => x.hote);
+    corps.replaceChildren(...(arbre ? [arbre] : []), ...autres);
+    corps.classList.toggle("scinde", !!g && !g.racine.feuille);
+    marquerActif();
+    requestAnimationFrame(() => { for (const s of sessions.values()) ajuster(s); });
+    // Sphère ouverte : les terminaux remis dans `#corps` retournent dans leurs cartes.
+    if (window.sphereVue) sphereVue.resynchroniser();
+  }
+
+  // Les parts d'une scission — ÉGALES tant que rien n'a été tiré, ou quand le
+  // nombre d'enfants a changé depuis (un terminal ajouté ou retiré).
+  function partsDe(n) {
+    return n.parts && n.parts.length === n.enfants.length ? n.parts : n.enfants.map(() => 1);
+  }
+
+  // La poignée entre `cases[i]` et `cases[i + 1]` de la scission `n`. Le
+  // glissement redistribue la place des DEUX voisines seulement — les autres
+  // ne bougent pas — et chacune garde au moins `CASE_MIN` px.
+  const CASE_MIN = 60;
+  function separateur(n, i, cases) {
+    const colonnes = n.sens === "colonnes";
+    const poignee = el("div", {
+      class: "separateur",
+      title: "Tirer : partager la place · double-clic : parts égales",
+    });
+    poignee.addEventListener("dblclick", () => { delete n.parts; disposer(); });
+    poignee.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const parts = partsDe(n).slice();
+      const taille = (c) => { const r = c.getBoundingClientRect(); return colonnes ? r.width : r.height; };
+      const [a, b] = [taille(cases[i]), taille(cases[i + 1])];
+      const somme = parts[i] + parts[i + 1];
+      const depart = colonnes ? e.clientX : e.clientY;
+      let image = 0;
+      poignee.classList.add("tire");
+      document.body.classList.add("glisse");
+      const bouger = (m) => {
+        const d = (colonnes ? m.clientX : m.clientY) - depart;
+        const gauche = Math.max(CASE_MIN, Math.min(a + b - CASE_MIN, a + d));
+        parts[i] = somme * gauche / (a + b);
+        parts[i + 1] = somme - parts[i];
+        n.parts = parts.slice();
+        cases[i].style.flexGrow = parts[i];
+        cases[i + 1].style.flexGrow = parts[i + 1];
+        // Les terminaux redimensionnés recalculent leurs lignes et colonnes —
+        // une fois par image, pas à chaque mouvement.
+        if (!image) image = requestAnimationFrame(() => { image = 0; for (const s of sessions.values()) ajuster(s); });
+      };
+      const lacher = () => {
+        document.removeEventListener("mousemove", bouger, true);
+        document.removeEventListener("mouseup", lacher, true);
+        poignee.classList.remove("tire");
+        document.body.classList.remove("glisse");
+        for (const s of sessions.values()) ajuster(s);
+      };
+      document.addEventListener("mousemove", bouger, true);
+      document.addEventListener("mouseup", lacher, true);
+    });
+    return poignee;
+  }
+
+  function marquerActif() {
+    const g = groupeDe(actif);
+    const scinde = !!g && !g.racine.feuille;
+    for (const s of sessions.values()) {
+      s.hote.classList.toggle("cache", !g || s.groupe !== g.id);
+      s.hote.classList.toggle("actif", scinde && s.id === actif);
+    }
+  }
+
+  // **LE CHOIX** : quel terminal ajouter à côté de / sous `id`. Chaque shell,
+  // en normal ou en administrateur (🛡) ; le shell du terminal scindé en tête.
+  // Échap ou un clic ailleurs : rien n'est scindé.
+  let choixOuvert = null;
+  function fermerChoix() {
+    if (!choixOuvert) return;
+    choixOuvert.remove();
+    choixOuvert = null;
+    document.removeEventListener("mousedown", clicHorsChoix, true);
+  }
+  function clicHorsChoix(e) {
+    if (choixOuvert && !choixOuvert.contains(e.target)) fermerChoix();
+  }
+  function proposer(id, sens) {
+    const s = sessions.get(id);
+    if (!s) return;
+    fermerChoix();
+    const choisir = (shell, admin) => {
+      fermerChoix();
+      scinder(id, sens, shell, admin);
+    };
+    const shells = [...state.shells].sort((a, b) => (b.id === s.shell) - (a.id === s.shell));
+    const boite = el("div", { class: "choix zoome" }, [
+      el("div", { class: "entete" }, [sens === "colonnes" ? "Ajouter à côté :" : "Ajouter en dessous :"]),
+      ...shells.map((shell) => el("div", { class: "ligne" }, [
+        el("button", { title: "Ouvrir " + shell.nom, onclick: () => choisir(shell.id, false) }, ["+ " + shell.nom]),
+        el("button", { title: shell.nom + " en administrateur", onclick: () => choisir(shell.id, true) }, [el("span", { class: "ico ico-shield" })]),
+      ])),
+    ]);
+    boite.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      fermerChoix();
+      s.term.focus();
+    });
+    document.body.appendChild(boite);
+    choixOuvert = boite;
+    document.addEventListener("mousedown", clicHorsChoix, true);
+    // Sous le bouton qui l'a ouvert, ramené dans la page.
+    const ancre = (sens === "colonnes" ? s.boutonCote : s.boutonBas).getBoundingClientRect();
+    const r = boite.getBoundingClientRect();
+    boite.style.left = Math.max(4, Math.min(ancre.left, window.innerWidth - r.width - 4)) + "px";
+    boite.style.top = Math.max(4, Math.min(ancre.bottom + 2, window.innerHeight - r.height - 4)) + "px";
+    const premier = boite.querySelector("button");
+    if (premier) premier.focus();
+  }
+
+  // **LA COULEUR D'UN TERMINAL** — Ctrl + clic droit sur son fond (DEMANDE
+  // EXPLICITE, 2026-10-15) : une des 160 couleurs de `COULEURS_DES_TERMINAUX` (le nuancier des lueurs), ou
+  // celle du thème. Le texte et les couleurs ANSI suivent (`themeDesTerminaux`).
+  // Comme le nom, elle vit le temps du terminal. Même boîte et mêmes gestes de
+  // fermeture que le choix du shell (`proposer`).
+  function proposerCouleur(s, e) {
+    fermerChoix();
+    const choisir = (hex) => {
+      fermerChoix();
+      colorer(s, hex);
+      s.term.focus();
+    };
+    const nuancier = el("div", { class: "nuancier" }, COULEURS_DES_TERMINAUX.map(([hex, nom]) => {
+      const b = el("button", { title: nom, onclick: () => choisir(hex) }, []);
+      b.style.background = hex;
+      if (s.couleur === hex) b.classList.add("choisie");
+      return b;
+    }));
+    const boite = el("div", { class: "choix zoome" }, [
+      el("div", { class: "entete" }, ["Couleur de « " + (s.nom || s.titre) + " » :"]),
+      nuancier,
+      el("div", { class: "ligne" }, [
+        el("button", { title: "Revenir à la couleur du thème", onclick: () => choisir(null) }, ["Couleur du thème"]),
+      ]),
+    ]);
+    boite.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      fermerChoix();
+      s.term.focus();
+    });
+    document.body.appendChild(boite);
+    choixOuvert = boite;
+    document.addEventListener("mousedown", clicHorsChoix, true);
+    // Au point du clic, ramenée dans la page.
+    const r = boite.getBoundingClientRect();
+    boite.style.left = Math.max(4, Math.min(e.clientX, window.innerWidth - r.width - 4)) + "px";
+    boite.style.top = Math.max(4, Math.min(e.clientY, window.innerHeight - r.height - 4)) + "px";
+    (boite.querySelector("button.choisie") || boite.querySelector("button")).focus();
+  }
+
+  // `hex` : #rrggbb, ou `null` pour la couleur du thème.
+  function colorer(s, hex) {
+    s.couleur = hex;
+    // `backgroundColor`, pas le raccourci : il effacerait l'image de la texture.
+    s.hote.style.backgroundColor = hex || "";
+    s.term.__fond = hex;
+    repeindreLeTerminal(s.term);
+  }
+
+  // **SCINDER** `id` : `shell` (en administrateur si `admin`) s'ouvre à côté
+  // (« colonnes ») ou en dessous (« rangees »), dans le MÊME onglet.
+  function scinder(id, sens, shell, admin) {
+    const s = sessions.get(id);
+    if (!s || !shell) return;
+    nouvelOnglet(shell, admin, { groupe: s.groupe, cible: id, sens });
+  }
+
+  // ⇱ : le terminal quitte son onglet scindé pour un onglet à lui.
+  function detacher(id) {
+    const s = sessions.get(id);
+    const g = groupeDe(id);
+    if (!s || !g || g.racine.feuille) return;
+    g.racine = retirer(g.racine, id);
+    if (g.focus === id) g.focus = feuilles(g.racine).pop();
+    s.groupe = prochainGroupe++;
+    groupes.set(s.groupe, { id: s.groupe, racine: { feuille: id }, focus: id });
+    activer(id);
+  }
+
+  function fermerGroupe(gid) {
+    const g = groupes.get(gid);
+    if (g) for (const id of feuilles(g.racine)) fermerOnglet(id);
+  }
+
+  function ajuster(s) {
+    if (s.hote.classList.contains("cache")) return;
+    // Dans la sphère, un terminal garde SA taille (il y est seulement réduit).
+    if (window.sphereVue && sphereVue.ouverte()) return;
+    try { s.fit.fit(); } catch (_) { /* vue de taille nulle */ }
+  }
+
+  // Le titre qu'un shell se donne est souvent un chemin d'exe entier : son
+  // dernier morceau suffit.
+  function titreCourt(titre, repli) {
+    const morceau = String(titre || "").split("\\").pop().trim();
+    return morceau || repli;
+  }
+
+  // `admin` : le shell tourne sous le relais élevé ; il ne répond qu'après
+  // l'invite UAC (`pret`), ou jamais (`erreur`).
+  // `dans` : une SCISSION — `{ groupe, cible, sens }`, le terminal se range à
+  // côté de `cible` ; null : un onglet à lui.
+  function nouvelOnglet(shell, admin = false, dans = null) {
+    if (!shell) return;
+    const id = prochainOnglet++;
+    let groupe = dans && groupes.get(dans.groupe);
+    if (groupe) {
+      groupe.racine = inserer(groupe.racine, dans.cible, id, dans.sens);
+    } else {
+      groupe = { id: prochainGroupe++, racine: { feuille: id }, focus: id };
+      groupes.set(groupe.id, groupe);
+    }
+    const hote = el("div", { class: "terminal-hote" });
+    $("corps").appendChild(hote);
+    const term = new Terminal({
+      fontFamily: pileDesPolicesDesTerminaux(state.policeTerminal),
+      fontSize: taillePolice(),
+      cursorBlink: true,
+      scrollback: 5000,
+      theme: themeDesTerminaux(),
+      allowTransparency: true,
+    });
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(hote);
+    const etiquette = el("div", { class: "etiquette" });
+    hote.appendChild(etiquette);
+    const s = { id, shell, admin, titre: nomDuShell(shell), term, fit, hote, ouvert: false, zoom: 1, etiquette, groupe: groupe.id };
+    sessions.set(id, s);
+    etiquette.addEventListener("dblclick", (e) => { e.stopPropagation(); activer(id); renommer(id); });
+    etiquette.addEventListener("mousedown", (e) => e.stopPropagation());
+    // Ctrl + roulette : en PHASE DE CAPTURE et non passif, pour passer AVANT
+    // xterm (qui défilerait) et empêcher le zoom de la page entière.
+    hote.addEventListener("wheel", (e) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+      zoomer(s, e.deltaY < 0 ? ZOOM_PAS : 1 / ZOOM_PAS);
+    }, { capture: true, passive: false });
+
+    term.onData((texte) => envoyerFrappes(id, encodeur.encode(texte)));
+    term.onBinary((texte) => envoyerFrappes(id, Uint8Array.from(texte, (c) => c.charCodeAt(0) & 0xff)));
+    term.onResize(({ cols, rows }) => {
+      if (s.ouvert) go("redimensionner", id, cols, rows);
+    });
+    term.onTitleChange((titre) => {
+      s.titre = titreCourt(titre, nomDuShell(shell));
+      if (!edition) renderOnglets();
+    });
+    // Copier : Ctrl+C AVEC une sélection copie (sans sélection, c'est ^C pour
+    // le shell) ; Ctrl+Maj+C copie toujours. Coller : Ctrl+V, Ctrl+Maj+V ou le
+    // menu du clic droit. Ctrl+Maj+T : nouvel onglet ; Ctrl+Maj+W : fermer l'onglet.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown" || !e.ctrlKey || e.altKey) return true;
+      const touche = e.key.toLowerCase();
+      let fait = true;
+      if (touche === "c" && (e.shiftKey || term.hasSelection())) copier(term.getSelection());
+      else if (touche === "v") go("coller", id);
+      else if (touche === "t" && e.shiftKey) nouvelOnglet(shell);
+      else if (touche === "w" && e.shiftKey) fermerOnglet(id);
+      else if (touche === "d" && e.shiftKey) proposer(id, "colonnes");
+      else if (touche === "e" && e.shiftKey) proposer(id, "rangees");
+      else if (touche === "0" && !e.shiftKey) zoomer(s, null);
+      else fait = false;
+      if (fait) e.preventDefault();
+      return !fait;
+    });
+    // En mosaïque, un clic dans une case en fait le terminal ACTIF — celui que
+    // les onglets désignent, et qui reçoit les frappes (xterm prend le focus
+    // tout seul). Sans refaire la grille : un clic ne change aucune taille.
+    hote.addEventListener("mousedown", () => {
+      if (actif === id) return;
+      actif = id;
+      groupe.focus = id;
+      marquerActif();
+      renderOnglets();
+    });
+    hote.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      if (e.ctrlKey) { proposerCouleur(s, e); return; }
+      menuDuTerminal(e, s);
+    });
+
+    activer(id);
+    // Le shell naît à la taille RÉELLE de la vue : après le `fit` d'`activer`.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      ajuster(s);
+      s.ouvert = true;
+      if (admin) {
+        term.write("\x1b[2mEn attente de l'autorisation administrateur…\x1b[0m");
+        go("ouvrir-admin", id, shell, term.cols, term.rows);
+      } else {
+        go("ouvrir", id, shell, term.cols, term.rows);
+      }
+    }));
+  }
+
+  // ---- LE CLIC DROIT DU TERMINAL (`menu_contextuel.js`) ----
+  // DEMANDE (2026-10-24) : « sélectionner du texte, le copier et le coller à la
+  // souris depuis le clic droit ». Avant, le clic droit copiait la sélection ou
+  // collait, SANS menu : on ne savait pas lequel des deux allait se produire.
+  // La sélection se fait au glisser ; dans un programme qui prend la souris
+  // (tmux, htop, mc…), Maj+glisser force la sélection d'xterm.
+  function menuDuTerminal(e, s) {
+    const { term } = s;
+    const choisi = term.hasSelection();
+    menuContextuel.ouvrir(e, [
+      { texte: "Copier", raccourci: "Ctrl+C", actif: choisi, action: () => { copier(term.getSelection()); term.focus(); } },
+      { texte: "Coller", raccourci: "Ctrl+V", action: () => { go("coller", s.id); term.focus(); } },
+      "-",
+      { texte: "Tout sélectionner", action: () => { term.selectAll(); term.focus(); } },
+      { texte: "Effacer la sélection", actif: choisi, action: () => { term.clearSelection(); term.focus(); } },
+    ]);
+  }
+
+  function copier(texte) {
+    if (!texte) return;
+    poster("terminal/copie", texte).then(() => go("copier"), () => {});
+  }
+
+  // `demande` : fermé par l'utilisateur (le shell vit encore, Rust doit le
+  // terminer) plutôt que par la fin du shell.
+  function fermerOnglet(id, demande = true) {
+    const s = sessions.get(id);
+    if (!s) return;
+    if (demande) go("fermer", id);
+    s.term.dispose();
+    s.hote.remove();
+    sessions.delete(id);
+    const g = groupes.get(s.groupe);
+    // La main passe au VOISIN de lecture (celui d'avant, sinon celui d'après).
+    const ordre = feuilles(g.racine);
+    const rang = ordre.indexOf(id);
+    const voisin = ordre[rang - 1] || ordre[rang + 1];
+    g.racine = retirer(g.racine, id);
+    if (!g.racine) groupes.delete(g.id);
+    else if (g.focus === id) g.focus = voisin;
+    if (!sessions.size) {
+      actif = 0;
+      renderOnglets();
+      // Plus aucun shell : le panneau se masque, le prochain clic en rouvre un.
+      go("close");
+      return;
+    }
+    // Le terminal qui avait la main parti : son voisin d'onglet la prend, ou, si
+    // l'onglet est vide, le dernier onglet.
+    if (actif === id) activer(g.racine ? g.focus : [...sessions.keys()].pop());
+    else { renderOnglets(); disposer(); }
+  }
+
+  // ---- Les frappes : un seul envoi en vol (voir `ssh.html`) ----
+  const frappes = []; // [onglet, Uint8Array]
+  let frappeEnVol = false;
+  function envoyerFrappes(id, octets) {
+    const s = sessions.get(id);
+    if (!s || !s.ouvert || !octets.length) return;
+    frappes.push([id, octets]);
+    pomperFrappes();
+  }
+  async function pomperFrappes() {
+    if (frappeEnVol || !frappes.length) return;
+    frappeEnVol = true;
+    const id = frappes[0][0];
+    const morceaux = [];
+    while (frappes.length && frappes[0][0] === id) morceaux.push(frappes.shift()[1]);
+    const corps = new Uint8Array(morceaux.reduce((n, m) => n + m.length, 0));
+    let i = 0;
+    for (const m of morceaux) { corps.set(m, i); i += m.length; }
+    try {
+      await fetch(CANAL + "terminal/ecrire/" + id, { method: "POST", body: corps });
+    } catch (_) { /* onglet fermé entre-temps */ }
+    frappeEnVol = false;
+    pomperFrappes();
+  }
+
+  function depuisBase64(b64) {
+    const brut = atob(b64);
+    const octets = new Uint8Array(brut.length);
+    for (let i = 0; i < brut.length; i++) octets[i] = brut.charCodeAt(i);
+    return octets;
+  }
+
+  // ---- Ce que Rust appelle ----
+  window.terminal = {
+    montre() {
+      if (!sessions.size) {
+        if (state.shells.length) nouvelOnglet(state.shells[0].id);
+        return;
+      }
+      activer(actif || [...sessions.keys()].pop());
+    },
+    sortie(onglet, b64) {
+      const s = sessions.get(onglet);
+      if (s) s.term.write(depuisBase64(b64));
+    },
+    fin(onglet) {
+      fermerOnglet(onglet, false);
+    },
+    // Onglet administrateur relié : efface l'attente, renvoie la taille (elle
+    // a pu changer pendant l'invite UAC).
+    pret(onglet) {
+      const s = sessions.get(onglet);
+      if (!s) return;
+      s.term.write("\r\x1b[2K");
+      go("redimensionner", onglet, s.term.cols, s.term.rows);
+    },
+    erreur(onglet, message) {
+      const s = sessions.get(onglet);
+      if (!s) return;
+      s.ouvert = false;
+      s.term.write("\r\n\x1b[31m" + message + "\x1b[0m\r\n");
+    },
+    coller(onglet, texte) {
+      const s = sessions.get(onglet);
+      if (s) s.term.paste(texte);
+    },
+    // L'AUTRE panneau a basculé ici : la sphère s'ouvre sur CET onglet (0 :
+    // l'onglet actif). Voir `win32::cef_sphere`.
+    sphereOuvrir(onglet) {
+      sphereVue.ouvrir(sessions.has(onglet) ? onglet : actif);
+    },
+    // Les vignettes des connexions SSH, relayées par Rust.
+    sphereAutres(liste) {
+      sphereVue.autres(liste);
+    },
+  };
+
+  $("fermer-panneau").addEventListener("click", () => go("close"));
+  // La zone suit la fenêtre, mais aussi la barre d'onglets : un onglet nommé
+  // a une ligne de plus, et le terminal une ligne de moins.
+  // En mosaïque, TOUS les terminaux visibles suivent (`ajuster` saute les cachés).
+  new ResizeObserver(() => {
+    for (const s of sessions.values()) ajuster(s);
+  }).observe($("corps"));
+
+  let dernierJson = null;
+  window.setState = function (next) {
+    const json = JSON.stringify(next);
+    if (json === dernierJson) return;
+    dernierJson = json;
+    const echelleAvant = state.contentScale;
+    const policeAvant = state.policeTerminal;
+    state = next;
+    document.documentElement.style.setProperty("--text-scale", state.contentScale || 1);
+    // Le raccourci de la vue sphère (voir `win32::cef_sphere::raccourci`).
+    if (window.sphereSource) sphereSource.raccourci(state.raccourci);
+    if (window.sphereVue) sphereVue.vitesseZoom(state.sphereZoom);
+    // Les réglages propres à la sphère (zoom par défaut, recadrage
+    // automatique, fondu), poussés avec le même état.
+    if (window.sphereVue) sphereVue.reglages(state);
+    if (state.contentScale !== echelleAvant) {
+      for (const s of sessions.values()) {
+        s.term.options.fontSize = taillePolice(s);
+        ajuster(s);
+      }
+    }
+    // ⭐ **LA POLICE DES TERMINAUX** — DEMANDE EXPLICITE (2026-10-28) : « ajoute le
+    // réglage de police des terminaux » (Réglages → Style, voir
+    // `ui::style::police_des_terminaux`). Les onglets OUVERTS suivent tout de
+    // suite, sans relancer le shell : xterm relit la pile et redessine ses
+    // cellules, comme pour `fontSize` juste au-dessus. Aucun shell nouveau ne doit
+    // être créé pour changer de police, et aucune sortie du shell existant.
+    if (state.policeTerminal !== policeAvant) {
+      const pile = pileDesPolicesDesTerminaux(state.policeTerminal);
+      for (const s of sessions.values()) {
+        s.term.options.fontFamily = pile;
+        ajuster(s);
+      }
+    }
+    renderNouveaux();
+    voletCommandes.liste(state.commandes);
+  };
+
+  // Le volet des commandes enregistrées (voir `volet_commandes.js`) : le texte
+  // part comme un COLLAGE dans le terminal actif, puis Entrée si demandé.
+  voletCommandes.installer({
+    route: "terminal/commandes",
+    go, poster,
+    avant: $("fermer-panneau"),
+    milieu: $("milieu"),
+    cible: () => {
+      const s = sessions.get(actif);
+      return s ? s.nom || s.titre : null;
+    },
+    envoyer: (texte, executer) => {
+      const s = sessions.get(actif);
+      if (!s || !s.ouvert) return false;
+      // Un saut de ligne final vaudrait Entrée : « écrire seulement » ne
+      // doit rien exécuter.
+      s.term.paste(texte.replace(/[\r\n]+$/, ""));
+      if (executer) envoyerFrappes(s.id, encodeur.encode("\r"));
+      s.term.focus();
+      return true;
+    },
+  });
+
+  // LA VUE SPHÈRE (voir `sphere_source.js` et `sphere_vue.js`) : les VRAIS
+  // terminaux, posés sur une sphère ; les connexions SSH en aperçu.
+  const decrireSessions = () => [...sessions.values()].map((s) => {
+    const lignes = sphereSource.derniersLignes(s.term);
+    return {
+      source: "terminal", onglet: s.id, titre: s.nom || s.titre, sorte: nomDuShell(s.shell),
+      admin: !!s.admin, ouvert: s.ouvert, actif: s.id === actif,
+      dossier: sphereSource.dossierDuPrompt(lignes), lignes,
+    };
+  });
+  sphereSource.installer({
+    source: "terminal",
+    go, poster,
+    barre: $("haut"),
+    avant: $("fermer-panneau"),
+    actif: () => actif,
+    texte: () => {
+      const s = sessions.get(actif);
+      return s ? "Terminal · " + (s.nom || s.titre) : "Terminal";
+    },
+    termSous: (cible) => {
+      const hote = cible.closest(".terminal-hote");
+      for (const s of sessions.values()) if (s.hote === hote) return s.term;
+      return null;
+    },
+    decrire: decrireSessions,
+  });
+  sphereVue.installer({
+    source: "terminal",
+    go,
+    haut: $("haut"),
+    milieu: $("milieu"),
+    affichage: "block",
+    taille: () => {
+      const r = $("corps").getBoundingClientRect();
+      return { w: Math.max(200, r.width), h: Math.max(120, r.height) };
+    },
+    vivantes: () => [...sessions.values()].map((s) => ({ onglet: s.id, element: s.hote })),
+    decrire: decrireSessions,
+    actif: () => actif,
+    focaliser: (onglet) => {
+      const s = sessions.get(onglet);
+      if (s) s.term.focus();
+    },
+    sortir: (onglet) => { if (sessions.has(onglet)) activer(onglet); else disposer(); },
+    basculer: (onglet) => go("sphere-autre", onglet),
+  });
+
+  renderOnglets();
+  disposer();
+  go("ready");
+</script>
+</body>
+</html>

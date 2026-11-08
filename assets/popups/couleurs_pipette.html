@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<!--
+  LA FENÊTRE RÉDUITE DE LA PIPETTE — voir `win32::cef_couleurs` (son slot est
+  `SLOT_PIP`, sa fenêtre `SPEC_PIP`, ses actions `dispatch_pip`).
+
+  DEMANDE DU 2026-10-27 : « lorsque la pipette est sélectionnée, une fenêtre
+  réduite avec le bouton pour sortir du mode pipette et les couleurs
+  sélectionnées uniquement ». Deux décisions posées avec la personne : cette
+  fenêtre montre **les prélèvements** (`historique`, et rien d'autre — ni la
+  palette, ni les harmonies, ni les fichiers), et **la grande fenêtre se ferme**
+  pendant le mode pipette.
+
+  ⚠️ **UNE VRAIE FENÊTRE, PAS UN PANNEAU** (`PopupSpec::fenetre`) : ni barre
+  Windows, ni défilement du dock. Elle ne charge donc PAS `menu.js` — c'est lui
+  qui annonce une hauteur, et cette fenêtre, elle, a une taille **fixe** : elle
+  ne doit JAMAIS réclamer une hauteur, sous peine de lutter contre le
+  redimensionnement de l'utilisateur (voir `cef_couleurs::appliquer_hauteur`,
+  qui ne connaît que la grande fenêtre).
+
+  ⚠️ **SA COULEUR DE TEXTE EST POSÉE ICI** : une page de fenêtre qui charge
+  `style.css` sans `menu.css` n'hérite de AUCUNE couleur, et retombe sur le noir
+  du navigateur. Le garde `cef_popup::tests_couleur_des_pages` le vérifie.
+
+  ⚠️ **AUCUNE ACTION PAR `mousemove`**, jamais : `cef_popup::drain_actions`
+  journalise CHAQUE action reçue. Ce qui suit le curseur (la loupe) est poussé
+  de Rust vers la page — et cette fenêtre, justement, ne doit RIEN suivre.
+
+  ⚠️ **PAS DE `<select>`** dans une page CEF de ce dépôt : le rendu hors écran
+  exige `OnPopupShow`/`OnPopupSize`/`PET_POPUP`, que l'intégration n'implémente
+  pas. Des boutons.
+
+  ÉTAT REÇU (`window.setState`) : { contentScale, actuel, historique }
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 13px;
+    /* Aucun fond : c'est le bureau flouté que Rust dessine sous la page (voir
+       `cef_popup::render`). */
+    background: transparent;
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    height: calc(100vh / var(--text-scale));
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  /* La barre : le titre, le bouton de sortie, et ce qui DÉPLACE la fenêtre.
+     Pas de croix — sortir du mode pipette ferme cette fenêtre, c'est le même
+     geste, et deux boutons qui font la même chose s'offrent toujours en
+     doublon douteux. */
+  .barre {
+    flex: 0 0 auto;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    cursor: move;
+    user-select: none;
+  }
+  .barre .titre { font-size: 13px; font-weight: 600; opacity: calc(.9 * max(1, var(--popup-alpha, 1))); }
+  button {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 4px 9px;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  main { flex: 1 1 auto; overflow-y: auto; padding: 8px 12px 12px; }
+  .aide { opacity: calc(.65 * max(1, var(--popup-alpha, 1))); font-size: 11.5px; margin: 0 0 8px; }
+  /* Les prélèvements, en colonnes : la teinte, son code écrit dessous, et le ✕
+     qui la retire. Le même geste que dans la grande fenêtre (`couleurs.html`),
+     pour que le ✕ ne change pas de sens d'une fenêtre à l'autre. */
+  .prelevements { display: flex; flex-wrap: wrap; gap: 6px 6px; }
+  .pastille-col { position: relative; display: flex; flex-direction: column; align-items: center; gap: 3px; width: 58px; }
+  .pastille-enveloppe { position: relative; }
+  .pastille {
+    width: 28px; height: 28px; padding: 0;
+    border-radius: var(--nd-rayon-petit);
+    /* Un liseré : une couleur prélevée peut être NOIRE, et sans bordure elle se
+       confondrait avec le fond. */
+    box-shadow: inset 0 0 0 1px rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.35 * var(--popup-fond-alpha, 1)));
+  }
+  /* La couleur COURANTE se reconnaît — c'est celle que la loupe montre, donc
+     celle que le prochain « copier » copierait. */
+  .pastille.courante { box-shadow: inset 0 0 0 2px rgb(var(--popup-fg-rgb, 255, 255, 255)); }
+  .pastille-col .code { font-family: Consolas, monospace; font-size: 9.5px; line-height: 1; letter-spacing: .02em; }
+  .pastille-enveloppe .retirer {
+    position: absolute; top: -5px; right: -5px;
+    width: 15px; height: 15px; padding: 0;
+    border-radius: 50%;
+    font-size: 8px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+</style>
+</head>
+<body>
+
+<header class="barre" id="barre">
+  <span class="titre">Pipette</span>
+  <button id="sortir" title="Sortir du mode pipette et retrouver la grande fenêtre">Sortir</button>
+</header>
+
+<main>
+  <p class="aide" id="aide">Cliquez le pixel voulu. Clic sur une teinte : copier — clic droit : la devenir.</p>
+  <div class="prelevements" id="prelevements"></div>
+</main>
+
+<script>
+  // `el` et `go` — MÊMES HELPERS que les autres pages du dépôt (voir
+  // `calculatrice.html`) : tout `on…` passe par `addEventListener`, jamais par
+  // `setAttribute`, qui en ferait une chaîne jamais exécutée.
+  function el(tag, attrs, children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (key === "class") node.className = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value);
+    }
+    for (const child of children || []) {
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+    return node;
+  }
+
+  // Segments ENCODÉS un par un — un « / » dans un argument ne doit pas changer
+  // l'arité de l'action.
+  function go(...segments) {
+    location.href = "neuradesk://couleurs-pip/" + segments.map(encodeURIComponent).join("/");
+  }
+
+  // ⚠️ **LE CLIC SUR NOTRE FENÊTRE NOUS APPARTIENT, ET LA RÉDUITE AUSSI.** Le
+  // crochet souris global de la pipette avale TOUS les clics gauches du bureau ;
+  // `cef_couleurs::poll` lui déclare les deux HWND, donc ce bouton est pressable
+  // pendant que la pipette est armée — sans ça, « Sortir » serait un bouton
+  // muet, et Échap ou le clic droit les seuls recours.
+  const sortir = document.getElementById("sortir");
+  // ⚠️ **LE BOUTON EST DANS LA BARRE** : sans cette ligne, le sortir partirait
+  // AVEC le déplacement que la barre déclenche sur le même `mousedown`.
+  sortir.addEventListener("mousedown", (e) => e.stopPropagation());
+  sortir.addEventListener("click", () => go("sortir"));
+
+  // **LA BARRE DÉPLACE LA FENÊTRE — et on ne la déplace pas ici.** Rust rend la
+  // main à Windows (`HTCAPTION`), qui refait l'aimantation aux bords, le
+  // double-clic et le passage d'un écran à l'autre.
+  document.getElementById("barre").addEventListener("mousedown", (e) => {
+    if (e.button === 0) go("deplacer");
+  });
+
+  // La fenêtre réduite ne se mesure pas : sa taille est FIXE (voir son
+  // commentaire d'en-tête), et `ready` lui suffit pour dire qu'elle est prête à
+  // recevoir l'état.
+  go("ready");
+
+  let state = { contentScale: 1, actuel: null, historique: [] };
+  let dernierJson = null;
+
+  function pastille(hex) {
+    const b = el("button", {
+      class: "pastille" + (hex === state.actuel ? " courante" : ""),
+      title: hex + "\nClic gauche : copier — clic droit : devenir la couleur courante",
+      onclick: () => go("copier", hex),
+      // ⚠️ `preventDefault` EN PLUS d'agir : sans lui, CEF ouvrirait aussi son
+      // menu contextuel par-dessus la fenêtre.
+      oncontextmenu: (e) => { e.preventDefault(); go("actuel", hex); },
+    });
+    b.style.background = hex;
+    return b;
+  }
+
+  // ⚠️ **LE VERBE DE RETRAIT RESTE ÉCRIT EN LITTÉRAL AU POINT D'APPEL**, et la
+  // fabrique ne prend qu'une FERMETURE : le test de parité
+  // `la_fenetre_reduite_et_le_dispatch_acceptent_les_memes_verbes` lit le verbe
+  // dans le texte de la page, et un verbe passé en paramètre y disparaîtrait.
+  function prelevement(hex, retirer) {
+    return el("div", { class: "pastille-col" }, [
+      el("div", { class: "pastille-enveloppe" }, [
+        pastille(hex),
+        el("button", { class: "retirer", title: "Retirer de l'historique", onclick: retirer }, ["✕"]),
+      ]),
+      el("span", { class: "code" }, [hex]),
+    ]);
+  }
+
+  // ⚠️ **Vider AVANT de remplir** : `appendChild` AJOUTE, et reconstruire la
+  // liste sans la vider doublerait chaque teinte à chaque prélèvement.
+  function rendre() {
+    const conteneur = document.getElementById("prelevements");
+    conteneur.textContent = "";
+    for (const [index, hex] of state.historique.entries()) {
+      conteneur.appendChild(prelevement(hex, () => go("historique-retirer", String(index))));
+    }
+    // L'aide ne sert que tant qu'il n'y a RIEN à montrer : une fois la liste
+    // pleine, elle vole une rangée de teintes. ⚠️ **Le test est l'INVERSE de ce
+    // qu'on pourrait écrire par erreur** — mesuré sur la capture du 2026-10-27,
+    // où la phrase restait affichée sous dix teintes.
+    document.getElementById("aide").style.display = state.historique.length ? "none" : "";
+  }
+
+  window.setState = function (next) {
+    // **ON NE CROIT PAS LE JSON** : on ne garde que ce qu'on sait lire, et la
+    // comparaison à `dernierJson` rend la frame gratuite tant que rien change.
+    if (!next || typeof next !== "object") return;
+    const suivant = {
+      contentScale: typeof next.contentScale === "number" && next.contentScale > 0 ? next.contentScale : 1,
+      actuel: typeof next.actuel === "string" ? next.actuel : null,
+      historique: Array.isArray(next.historique) ? next.historique.filter((c) => typeof c === "string") : [],
+    };
+    const json = JSON.stringify(suivant);
+    if (json === dernierJson) return;
+    dernierJson = json;
+    state = suivant;
+    rendre();
+  };
+</script>
+</body>
+</html>

@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<!--
+  L'AIDE — le panneau de l'applet (voir `win32::cef_aide`).
+
+  ÉTAT REÇU (`window.setState`) :
+    { contentScale, ancre, demande } — le texte est ici, il ne change pas. `ancre` :
+    l'`id` d'un titre où amener la page, à chaque nouvelle `demande` (voir
+    `cef_aide::ouvrir_a`, appelé depuis les Réglages).
+
+  ⚠️ **CETTE PAGE N'ÉMET QU'UN VERBE : `close`**, sa croix — DEMANDE EXPLICITE
+  (2026-10-18) : « que tous les dashs aient une croix de fermeture ». Elle ne
+  navigue pas ; `cef_aide::dispatch_actions` ne connaît que ce verbe.
+
+  ⚠️ **ELLE NE CHARGE PAS `menu.js`** : ce n'est ni un menu ni un popup mesuré,
+  c'est un PANNEAU — même famille que la météo et la recherche.
+
+  ⚠️ **ELLE POSE SA PROPRE `color`**, et c'est OBLIGATOIRE : elle charge
+  `style.css` sans `menu.css`, donc si elle ne la posait pas, le navigateur
+  mettrait du NOIR sur le bureau flouté. C'est le défaut qu'a porté
+  `caracteres.html` pendant deux demandes.
+
+  ⛔ **LES TEXTES SONT À RELIRE.** Ils décrivent ce que le dépôt fait, mais
+  l'utilisateur seul sait ce qui est vrai de SON usage — et une aide qui se trompe
+  est pire que pas d'aide.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<!-- LE MENU DU CLIC DROIT COMMUN — DEMANDE DU 2026-10-28 : « copier du texte en le
+     sélectionnant à la souris et en utilisant le clic droit sur la page d'aide ».
+     Le bouton droit est transmis à CEF par `cef_popup::dispatch_input`
+     (`WM_RBUTTONDOWN`, appui ET relâchement d'un coup, le UP n'arrivant jamais) et le
+     menu natif de Chromium est vidé par `cef_app::NeuraDeskContextMenuHandler` : sans
+     ce script, un clic droit ici ne faisait RIEN DU TOUT. Ce script est déjà le menu
+     des vingt autres pages ; sur un texte sélectionné hors champ, il offre « Copier »,
+     qui part vers `neuradesk://edition/copier` → `CefFrame::copy`. -->
+<script src="menu_contextuel.js"></script>
+<style>
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    display: flex;
+    flex-direction: column;
+    /* Même grossissement que les autres panneaux : `zoom` seul, avec les deux
+       dimensions inversées pour que le panneau continue de remplir sa fenêtre. */
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    height: calc(100vh / var(--text-scale));
+    overflow: hidden;
+    user-select: none;
+  }
+  /* ⭐ **LA ZONE DE LECTURE EST SÉLECTIONNABLE.** `body { user-select: none }` ci-
+     dessus est là pour que le clic sur les boutons du bandeau ne sélectionne pas leur
+     titre ; il hérite jusque dans le texte, et c'est ce qui empêchait la sélection à la
+     souris. `user-select` s'HÉRITE, donc le poser ici la rend à tout ce qui est lu :
+     paragraphes, listes, `<b>`, `<kbd>` et les `.adresse` (qui la posaient déjà). Le
+     bandeau du haut reste hors de portée. */
+  #corps { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 18px 18px; user-select: text; }
+  /* LE LOGO EN TÊTE (2026-11-08). L'image a un fond TRANSPARENT (le noir d'origine
+     rendu en alpha) : posée sur une carte noire, elle retrouve son aspect d'origine
+     quel que soit le thème — sur un fond clair, le halo seul se délave. Même image
+     que l'écran d'accueil (`win32::ecran_accueil`). */
+  .logo { display: block; width: 100%; max-width: 520px; margin: 4px auto 14px; padding: 10px 14px;
+          box-sizing: border-box; background: #000; border-radius: 12px; user-select: none; }
+  .logo img { display: block; width: 100%; height: auto; -webkit-user-drag: none; }
+  /* ⛔ **LE TITRE D'UNE SECTION PORTE LA MÊME COULEUR QUE LE RESTE DU TEXTE.** Il
+     portait `--popup-accent-rgb` : cette variable est `Palette::emphasis`, la
+     TEINTE de l'accent, faite pour les aplats et les bordures translucides — pas
+     pour du texte. Le contrat est écrit dans `cef_popup::push_window_palette` :
+     « un texte dérivé de l'accent bascule vers une couleur SOMBRE dès que
+     l'accent est clair, et devient illisible ». Config réelle du 2026-10-28 :
+     `aide_accent_color.txt` = `0.9,0.9,0.9` (un accent QUASI BLANC), et les titres
+     des sections rendaient à **lumière moyenne 210** sur un fond à 252 —
+     ~1,5 : 1, soit de l'encre invisible. Hiérarchie portée par le **gras**, plus
+     par la couleur : `--popup-fg-rgb` est le pôle FIXE du texte, qui ne suit rien.
+     ⚠️ **ET LA MÊME OPACITÉ QUE `p`** : pleine puissance, le titre rendait à
+     lumière moyenne 82 (pixel le plus sombre 20) contre 111 (47) pour le
+     paragraphe — même couleur, mais plus FONCÉ que le reste, donc pas « la même
+     couleur ». Le .88 des paragraphes est ce qui donne l'encre commune. */
+  h2 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 18px 0 6px;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    opacity: calc(.88 * max(1, var(--popup-alpha, 1)));
+  }
+  h2:first-child { margin-top: 8px; }
+  p { margin: 6px 0; line-height: 1.5; opacity: calc(.88 * max(1, var(--popup-alpha, 1))); }
+  ul { margin: 6px 0; padding-left: 18px; }
+  li { margin: 3px 0; line-height: 1.5; opacity: calc(.88 * max(1, var(--popup-alpha, 1))); }
+  /* Le geste, mis en avant — c'est la moitié utile d'une aide. */
+  b { font-weight: 600; opacity: 1; }
+  kbd {
+    font-family: inherit; font-size: 12px; font-weight: 600;
+    padding: 1px 5px; border-radius: var(--nd-rayon-petit, 4px);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.14 * var(--popup-fond-alpha, 1)));
+    box-shadow: inset 0 0 0 1px rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.18 * var(--popup-fond-alpha, 1)));
+  }
+  .note {
+    margin: 8px 0; padding: 7px 10px; line-height: 1.45;
+    border-radius: var(--nd-rayon-controle, 6px);
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.16 * var(--popup-fond-alpha, 1)));
+    font-size: 13px; opacity: calc(.92 * max(1, var(--popup-alpha, 1)));
+  }
+  /* Une adresse à recopier : SÉLECTIONNABLE, et pas un lien — un clic sur un
+     `<a href>` ferait naviguer le panneau lui-même hors de l'aide. ⛔ **PAS
+     D'OPACITÉ ICI** : à .8 elle était la plus petite taille de la page (12,5 px)
+     avec la plus faible encre — mesuré le 2026-10-28 **lumière moyenne 137** sur un
+     fond à 252, soit ~3,3 : 1, sous le 4,5 : 1 exigé pour du texte de cette
+     taille. Et elle n'en ajoute PAS une à sa place : chaque `.adresse` est assise
+     dans un `<li>` ou un `<p>`, dont l'opacité se MULTIPLIE avec la sienne. Poser
+     .88 ici donnait un pixel le plus sombre à **69** contre **47** pour le
+     paragraphe (mesuré le 2026-10-28, `A5_defaut_apres2`) — le .88 est déjà porté
+     par le parent. Sans rien ajouter, l'adresse rend à 47, l'encre commune. */
+  .adresse { user-select: text; font-size: 12.5px; color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1))); }
+  /* La croix, en haut à droite — la punaise commune (`cef_popup::js_epingle`) se
+     pose à sa gauche. */
+  header { display: flex; justify-content: flex-end; align-items: center; gap: 4px; padding: 8px 12px 0; flex: 0 0 auto; }
+  .close-btn {
+    background: none; border: none; color: inherit; cursor: pointer;
+    font-size: 16px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); padding: 2px 6px; border-radius: var(--nd-rayon-controle, 6px);
+  }
+  .close-btn:hover { opacity: 1; background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1))); }
+</style>
+</head>
+<body>
+  <header><button class="close-btn" onclick="go('close')" title="Fermer"><span class="ico ico-x"></span></button></header>
+  <div id="corps">
+  <div class="logo"><img src="logo_neuradesk.png" alt="NeuraDesk"></div>
+
+    <h2>Avant de commencer : les programmes à installer</h2>
+    <p>NeuraDesk fonctionne seul. Les programmes ci-dessous sont <b>facultatifs</b> :
+    chacun débloque une applet, qui reste absente ou inactive sans lui.</p>
+    <ul>
+      <li><b>NAPS2</b> — l'applet Scanner, et la reconnaissance de caractères
+      « intégrée ».<br><span class="adresse">naps2.com/download — ou
+      winget install Cyanfrog.NAPS2</span></li>
+      <li><b>Everything</b> — l'applet Recherche de fichiers, qui n'apparaît
+      qu'avec lui.<br><span class="adresse">voidtools.com/downloads — ou
+      winget install voidtools.Everything</span></li>
+      <li><b>Voicemeeter</b> — le panneau Voicemeeter.<br><span class="adresse">vb-audio.com/Voicemeeter</span></li>
+      <li><b>VLC</b> — « Afficher » sur une vidéo, dans le dash dossier (voir
+      « Lire les vidéos » plus bas).<br><span class="adresse">videolan.org — ou
+      winget install VideoLAN.VLC</span></li>
+      <li><b>PowerShell 7</b> — le choix « PowerShell 7 » du Terminal (PowerShell 5
+      et l'invite de commandes marchent sans rien installer).<br><span
+      class="adresse">winget install Microsoft.PowerShell</span></li>
+    </ul>
+    <div class="note"><b>Le français pour l'OCR de NAPS2</b> — ouvrir NAPS2, puis
+    <b>OCR</b>, et choisir <b>Français</b> : NAPS2 télécharge alors la langue. Sans
+    elle, la reconnaissance intégrée refuse de démarrer, et le dit. L'autre moteur,
+    celui de Windows, demande la langue française avec sa reconnaissance optique
+    de caractères (Paramètres → Heure et langue → Langue et région).</div>
+
+    <h2 id="vlc">Lire les vidéos : installer VLC</h2>
+    <p>Dans le dash dossier, <b>Afficher</b> sur une vidéo la lit dans une fenêtre
+    de NeuraDesk — lecture/pause, progression, volume, plein écran. C'est VLC qui
+    la lit : sans lui, le menu d'une vidéo propose <b>Voir l'aide</b> à la place.</p>
+    <ul>
+      <li>Télécharger VLC sur <span class="adresse">videolan.org</span> — la
+      version <b>Windows 64 bits</b> — et lancer l'installation en gardant les choix
+      proposés ;</li>
+      <li>ou, dans un terminal : <span class="adresse">winget install VideoLAN.VLC</span>.</li>
+    </ul>
+    <div class="note"><b>Après l'installation</b> — rouvrir le dossier dans le dash :
+    <b>Afficher</b> revient dans le menu des vidéos, sans relancer NeuraDesk. VLC
+    doit être installé à son emplacement habituel (<kbd>C:\Program
+    Files\VideoLAN\VLC</kbd>) ; une version 32 bits ne convient pas.</div>
+
+    <h2 id="polices">Les polices de caractères</h2>
+    <p>Chaque <b>style</b> (Réglages → Style) a sa police. Si elle manque, Windows la
+    remplace par Segoe UI : rien ne casse, mais le style perd son allure.</p>
+    <ul>
+      <li><b>Noto Sans</b> — KDE, deepin.<br><span class="adresse">fonts.google.com/noto/specimen/Noto+Sans</span></li>
+      <li><b>Adwaita Sans</b> — GNOME.<br><span class="adresse">gitlab.gnome.org/GNOME/adwaita-fonts (Releases)</span></li>
+      <li><b>Inter</b> — elementary.<br><span class="adresse">rsms.me/inter</span></li>
+      <li><b>Ubuntu</b> — Cinnamon.<br><span class="adresse">fonts.google.com/specimen/Ubuntu</span></li>
+      <li><b>Open Sans</b> — COSMIC.<br><span class="adresse">fonts.google.com/specimen/Open+Sans</span></li>
+      <li><b>Roboto</b> — Android.<br><span class="adresse">fonts.google.com/specimen/Roboto</span></li>
+      <li><b>Segoe UI, Segoe UI Variable, Segoe Fluent Icons, Cambria Math</b> —
+      fournies avec Windows 11, rien à faire.</li>
+    </ul>
+    <div class="note"><b>Installer une police</b> — extraire l'archive, sélectionner
+    les fichiers <kbd>.ttf</kbd> ou <kbd>.otf</kbd>, clic droit → <b>Installer pour
+    tous les utilisateurs</b>, puis rouvrir les Réglages : la liste des polices est
+    relue à chaque ouverture.</div>
+
+    <h2 id="polices-terminaux">Les polices des terminaux</h2>
+    <p><b>Les terminaux n'attendent rien à installer.</b> NeuraDesk embarque sa propre
+    police de terminal — <b>Nordwand Mono</b>, licence libre — dans le programme : quatre
+    graisses déclarées, chargées à la demande par les deux pages qui peignent du texte en
+    terminal : <b>le Terminal</b> et <b>les Serveurs SSH</b>.</p>
+    <ul>
+      <li><b>Nordwand Mono</b> — celle des terminaux ici, si on la veut aussi dans
+      Windows Terminal ou VS Code.<br><span class="adresse">github.com/tywr/Nordwand-Mono
+      (Releases)</span></li>
+      <li><b>JetBrains Mono</b> — la plus complète des polices libres : boîtes, blocs et
+      glyphes de prompt.<br><span class="adresse">fonts.google.com/specimen/JetBrains+Mono</span></li>
+      <li><b>Cascadia Code</b> — la police de Windows Terminal ; « Code » porte les glyphes
+      de prompt, « Mono » non.<br><span class="adresse">github.com/microsoft/cascadia-code
+      (Releases)</span></li>
+      <li><b>Hack</b> — la seule de cette liste que <kbd>winget</kbd> connaît.<br><span
+      class="adresse">winget install SourceFoundry.HackFonts</span></li>
+      <li><b>DejaVu Sans Mono</b> — couverture quasi totale, dessin solide ; c'est elle qui
+      prête à Nordwand ce qu'elle ne dessine pas.<br><span class="adresse">dejavu.org</span></li>
+      <li><b>Fira Mono</b>, <b>Source Code Pro</b>, <b>Roboto Mono</b> — licences libres,
+      couvertures équivalentes.<br><span class="adresse">fonts.google.com</span></li>
+      <li><b>Consolas</b> et <b>Courier New</b> — fournies avec Windows, rien à faire.</li>
+    </ul>
+    <div class="note"><b>La couverture avant le dessin</b> — une police de terminal doit
+    dessiner les <b>boîtes</b> (<kbd>┏━┛</kbd>), les <b>blocs</b> (<kbd>█▓▒░</kbd>) et les
+    <b>flèches</b> (<kbd>▲▼</kbd>). Nordwand Mono ne les couvre pas : quand un programme en
+    plein écran (htop, lazygit, tmux) ou un prompt Powerline en émet, la page les emprunte à
+    la police suivante de sa pile — mesuré : <b>18 % plus large que la cellule</b>, donc la
+    grille reste droite mais le trait change de graisse et de hauteur. Pour les icônes de
+    prompt, installer une <b>Nerd Font</b> : les mêmes polices libres, patchées avec les
+    icônes.<br><span class="adresse">github.com/ryanoasis/nerd-fonts (Releases)</span></div>
+    <div class="note"><b>Ça se règle</b> — Réglages → Style porte <b>« Police des
+    terminaux »</b> : la liste des polices installées sur ce PC, chacune écrite dans sa
+    police, un champ pour filtrer, et un bouton qui remet la pile par défaut. La police
+    réglée est placée <b>devant</b> la pile — <kbd>Nordwand Mono → DejaVu Sans Mono →
+    Cascadia Mono → Consolas → monospace</kbd> — jamais à sa place : les boîtes et les blocs
+    d'une police qui ne les dessine pas restent empruntés à la suite. Le réglage gouverne
+    <b>les deux</b> surfaces, et les onglets déjà ouverts le suivent sans relancer le shell
+    ni reconnecter une session SSH.<br><b>Télécharger, puis installer</b> : une police
+    n'entre dans la liste que si Windows l'a enregistrée (voir « Installer une police »
+    ci-dessus). Une police réglée mais absente du PC n'est pas un danger — le terminal
+    passe à la suivante de la pile, et Réglages le dit.<br><b>La police des barres et des
+    panneaux</b> est l'autre réglage de la même section : « Police » remplace celle du style
+    dans toute l'interface — jamais dans les terminaux.</div>
+
+    <h2>Les quatre barres</h2>
+    <p>NeuraDesk remplace la barre des tâches par <b>quatre barres</b> : haut, bas,
+    gauche et droite. Chacune se règle indépendamment en épaisseur depuis les
+    Réglages, et peut être masquée.</p>
+    <ul>
+      <li><b>En haut</b> — l'horloge, la cloche des rappels, l'icône de note, et la
+      rangée de widgets.</li>
+      <li><b>En bas</b> — les dossiers épinglés et les applications.</li>
+      <li><b>À gauche et à droite</b> — les applets : alimentation, son, réseau,
+      Voicemeeter, notes, thème, et les autres.</li>
+    </ul>
+
+    <h2>Les applets : un geste, deux portes</h2>
+    <ul>
+      <li><b>Clic gauche</b> — ouvre le panneau de l'applet, ou lance son action
+      (éteindre, verrouiller, basculer le thème…).</li>
+      <li><b>Clic droit</b> — ouvre un <b>menu</b> : c'est là que vivent les
+      réglages fins de l'applet et ses raccourcis.</li>
+      <li><b>Survol</b> — l'icône grossit et affiche son nom.</li>
+    </ul>
+    <div class="note">Un panneau et un menu ne se ressemblent pas par hasard : un
+    <b>menu</b> s'ancre sous son icône et se referme dès qu'on clique ailleurs ;
+    un <b>panneau</b> occupe la zone libre entre les barres et reste ouvert tant
+    qu'on ne le referme pas.</div>
+
+    <h2>Les zones</h2>
+    <p>Les icônes de la barre de droite sont rangées en <b>zones</b> — des groupes
+    nommés, séparés par des traits. Une zone se déplace en bloc, se renomme, et
+    <b>une icône appartient à sa zone</b> : la déplacer dans la zone déplace tout
+    ce qu'elle contient.</p>
+
+    <h2>Les menus</h2>
+    <p>Un menu s'ouvre <b>sous son icône</b>, jamais par-dessus une barre : s'il n'y
+    a pas la place, il remonte ou se décale plutôt que de recouvrir l'interface.</p>
+    <p>Si un menu est trop grand pour l'écran, il <b>se réduit juste assez</b> pour
+    tenir — plutôt que d'être rogné. C'est le même principe partout dans
+    l'application : on ne perd jamais de contenu.</p>
+
+    <h2>Le Dash</h2>
+    <p>Le Dash est la grille d'applications. Il se range en <b>catégories</b>, et
+    une application se place dans la catégorie qu'on veut.</p>
+    <ul>
+      <li><b>Épingler</b> — glisser une icône sur le Dash, ou passer par son menu.</li>
+      <li><b>Désépingler</b> — par le menu de l'icône.</li>
+    </ul>
+
+    <h2>Les Réglages</h2>
+    <p>Presque tout se règle depuis le panneau des Réglages, et une grande partie
+    <b>par écran</b> : chaque écran secondaire a son propre onglet, où l'on règle la
+    taille des menus, du Dash, du presse-papiers et de chaque panneau.</p>
+    <div class="note"><b>Ratio de DPI</b> — l'application adapte la taille perçue à
+    la densité de chaque écran, pour qu'un menu occupe la même place dans le champ
+    de vision partout. Ce ratio est calculé automatiquement, mais chaque écran peut
+    le forcer, et un réglage global permet de le forcer sur tous les écrans à la
+    fois — utile pour vérifier l'effet sans changer de résolution.</div>
+
+    <h2>Le plein écran dans la zone centrale</h2>
+    <p>Avec le réglage <b>Placer les applications plein écran dans la zone
+    centrale</b>, un jeu ou une vidéo qui passe en plein écran est placé entre les
+    barres. Une application qui reprend aussitôt tout l'écran est laissée en
+    plein écran, et les barres se masquent.</p>
+    <p>C'est le cas des <b>navigateurs</b> : en plein écran vidéo (Twitch,
+    YouTube…), ils s'alignent sur l'écran entier et refusent d'être déplacés. Deux
+    solutions :</p>
+    <ul>
+      <li><b>Le mode cinéma du site</b> — sur Twitch, <kbd>Alt</kbd>+<kbd>T</kbd> :
+      la vidéo remplit la fenêtre du navigateur, qui reste dans la zone.</li>
+      <li><b>L'extension Windowed</b> — le bouton plein écran des sites remplit la
+      fenêtre au lieu de l'écran.<br>
+      Chrome, Edge, Brave, Opera, Vivaldi :<br><span
+      class="adresse">chromewebstore.google.com/detail/gibipneadnbflmkebnmcbgjdkngkbklb</span><br>
+      Firefox, LibreWolf, Waterfox, Zen :<br><span
+      class="adresse">addons.mozilla.org/firefox/addon/windowed/</span></li>
+    </ul>
+
+    <h2>Les gestes</h2>
+    <ul>
+      <li><b>Glisser une icône</b> — la déplace dans sa barre, ou d'une zone à
+      l'autre. Un espace élastique absorbe la place restante.</li>
+      <li><b>Clic droit sur un espace vide</b> — propose d'y poser une zone, un
+      séparateur, ou d'y ajouter une application.</li>
+      <li><b>Clic droit sur un séparateur</b> — règle sa taille, ses colonnes et son
+      verrouillage.</li>
+      <li><b>Clic droit sur une icône de la zone de notification</b> — ouvre le
+      <b>vrai</b> menu de l'application, celui de Windows.</li>
+    </ul>
+
+  </div>
+
+<script>
+"use strict";
+
+function go(...segments) {
+  location.href = "neuradesk://aide/" + segments.map(encodeURIComponent).join("/");
+}
+
+let derniereDemande = 0;
+function setState(next) {
+  if (!next) return;
+  document.documentElement.style.setProperty("--text-scale", next.contentScale || 1);
+  if (next.demande && next.demande !== derniereDemande) {
+    derniereDemande = next.demande;
+    const cible = next.ancre && document.getElementById(next.ancre);
+    if (cible) cible.scrollIntoView({ block: "start" });
+  }
+}
+
+window.setState = setState;
+
+// ⭐ **« ME VOICI PRÊTE » — ET C'EST CE QUI MANQUAIT POUR L'ANCRE.**
+// `cef_aide::push_state` envoie `if (window.setState) window.setState(…)`, un
+// garde qui rend l'appel INERTE tant que cette ligne-ci n'a pas tourné (le
+// script est la dernière chose de la page, la page met ~20 s à l'atteindre).
+// Le cache `PAYLOAD` de Rust marquait pourtant l'état comme poussé, donc il ne
+// repartait JAMAIS : « Voir l'aide » depuis les Réglages ouvrait la page en
+// haut, et la section demandée restait sous la vue (`derniereDemande` restait
+// à 0, mesuré le 2026-10-28). Le signal ci-dessous vide ce cache côté Rust
+// (bras `["ready"]` de `dispatch_actions`), et le repoussage suit.
+// C'est la convention des quinze autres pages ; l'aide était la seule à ne pas
+// l'envoyer.
+go("ready");
+</script>
+</body>
+</html>

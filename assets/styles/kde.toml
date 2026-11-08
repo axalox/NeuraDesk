@@ -1,0 +1,25 @@
+# Style « KDE » — DEMANDE EXPLICITE (2026-10-11) : « un style façon kde ».
+#
+# L'aspect Breeze de KDE Plasma : des coins PEU arrondis (3 px sur les contrôles,
+# comme les boutons de Breeze), un contour fin et VISIBLE autour des surfaces
+# (Breeze cerne ses cadres), la police Noto Sans de Plasma, et l'élément actif
+# d'une liste en aplat d'accent, pas en barre. Les couleurs vont avec la famille
+# « Breeze » de Réglages › Thèmes — les deux axes restent indépendants.
+
+nom = "KDE"
+
+[formes]
+rayon_petit = 2
+rayon_controle = 3
+rayon_surface = 5
+rayon_grand = 6
+rayon_icone = 6
+
+[traits]
+bordure_alpha = 0.16
+
+[texte]
+police = "Noto Sans"
+
+[structure]
+indicateur = "point"

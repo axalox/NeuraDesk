@@ -1,0 +1,1634 @@
+<!doctype html>
+<!--
+  win32::cef_image_editor — L'ÉDITEUR D'IMAGE, lots 1 et 2 de docs/plans/editeur-image.md.
+  DEMANDE EXPLICITE (2026-09-24) : « une applet dans la zone Intégrés de la
+  barre de droite pour un petit éditeur d'image intégré ». D'abord une vraie
+  fenêtre, c'est un PANNEAU de la zone libre du dock depuis le 2026-09-25
+  (« affiche l'éditeur d'image dans un dash plutôt »).
+
+  Lot 1 : ouvrir (fichier, presse-papiers), montrer (zoom, défilement),
+  rendre (copier, enregistrer PNG/JPG).
+  Lot 2 : les ANNOTATIONS — leur modèle et leur dessin vivent dans
+  editeur_annotations.js ; cette page ne garde que les gestes.
+  Lot 4 : la GÉOMÉTRIE (pivoter, retourner, recadrer, redimensionner,
+  taille du canevas) — editeur_geometrie.js, appliquée à TOUS les calques par
+  `transformerDocument`. Elle REMPLACE leurs toiles (jamais modifiées en
+  place) : l'historique garde les anciennes par référence.
+  Le FOND DE PRÉSENTATION (2026-10-24, d'après Snip) — editeur_fond.js, onglet
+  « Fond » : dégradé ou couleur, marge, coins, ombre, format ; cuit en deux
+  calques, et refait tant que rien d'autre n'a changé (`fondPose`).
+
+  LES CALQUES (2026-09-25, « gérer les calques comme dans gimp ») — leur modèle,
+  leur rendu et leur panneau vivent dans editeur_calques.js. `toile` (à
+  l'écran) est la COMPOSITION de la pile + le cadre de la sélection et le
+  contour du calque actif ; copier et enregistrer en PNG/JPG recomposent SANS
+  eux, et PSD/XCF envoient les calques un par un (`paquetDocument`).
+  Comme GIMP : « Ouvrir » remplace l'image, « Ouvrir en tant que calques »
+  ajoute ceux du fichier, et le presse-papiers devient un NOUVEAU CALQUE (ou
+  l'image, si l'éditeur est vide).
+
+  LES DEUX CANAUX (voir la doc de `cef_image_editor.rs`) :
+  - Rust → page : `window.editeurCharger(dataUri, nom, commeCalque)`,
+    `window.editeurChargerDocument(document, nom, commeCalques)` (un PSD ou un
+    XCF décodé par `win32::decodeur_document`), `window.editeurMessage(texte)` ;
+  - page → Rust : l'image encodée part en `fetch(POST)` sur le canal des grosses
+    données (`win32::cef_data`), et SEULEMENT APRÈS sa réponse la navigation
+    `neuradesk://editeur/…` dit quoi en faire — le corps est donc déjà arrivé.
+
+  C'est un PANNEAU, pas un menu : il ne charge pas menu.js et peut émettre à
+  chaque clic (une navigation par tâche, voir la mémoire « panneau ou menu »).
+
+  ZOOM : 100 % = UN pixel de l'image pour UN pixel PHYSIQUE de l'écran. La page
+  est zoomée (×3 environ, `content_zoom_level`) : la taille CSS du canevas est
+  donc `largeur × zoom / devicePixelRatio`.
+
+  ⚠️ FIDÉLITÉ : un canevas 2D stocke l'alpha PRÉMULTIPLIÉ — un pixel opaque
+  revient identique, un pixel semi-transparent peut perdre quelques niveaux.
+
+  Les outils « d'action » de Flameshot : épingler (pin), ouvrir avec (launcher),
+  valider (accept : copier puis fermer), fermer (exit) — et envoyer en ligne
+  (imgupload), vers l'hébergeur choisi dans les Réglages (`win32::envoi_image`).
+
+  ⚠️ Ctrl+V n'arrive JAMAIS à cette page : la fenêtre l'avale et colle côté
+  Rust (voir `cef_image_editor::wndproc`) — y compris dans le champ de texte.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<script src="menu_contextuel.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    font-size: 13px;
+    font-family: var(--nd-police);
+    color: rgba(var(--popup-fg-rgb, 240, 240, 240), min(1, var(--popup-alpha, 1)));
+    /* PAS de fond : c'est le fond flouté et teinté du panneau (`tint_rgba`)
+       qui porte le thème, comme dash/notes/calendrier. Les aplats composent
+       l'accent avec `--popup-alpha` (voir `cef_popup::push_window_palette`). */
+    background: none;
+    user-select: none;
+  }
+  body { display: flex; flex-direction: column; }
+  .barre {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 6px 8px;
+    background: rgba(var(--popup-accent-rgb), calc(0.18 * var(--popup-fond-alpha, 1)));
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.08 * var(--popup-fond-alpha, 1)));
+    flex: none;
+  }
+  /* TOUS les boutons de la page ont le même aplat — barre, boîte à outils,
+     panneau de droite, menus. */
+  button {
+    font: inherit; color: inherit; background: rgba(var(--popup-accent-rgb), calc(0.14 * var(--popup-fond-alpha, 1)));
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.10 * var(--popup-fond-alpha, 1))); border-radius: var(--nd-rayon-controle);
+    padding: 4px 10px; cursor: pointer; white-space: nowrap;
+  }
+  button:hover { background: rgba(var(--popup-accent-rgb), calc(0.35 * var(--popup-fond-alpha, 1))); }
+  button:disabled { opacity: calc(0.4 * max(1, var(--popup-alpha, 1))); cursor: default; background: rgba(var(--popup-accent-rgb), calc(0.14 * var(--popup-fond-alpha, 1))); }
+  button.actif {
+    background: rgba(var(--popup-accent-rgb), calc(0.38 * var(--popup-fond-alpha, 1)));
+    border-color: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1)));
+  }
+  /* ⭐ L'ENVOI ARMÉ, IMPOSSIBLE À MANQUER — DEMANDE EXPLICITE (2026-10-25) :
+     « rien ne me donne le lien » ; le journal montrait un premier clic qui
+     armait SANS que le second suive. Plein accent, et il pulse. */
+  button.arme, button.arme:hover {
+    background: rgb(var(--popup-accent-solid-rgb, 0, 120, 215));
+    border-color: rgb(var(--popup-accent-solid-rgb, 0, 120, 215));
+    color: #fff;
+    font-weight: 600;
+    animation: arme-pulse 1s ease-in-out infinite alternate;
+  }
+  @keyframes arme-pulse { from { filter: brightness(1); } to { filter: brightness(1.25); } }
+  .separateur { width: 1px; align-self: stretch; margin: 2px 6px; background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.12 * var(--popup-fond-alpha, 1))); }
+  #taux, #epaisseur { min-width: 48px; text-align: center; font-variant-numeric: tabular-nums; }
+  #nom { margin-left: auto; opacity: calc(0.6 * max(1, var(--popup-alpha, 1))); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  /* Les MENUS de la barre (Enregistrer, Partager) : sous leur bouton, `top` et
+     `left` posés — un `position` sans eux s'ouvre hors écran. Fond OPAQUE : le
+     panneau, lui, n'a pas de fond (voir `html, body`). */
+  .deroulant { position: relative; }
+  .menu {
+    position: absolute; top: calc(100% + 3px); left: 0; z-index: 10;
+    display: flex; flex-direction: column; gap: 2px; padding: 4px; min-width: 100%;
+    background: linear-gradient(rgba(var(--popup-accent-rgb), calc(0.22 * var(--popup-fond-alpha, 1))), rgba(var(--popup-accent-rgb), calc(0.22 * var(--popup-fond-alpha, 1)))), rgb(28, 28, 32);
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.18 * var(--popup-fond-alpha, 1))); border-radius: var(--nd-rayon-controle);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  }
+  .menu[hidden] { display: none; }
+  .menu button { text-align: left; }
+  #milieu { flex: 1; display: flex; min-height: 0; }
+  /* LA BOÎTE À OUTILS, à gauche comme dans GIMP : outils, couleurs, épaisseur. */
+  #boite {
+    flex: none; display: flex; flex-direction: column; gap: 8px; padding: 6px; overflow-y: auto;
+    background: rgba(var(--popup-accent-rgb), calc(0.10 * var(--popup-fond-alpha, 1)));
+    border-right: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.08 * var(--popup-fond-alpha, 1)));
+  }
+  #boite .groupe { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; }
+  #boite .groupe.teintes { grid-template-columns: repeat(4, 1fr); }
+  #boite .groupe.epaisseur { grid-template-columns: auto 1fr auto; align-items: center; }
+  #boite .groupe.une-colonne { grid-template-columns: 1fr; }
+  #boite .trait { height: 1px; background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.12 * var(--popup-fond-alpha, 1))); }
+  button.outil { min-width: 44px; padding: 4px 6px; }
+  .touche { opacity: calc(0.55 * max(1, var(--popup-alpha, 1))); font-size: 0.85em; margin-left: 3px; }
+  button.teinte { width: 24px; height: 24px; padding: 0; }
+  button.teinte span { display: block; margin: 3px; height: 16px; border-radius: var(--nd-rayon-petit); border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.3 * var(--popup-fond-alpha, 1))); }
+  #scene { flex: 1; overflow: auto; position: relative; cursor: default; }
+  #scene.calque { cursor: move; }
+  /* Le panneau de droite : deux ONGLETS, Calques (à la GIMP : le calque du
+     haut en premier) et Image (géométrie et couleurs). */
+  #cote {
+    flex: none; width: 230px; display: flex; flex-direction: column; gap: 6px; padding: 6px;
+    background: rgba(var(--popup-accent-rgb), calc(0.10 * var(--popup-fond-alpha, 1)));
+    border-left: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.08 * var(--popup-fond-alpha, 1)));
+  }
+  #cote button { padding: 3px 6px; }
+  .onglets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
+  #calques, #geometrie, #fond { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+  #calques[hidden], #geometrie[hidden], #fond[hidden] { display: none; }
+  #fond { overflow-y: auto; }
+  #fond .rangee { display: flex; gap: 3px; align-items: center; }
+  #fond .rangee button { flex: 1; }
+  #fond input[type="range"] { min-width: 0; padding: 0; background: none; border: none; }
+  #fond .reglage-calque span:first-child { width: 52px; flex: none; }
+  #fond .reglage-calque span:last-child { width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
+  .grille-fond { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+  .grille-fond[hidden] { display: none; }
+  #cote .grille-fond button { height: 28px; padding: 0; border-width: 2px; }
+  #cote .grille-fond button.actif { border-color: rgba(var(--popup-fg-rgb, 255, 255, 255), 0.9); }
+  .aide-fond { margin: 2px 0 0; font-size: 0.9em; opacity: calc(0.65 * max(1, var(--popup-alpha, 1))); line-height: 1.4; }
+  #geometrie { overflow-y: auto; }
+  #geometrie .rangee { display: flex; gap: 3px; align-items: center; }
+  #geometrie .rangee button { flex: 1; }
+  #geometrie input {
+    font: inherit; color: inherit; background: rgba(var(--popup-accent-rgb), calc(0.14 * var(--popup-fond-alpha, 1)));
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.15 * var(--popup-fond-alpha, 1))); border-radius: var(--nd-rayon-controle); padding: 3px 5px; user-select: text;
+  }
+  #geometrie label span:first-child { width: 64px; flex: none; }
+  #g-couleurs { display: flex; flex-direction: column; gap: 4px; }
+  #g-couleurs label { display: grid; grid-template-columns: 64px 1fr 30px; align-items: center; gap: 6px; }
+  #geometrie input[type="range"] { min-width: 0; padding: 0; background: none; border: none; }
+  .valeur-couleur { text-align: right; font-variant-numeric: tabular-nums; opacity: calc(0.8 * max(1, var(--popup-alpha, 1))); }
+  .ancres { display: grid; grid-template-columns: repeat(3, 22px); gap: 2px; flex: none; }
+  #cote .ancres button { width: 22px; height: 22px; padding: 0; border-radius: var(--nd-rayon-petit); }
+  .titre-calques { font-weight: 600; opacity: calc(0.8 * max(1, var(--popup-alpha, 1))); }
+  #geometrie .titre-calques:not(:first-child) { margin-top: 6px; }
+  .reglage-calque { display: flex; align-items: center; gap: 6px; }
+  .reglage-calque input { flex: 1; min-width: 0; }
+  #k-mode { flex: 1; text-align: left; }
+  #emoticones[hidden] { display: none; }
+  .grille-emoji { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; margin-top: 4px; }
+  #cote .grille-emoji button { padding: 1px 0; font-size: 18px; line-height: 1.3; font-family: "Segoe UI Emoji", sans-serif; }
+  #k-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; }
+  #k-modes[hidden] { display: none; }
+  #k-modes button { padding: 2px 4px; font-size: 0.9em; text-align: left; }
+  .liste-calques { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; min-height: 0; }
+  .calque {
+    display: flex; align-items: center; gap: 6px; padding: 3px; border-radius: var(--nd-rayon-controle); cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .calque:hover { background: rgba(var(--popup-accent-rgb), calc(0.22 * var(--popup-fond-alpha, 1))); }
+  .calque.actif { background: rgba(var(--popup-accent-rgb), calc(0.30 * var(--popup-fond-alpha, 1))); border-color: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.35 * var(--popup-fond-alpha, 1))); }
+  .calque .oeil { width: 26px; height: 26px; padding: 0; flex: none; }
+  .calque canvas {
+    flex: none; border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.2 * var(--popup-fond-alpha, 1)));
+    background-color: #fff;
+    background-image: linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%);
+    background-size: 8px 8px;
+    background-position: 0 0, 0 4px, 4px -4px, -4px 0;
+  }
+  .nom-calque { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .nom-calque input {
+    width: 100%; font: inherit; color: inherit; background: rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.4 * var(--popup-fond-alpha, 1))); border-radius: var(--nd-rayon-petit); padding: 1px 3px; user-select: text;
+  }
+  .actions-calques { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; }
+  #scene.trace { cursor: crosshair; }
+  #scene.espace { cursor: grab; }
+  #scene.glisse { cursor: grabbing; }
+  #plateau { display: grid; place-items: center; min-width: 100%; min-height: 100%; padding: 16px; width: max-content; }
+  #toile {
+    display: none;
+    /* Un damier sous l'image : la transparence doit se VOIR. */
+    background-color: #fff;
+    background-image:
+      linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+  }
+  #toile.pixels { image-rendering: pixelated; }
+  #champ {
+    display: none; position: absolute; margin: 0; padding: 0;
+    background: transparent; border: 1px dashed rgba(127, 127, 127, 0.9); outline: none;
+    resize: none; overflow: hidden; white-space: pre; line-height: 1.2; user-select: text;
+  }
+  #vide { position: absolute; inset: 0; display: grid; place-items: center; opacity: calc(0.5 * max(1, var(--popup-alpha, 1))); text-align: center; line-height: 1.8; }
+  #message {
+    position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+    padding: 6px 14px; border-radius: var(--nd-rayon-controle); background: rgba(0, 0, 0, 0.8);
+    opacity: 0; transition: opacity 0.2s; pointer-events: none;
+  }
+  #message.visible { opacity: 1; }
+</style>
+</head>
+<body>
+  <!-- UNE barre : ouvrir, rendre (menus), annuler, zoom, valider. Les outils
+       sont à gauche (#boite), les calques et l'image à droite (#cote). -->
+  <div id="outils" class="barre">
+    <button id="b-ouvrir" title="Ouvrir un fichier (Ctrl+O)">Ouvrir…</button>
+    <button id="b-coller" title="Coller comme nouveau calque — ou comme image, si l'éditeur est vide (Ctrl+V)">Coller</button>
+    <span class="separateur"></span>
+    <button id="b-copier" title="Copier l'image (Ctrl+C)" disabled>Copier</button>
+    <!-- ⭐ LE TEXTE DE L'IMAGE (demande 2026-11-04) : le moteur se CHOISIT, il
+         ne se devine pas — « NAPS2 » est le Tesseract que NAPS2 embarque,
+         « Copilot » le moteur de Windows (voir win32::ocr::Moteur::libelle). -->
+    <span class="deroulant">
+      <button class="ouvre-menu" title="Reconnaître le texte de l'image, avec NAPS2 ou Copilot" disabled>Texte ▾</button>
+      <div class="menu" hidden>
+        <button id="b-texte-naps2" title="Reconnaître le texte avec NAPS2 (Tesseract, en local)" disabled>Avec NAPS2</button>
+        <button id="b-texte-copilot" title="Reconnaître le texte avec Copilot (le moteur de Windows)" disabled>Avec Copilot</button>
+      </div>
+    </span>
+    <span class="deroulant">
+      <button class="ouvre-menu" title="Enregistrer l'image dans un fichier" disabled>Enregistrer ▾</button>
+      <div class="menu" hidden>
+        <button id="b-png" title="Enregistrer en PNG, calques aplatis (Ctrl+S)" disabled>PNG…</button>
+        <button id="b-jpg" title="Enregistrer en JPG, calques aplatis" disabled>JPG…</button>
+        <button id="b-xcf" title="Enregistrer au format de GIMP, calques compris" disabled>XCF (GIMP, avec les calques)…</button>
+        <button id="b-psd" title="Enregistrer au format de Photoshop, calques compris" disabled>PSD (Photoshop, avec les calques)…</button>
+      </div>
+    </span>
+    <span class="deroulant">
+      <button class="ouvre-menu" title="Épingler, ouvrir ailleurs ou publier l'image" disabled>Partager ▾</button>
+      <div class="menu" hidden>
+        <button id="b-epingler" title="Épingler l'image à l'écran, au premier plan (molette : taille, Ctrl+molette : opacité, double-clic : fermer)" disabled>Épingler à l'écran</button>
+        <button id="b-ouvrir-avec" title="Ouvrir l'image avec une autre application" disabled>Ouvrir avec…</button>
+        <button id="b-en-ligne" title="Publier l'image chez l'hébergeur choisi dans les Réglages et copier le lien" disabled>Envoyer en ligne…</button>
+      </div>
+    </span>
+    <span class="separateur"></span>
+    <button id="b-annuler" title="Annuler (Ctrl+Z)"><span class="ico ico-arrow-u-up-left"></span> Annuler</button>
+    <button id="b-retablir" title="Rétablir (Ctrl+Y)"><span class="ico ico-arrow-u-up-right"></span> Rétablir</button>
+    <span class="separateur"></span>
+    <button id="b-moins" title="Zoom arrière (-)" disabled>−</button>
+    <span id="taux">—</span>
+    <button id="b-plus" title="Zoom avant (+)" disabled>+</button>
+    <button id="b-cent" title="Taille réelle (0)" disabled>100 %</button>
+    <button id="b-ajuster" title="Ajuster à la fenêtre" disabled>Ajuster</button>
+    <span id="nom"></span>
+    <button id="b-valider" title="Copier l'image et fermer (Ctrl+Entrée)" disabled>✓ Valider</button>
+    <button id="b-fermer" title="Fermer (Échap)"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="milieu">
+    <!-- Rempli par le script à partir d'OUTILS, COULEURS et NIVEAUX. -->
+    <div id="boite"></div>
+    <div id="scene">
+      <div id="plateau"><canvas id="toile"></canvas></div>
+      <textarea id="champ" spellcheck="false"></textarea>
+      <div id="vide">Ouvrez une image, un XCF ou un PSD (Ctrl+O)<br>ou prenez celle du presse-papiers (Ctrl+V)</div>
+    </div>
+    <aside id="cote">
+      <div class="onglets">
+        <button data-onglet="calques" class="actif" title="Les calques de l'image">Calques</button>
+        <button data-onglet="geometrie" title="Pivoter, redimensionner, régler les couleurs">Image</button>
+        <button data-onglet="fond" title="Un fond de présentation : dégradé ou couleur, marge, coins arrondis, ombre">Fond</button>
+      </div>
+      <div id="emoticones" hidden>
+        <div class="titre-calques">Émoticônes</div>
+        <div class="grille-emoji"></div>
+      </div>
+      <div id="calques">
+        <div class="reglage-calque">
+          <span>Mode</span>
+          <button id="k-mode" title="Mode de fusion du calque actif" disabled>Normal ▾</button>
+        </div>
+        <!-- Pas de <select> : il ne s'ouvre jamais dans une page CEF hors écran. -->
+        <div id="k-modes" hidden></div>
+        <label class="reglage-calque" title="Opacité du calque actif">
+          <span>Opacité</span>
+          <input id="k-opacite" type="range" min="0" max="100" value="100" disabled>
+          <span id="k-opacite-valeur">—</span>
+        </label>
+        <div class="liste-calques"></div>
+        <div class="actions-calques">
+          <button id="k-nouveau" title="Nouveau calque transparent, au-dessus du calque actif" disabled>＋</button>
+          <button id="k-dupliquer" title="Dupliquer le calque actif" disabled><span class="ico ico-copy"></span></button>
+          <button id="k-monter" title="Monter le calque d'un cran" disabled><span class="ico ico-arrow-up"></span></button>
+          <button id="k-descendre" title="Descendre le calque d'un cran" disabled><span class="ico ico-arrow-down"></span></button>
+          <button id="k-fusionner" title="Fusionner vers le bas : le calque actif se peint sur celui du dessous" disabled><span class="ico ico-arrow-line-down"></span></button>
+          <button id="k-aplatir" title="Aplatir l'image : un seul calque, tel qu'on la voit (les calques cachés disparaissent)" disabled><span class="ico ico-stack-simple"></span></button>
+          <button id="k-supprimer" title="Supprimer le calque actif" disabled><span class="ico ico-trash"></span></button>
+        </div>
+        <button id="b-ouvrir-calques" title="Ajouter les calques d'un fichier au-dessus du calque actif (Ctrl+Alt+O)" disabled>Ajouter un fichier en calques…</button>
+      </div>
+      <div id="geometrie" hidden>
+        <div class="titre-calques">Pivoter et retourner</div>
+        <div class="rangee">
+          <button id="g-gauche" title="Pivoter d'un quart de tour à gauche" disabled><span class="ico ico-arrow-counter-clockwise"></span></button>
+          <button id="g-droite" title="Pivoter d'un quart de tour à droite" disabled><span class="ico ico-arrow-clockwise"></span></button>
+          <button id="g-miroir-h" title="Retourner gauche-droite" disabled><span class="ico ico-flip-horizontal"></span></button>
+          <button id="g-miroir-v" title="Retourner haut-bas" disabled><span class="ico ico-flip-vertical"></span></button>
+        </div>
+        <label class="reglage-calque" title="Angle en degrés, sens horaire (négatif : sens inverse)"><span>Angle (°)</span><input id="g-angle" type="number" min="-360" max="360" step="1" value="0" disabled></label>
+        <div class="rangee">
+          <button id="g-pivoter-angle" title="Pivoter l'image de cet angle (Entrée) — les coins deviennent transparents" disabled>Pivoter de l'angle</button>
+        </div>
+        <div class="titre-calques">Taille</div>
+        <label class="reglage-calque"><span>Largeur</span><input id="g-largeur" type="number" min="1" max="16384" disabled></label>
+        <label class="reglage-calque"><span>Hauteur</span><input id="g-hauteur" type="number" min="1" max="16384" disabled></label>
+        <div class="rangee">
+          <button id="g-lier" class="actif" title="Garder les proportions" disabled>Proportions</button>
+          <button id="g-redim" title="Redimensionner l'image à cette taille (Entrée)" disabled>Redimensionner</button>
+        </div>
+        <div class="rangee">
+          <span id="g-ancres" class="ancres" title="Où poser l'image dans le nouveau canevas"></span>
+          <button id="g-canevas" title="Changer la taille du canevas sans étirer l'image" disabled>Taille du canevas</button>
+        </div>
+        <div class="titre-calques">Couleurs</div>
+        <div id="g-couleurs"></div>
+        <div class="rangee">
+          <button id="g-couleurs-appliquer" title="Appliquer luminosité, contraste et saturation à l'image (annulable)" disabled>Appliquer</button>
+          <button id="g-couleurs-zero" title="Remettre les trois curseurs à 0" disabled>Réinitialiser</button>
+        </div>
+      </div>
+      <!-- LE FOND DE PRÉSENTATION (editeur_fond.js) : rempli par le script. -->
+      <div id="fond" hidden>
+        <div class="titre-calques">Fond de présentation</div>
+        <div class="rangee" id="f-genres"></div>
+        <div class="grille-fond" id="f-teintes"></div>
+        <label class="reglage-calque" title="L'espace autour de l'image"><span>Marge</span><input id="f-marge" type="range" min="0" max="100" disabled><span id="f-marge-valeur"></span></label>
+        <label class="reglage-calque" title="L'arrondi des coins de l'image"><span>Coins</span><input id="f-coins" type="range" min="0" max="100" disabled><span id="f-coins-valeur"></span></label>
+        <label class="reglage-calque" title="L'ombre portée de l'image sur le fond"><span>Ombre</span><input id="f-ombre" type="range" min="0" max="100" disabled><span id="f-ombre-valeur"></span></label>
+        <div class="titre-calques">Format</div>
+        <div class="rangee" id="f-formats"></div>
+        <p class="aide-fond">Le fond aplatit l'image en deux calques, « Fond » et « Capture ». Les réglages se retouchent tant qu'on ne modifie rien d'autre ; Ctrl+Z retire le fond.</p>
+      </div>
+    </aside>
+  </div>
+  <div id="message"></div>
+<script src="editeur_annotations.js"></script>
+<script src="editeur_geometrie.js"></script>
+<script src="editeur_calques.js"></script>
+<script src="editeur_fond.js"></script>
+<script>
+  "use strict";
+  const CANAL = "http://neuradesk-data.invalid/";
+  const ROUTE_IMAGE = "editeur/image";
+  const QUALITE_JPG = 0.92;
+  const ZOOM_MIN = 0.05;
+  const ZOOM_MAX = 32;
+  const PAS_ZOOM = 1.25;
+  // Distance de « toucher » un objet, et pas des flèches du clavier, en pixels
+  // d'ÉCRAN (CSS) — convertis en pixels de l'image selon le zoom.
+  const TOLERANCE_ECRAN = 6;
+  const PAS_FLECHE = 1;
+  const PAS_FLECHE_MAJ = 10;
+
+  const $ = (id) => document.getElementById(id);
+  const toile = $("toile");
+  const scene = $("scene");
+  const champ = $("champ");
+  const ctx = toile.getContext("2d", { colorSpace: "srgb", willReadFrequently: false });
+  // LA PILE (editeur_calques.js), du bas vers le haut, et la taille de l'image.
+  // Jamais modifiées en place : l'historique garde les anciennes.
+  let calques = [];
+  let actif = 0;
+  let largeur = 0;
+  let hauteur = 0;
+  let zoom = 1;
+  let chargee = false;
+
+  // ── État des annotations ────────────────────────────────────────────────
+  let outil = "selection";
+  let couleur = COULEURS[0][1];
+  let emoji = EMOTICONES[0];
+  let niveau = NIVEAU_DEFAUT;
+  // Les annotations du calque ACTIF — `choisi` est un index dans cette liste.
+  const objets = () => (calques[actif] ? calques[actif].objets : []);
+  let choisi = -1;
+  let geste = null; // { genre: "trace" | "deplace" | "glisse" | "calque", … }
+  let edition = null; // le champ de texte ouvert : { p, index, couleur, niveau }
+  let espace = false;
+  // Les réglages de couleur EN ATTENTE (voir « Luminosité, contraste, saturation »).
+  let couleurs = {};
+  const historique = creerHistorique();
+
+  function go(...segments) {
+    location.href = "neuradesk://editeur/" + segments.map(encodeURIComponent).join("/");
+  }
+
+  let minuterieMessage = 0;
+  // `duree` en ms ; 0 = reste affiché jusqu'au message suivant (un envoi en
+  // cours). Un lien copié reste plus longtemps que « Image copiée » : il se lit.
+  // Un texte VIDE efface le message en cours (« Ouverture de … » une fois le
+  // fichier arrivé).
+  window.editeurMessage = (texte, duree = 2200) => {
+    const m = $("message");
+    clearTimeout(minuterieMessage);
+    if (!texte) {
+      m.classList.remove("visible");
+      return;
+    }
+    m.textContent = texte;
+    m.classList.add("visible");
+    if (duree > 0) minuterieMessage = setTimeout(() => m.classList.remove("visible"), duree);
+  };
+
+  // ── Envoi en ligne ──────────────────────────────────────────────────────
+  // ENVOYER, C'EST PUBLIER (voir `win32::envoi_image`) : le premier clic ARME et
+  // nomme l'hébergeur, le second envoie — le motif « Confirmer la suppression ? »
+  // des Réglages. L'hébergeur est poussé par Rust (`editeurService`) à chaque
+  // ouverture, puisqu'il se choisit dans les Réglages.
+  const ATTENTE_CONFIRMATION_MS = 5000;
+  let service = { label: "l'hébergeur choisi", description: "" };
+  let minuterieConfirmation = 0;
+  window.editeurService = (s) => {
+    service = s;
+    desarmerEnvoi();
+  };
+  function desarmerEnvoi() {
+    clearTimeout(minuterieConfirmation);
+    minuterieConfirmation = 0;
+    $("b-en-ligne").textContent = "Envoyer en ligne…";
+    $("b-en-ligne").title = "Publier l'image sur " + service.label + " et copier le lien. " + service.description;
+    $("b-en-ligne").classList.remove("arme");
+  }
+  function envoyerEnLigne() {
+    if (!minuterieConfirmation) {
+      $("b-en-ligne").textContent = "Recliquer pour publier sur " + service.label;
+      $("b-en-ligne").classList.add("arme");
+      window.editeurMessage("Cliquez à nouveau sur le bouton dans les 5 secondes pour publier l'image sur " + service.label, ATTENTE_CONFIRMATION_MS);
+      minuterieConfirmation = setTimeout(desarmerEnvoi, ATTENTE_CONFIRMATION_MS);
+      return;
+    }
+    desarmerEnvoi();
+    envoyer("png", "envoyer-en-ligne");
+  }
+
+  // ── Composition ─────────────────────────────────────────────────────────
+  // Un cadre en tirets noir et blanc, lisible sur toute image.
+  function cadreTirets(c, r) {
+    const k = pixelsParEcran();
+    c.save();
+    c.lineWidth = 1.5 * k;
+    c.setLineDash([6 * k, 4 * k]);
+    c.strokeStyle = "#fff";
+    c.strokeRect(r.x, r.y, r.l, r.h);
+    c.strokeStyle = "#000";
+    c.lineDashOffset = 6 * k;
+    c.strokeRect(r.x, r.y, r.l, r.h);
+    c.restore();
+  }
+
+  // Compose la pile sur `c` ; `ecran` ajoute ce qui ne doit jamais partir dans
+  // un fichier : le tracé en cours, le cadre de la sélection et le contour du
+  // calque actif.
+  function composer(c, ecran) {
+    const trace = ecran && geste && geste.genre === "trace" ? geste.objet : null;
+    // Ce qui ne vaut que pour le calque ACTIF : l'APERÇU des réglages de couleur
+    // en attente (un export les applique d'abord pour de bon, voir `encoder`),
+    // le tracé en cours — un recadrage n'est pas un objet, son aperçu vient
+    // après — et l'objet en réécriture, caché : c'est le champ qui le montre.
+    const options = ecran
+      ? {
+        filtre: filtreCouleurs(couleurs),
+        trace: trace && !TRACES_GEOMETRIE.has(trace.type) ? trace : null,
+        cache: edition ? edition.index : undefined,
+      }
+      : {};
+    composerCalques(c, calques, largeur, hauteur, (i) => (i === actif ? options : {}));
+    if (!ecran) return;
+    if (trace && TRACES_GEOMETRIE.has(trace.type)) dessinerApercuGeometrie(c, trace);
+    // Comme GIMP : le contour du calque actif, dès qu'il y a plus d'un calque
+    // ou qu'il ne couvre pas l'image.
+    const k = calques[actif];
+    if (k && (calques.length > 1 || k.x || k.y || k.toile.width !== largeur || k.toile.height !== hauteur)) {
+      c.save();
+      c.globalAlpha = 0.7;
+      cadreTirets(c, cadreDuCalque(k));
+      c.restore();
+    }
+    if (choisi >= 0 && objets()[choisi]) cadreTirets(c, elargir(boiteDe(objets()[choisi], c), 4 * pixelsParEcran()));
+  }
+
+  let rendu = 0;
+  function rendre() {
+    if (rendu) return;
+    rendu = requestAnimationFrame(() => {
+      rendu = 0;
+      ctx.clearRect(0, 0, toile.width, toile.height);
+      composer(ctx, true);
+      panneau.afficher();
+      afficherEmoticones();
+    });
+  }
+
+  // ── Zoom ────────────────────────────────────────────────────────────────
+  function appliquerZoom() {
+    const dpr = window.devicePixelRatio || 1;
+    toile.style.width = (toile.width * zoom / dpr) + "px";
+    toile.style.height = (toile.height * zoom / dpr) + "px";
+    toile.classList.toggle("pixels", zoom > 1);
+    $("taux").textContent = Math.round(zoom * 100) + " %";
+    // Les traits de la sélection suivent le zoom.
+    rendre();
+  }
+
+  function zoomAjuste() {
+    const dpr = window.devicePixelRatio || 1;
+    const marge = 32;
+    const l = (scene.clientWidth - marge) * dpr / toile.width;
+    const h = (scene.clientHeight - marge) * dpr / toile.height;
+    return Math.max(ZOOM_MIN, Math.min(1, l, h));
+  }
+
+  // Change le zoom en gardant FIXE le point de l'image sous (cx, cy), en
+  // coordonnées de `scene` — le curseur pour la molette, le centre sinon.
+  function zoomer(nouveau, cx = scene.clientWidth / 2, cy = scene.clientHeight / 2) {
+    if (!chargee) return;
+    validerTexte();
+    nouveau = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, nouveau));
+    const avant = toile.getBoundingClientRect();
+    const cadre = scene.getBoundingClientRect();
+    const fx = (cadre.left + cx - avant.left) / avant.width;
+    const fy = (cadre.top + cy - avant.top) / avant.height;
+    zoom = nouveau;
+    appliquerZoom();
+    const apres = toile.getBoundingClientRect();
+    scene.scrollLeft += (apres.left + fx * apres.width) - (cadre.left + cx);
+    scene.scrollTop += (apres.top + fy * apres.height) - (cadre.top + cy);
+  }
+
+  // Pixels de l'image par pixel CSS de l'écran.
+  function pixelsParEcran() {
+    const r = toile.getBoundingClientRect();
+    return r.width ? toile.width / r.width : 1;
+  }
+
+  function versImage(e) {
+    const r = toile.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * toile.width / r.width, y: (e.clientY - r.top) * toile.height / r.height };
+  }
+
+  // ── Charger ─────────────────────────────────────────────────────────────
+  // Une NOUVELLE image : la pile remplace tout, historique compris.
+  function nouveauDocument(pile, l, h, nom) {
+    annulerTexte();
+    calques = pile;
+    actif = pile.length - 1;
+    choisi = -1;
+    geste = null;
+    historique.vider();
+    remettreCouleurs();
+    poserTaille(l, h);
+    chargee = true;
+    toile.style.display = "block";
+    $("vide").style.display = "none";
+    $("nom").textContent = nom || "";
+    for (const b of document.querySelectorAll("#outils button, #geometrie button, #geometrie input, #fond button, #fond input")) b.disabled = false;
+    // Une nouvelle image n'a pas de fond : les réglages restent, le genre repart à « Aucun ».
+    fondPose = null;
+    reglagesFond = { ...reglagesFond, genre: "aucun" };
+    marquerFond();
+    zoom = zoomAjuste();
+    appliquerZoom();
+    go("charge", largeur, hauteur);
+  }
+
+  // Des calques AJOUTÉS au-dessus du calque actif — annulable d'un Ctrl+Z.
+  function ajouterCalques(nouveaux) {
+    validerTexte();
+    appliquerCouleurs();
+    historique.noter(etat());
+    calques = [...calques.slice(0, actif + 1), ...nouveaux, ...calques.slice(actif + 1)];
+    actif += nouveaux.length;
+    choisi = -1;
+    rendre();
+    go("charge", largeur, hauteur);
+  }
+
+  // `commeCalque` : le presse-papiers et « Ouvrir en tant que calques » — un
+  // nouveau calque centré, sauf si l'éditeur est vide.
+  window.editeurCharger = async (uri, nom, commeCalque = false) => {
+    try {
+      const blob = await (await fetch(uri)).blob();
+      // Aucune conversion : ce qu'on relit doit être ce qu'on a lu.
+      const image = await createImageBitmap(blob, { colorSpaceConversion: "none", premultiplyAlpha: "none" });
+      const neuf = nouvelleToile(image.width, image.height);
+      neuf.getContext("2d", { colorSpace: "srgb" }).drawImage(image, 0, 0);
+      image.close();
+      if (commeCalque && chargee) {
+        const x = Math.round((largeur - neuf.width) / 2), y = Math.round((hauteur - neuf.height) / 2);
+        ajouterCalques([nouveauCalque(nom || "Presse-papiers", neuf, x, y)]);
+      } else {
+        nouveauDocument([nouveauCalque(nom || "Fond", neuf)], neuf.width, neuf.height, nom);
+      }
+    } catch (e) {
+      window.editeurMessage("Image illisible");
+      go("erreur", String(e));
+    }
+  };
+
+  // Un XCF ou un PSD (`document_image::vers_page`). Ses calques gardent leur
+  // place : ajoutés, ils se posent comme dans leur fichier.
+  window.editeurChargerDocument = async (doc, nom, commeCalques = false) => {
+    try {
+      const pile = await Promise.all(doc.calques.map(calqueDepuisRust));
+      if (!pile.length) throw new Error("aucun calque");
+      if (commeCalques && chargee) ajouterCalques(pile);
+      else nouveauDocument(pile, doc.largeur, doc.hauteur, nom);
+    } catch (e) {
+      window.editeurMessage("Fichier illisible");
+      go("erreur", String(e));
+    }
+  };
+
+  // ── Rendre ──────────────────────────────────────────────────────────────
+  // Les formats qui gardent les calques : la page envoie le paquet de
+  // `paquetDocument`, et Rust écrit le fichier (`win32::format_xcf`/`format_psd`).
+  const FORMATS_A_CALQUES = new Set(["xcf", "psd"]);
+
+  // Les octets à envoyer : l'image APLATIE en PNG ou JPG, ou le paquet des calques.
+  async function encoder(format) {
+    validerTexte();
+    appliquerCouleurs();
+    const plat = nouvelleToile(largeur, hauteur);
+    const c = plat.getContext("2d", { colorSpace: "srgb" });
+    if (format === "jpg") {
+      // Le JPG n'a pas d'alpha : on pose l'image sur du BLANC, sinon la
+      // transparence devient du noir.
+      c.fillStyle = "#fff";
+      c.fillRect(0, 0, plat.width, plat.height);
+    }
+    composer(c, false);
+    if (FORMATS_A_CALQUES.has(format)) return paquetDocument(calques, largeur, hauteur, plat);
+    const blob = await new Promise((resolve) => {
+      if (format === "jpg") plat.toBlob(resolve, "image/jpeg", QUALITE_JPG);
+      else plat.toBlob(resolve, "image/png");
+    });
+    return new Uint8Array(await blob.arrayBuffer());
+  }
+
+  // Dépose l'image encodée sur le canal, PUIS nomme l'action : la navigation
+  // n'arrive à Rust qu'une fois le corps reçu.
+  async function envoyer(format, ...action) {
+    if (!chargee) return;
+    try {
+      const octets = await encoder(format);
+      const reponse = await fetch(CANAL + ROUTE_IMAGE, {
+        method: "POST",
+        body: octets,
+        headers: { "Content-Type": "application/octet-stream" },
+      });
+      if (!reponse.ok) throw new Error("canal : HTTP " + reponse.status);
+      go(...action);
+    } catch (e) {
+      window.editeurMessage("L'image n'a pas pu être transmise");
+      go("erreur", String(e));
+    }
+  }
+
+  const copier = () => envoyer("png", "copier");
+  const valider = () => envoyer("png", "valider");
+  function fermer() {
+    validerTexte();
+    go("fermer");
+  }
+  window.editeurEnregistrer = (format) => {
+    const f = ["jpg", "xcf", "psd"].includes(format) ? format : "png";
+    envoyer(f, "enregistrer", f);
+  };
+
+  // ── Modifier les objets ─────────────────────────────────────────────────
+  // Chaque changement note l'état D'AVANT (voir `creerHistorique`).
+  const etat = () => ({ calques, actif, largeur, hauteur });
+
+  // Remplace les annotations du calque actif, sans noter (un geste en cours).
+  function poserObjets(nouveaux) {
+    calques = remplacerCalque(calques, actif, (k) => ({ ...k, objets: nouveaux }));
+  }
+
+  function changer(nouveaux) {
+    historique.noter(etat());
+    poserObjets(nouveaux);
+    rendre();
+  }
+
+  function ajouter(o) {
+    changer([...objets(), o]);
+  }
+
+  function supprimerChoisi() {
+    if (choisi < 0) return;
+    const i = choisi;
+    choisi = -1;
+    changer(objets().filter((_, j) => j !== i));
+  }
+
+  function remplacerChoisi(f) {
+    if (choisi < 0) return;
+    changer(objets().map((o, i) => (i === choisi ? f(o) : o)));
+  }
+
+  function restaurer(e) {
+    if (!e) return;
+    calques = e.calques;
+    actif = e.actif;
+    choisi = -1;
+    if (e.largeur !== largeur || e.hauteur !== hauteur) poserTaille(e.largeur, e.hauteur);
+    rendre();
+  }
+
+  function annuler() {
+    validerTexte();
+    restaurer(historique.annuler(etat()));
+  }
+
+  function retablir() {
+    validerTexte();
+    restaurer(historique.retablir(etat()));
+  }
+
+  // ── Géométrie ───────────────────────────────────────────────────────────
+  // L'image change de taille (chargement, géométrie, annuler) : la toile et les
+  // champs de taille suivent.
+  function poserTaille(l, h) {
+    largeur = l;
+    hauteur = h;
+    toile.width = l;
+    toile.height = h;
+    afficherTaille();
+    appliquerZoom();
+  }
+
+  // Une opération de `transformerDocument` (editeur_calques.js) : tous les
+  // calques et leurs objets suivent — annulable d'un seul Ctrl+Z. Des réglages
+  // de couleur en attente s'appliquent AVANT, sinon un quart de tour partirait
+  // de la toile d'avant et les jetterait.
+  function appliquerGeometrie(op, annoncer = true) {
+    if (!chargee) return;
+    validerTexte();
+    appliquerCouleurs();
+    const r = transformerDocument({ largeur, hauteur, calques }, op, ctx);
+    if (!r) return;
+    historique.noter(etat());
+    calques = r.calques;
+    choisi = -1;
+    poserTaille(r.largeur, r.hauteur);
+    if (annoncer) go("geometrie", op.genre, largeur, hauteur);
+  }
+
+  function appliquerTrace(o) {
+    const [a, b] = o.points;
+    appliquerGeometrie({ genre: "recadrer", r: cadreDe(a, b) });
+    choisirOutil("selection");
+  }
+
+  function objetSous(p) {
+    const tol = TOLERANCE_ECRAN * pixelsParEcran();
+    const liste = objets();
+    for (let i = liste.length - 1; i >= 0; i--) {
+      if (touche(liste[i], p, tol, ctx)) return i;
+    }
+    return -1;
+  }
+
+  // ── Calques ─────────────────────────────────────────────────────────────
+  // Un changement de la pile : le texte en cours et les réglages de couleur en
+  // attente visent le calque actif, ils s'appliquent avant qu'il ne change.
+  // D'où `f(calques)` plutôt qu'une pile toute faite : calculée AVANT, elle
+  // effacerait ce qu'ils viennent d'y poser.
+  function changerCalques(f, nouvelActif) {
+    validerTexte();
+    appliquerCouleurs();
+    const nouveaux = f(calques);
+    if (!nouveaux) return;
+    historique.noter(etat());
+    calques = nouveaux;
+    actif = Math.max(0, Math.min(nouveaux.length - 1, nouvelActif));
+    choisi = -1;
+    rendre();
+  }
+
+  const panneau = creerPanneauCalques($("calques"), {
+    etat: () => ({ calques, actif, largeur, hauteur }),
+    choisir(i) {
+      validerTexte();
+      appliquerCouleurs();
+      actif = i;
+      choisi = -1;
+      rendre();
+    },
+    changerCalques,
+    regler(i, f) {
+      calques = remplacerCalque(calques, i, f);
+      rendre();
+    },
+    noter: () => historique.noter(etat()),
+  });
+
+  const inserer = (pile, k) => [...pile.slice(0, actif + 1), k, ...pile.slice(actif + 1)];
+  let numeroCalque = 1;
+  $("k-nouveau").addEventListener("click", () => {
+    const k = nouveauCalque(`Calque ${numeroCalque++}`, nouvelleToile(largeur, hauteur));
+    changerCalques((pile) => inserer(pile, k), actif + 1);
+  });
+  // La toile est partagée sans risque : elle n'est jamais modifiée en place.
+  $("k-dupliquer").addEventListener("click", () => changerCalques((pile) => inserer(pile, { ...pile[actif], nom: `${pile[actif].nom} copie` }), actif + 1));
+  $("k-monter").addEventListener("click", () => changerCalques((pile) => echanger(pile, actif, actif + 1), actif + 1));
+  $("k-descendre").addEventListener("click", () => changerCalques((pile) => echanger(pile, actif, actif - 1), actif - 1));
+  $("k-fusionner").addEventListener("click", () => changerCalques((pile) => fusionnerVersLeBas(pile, actif, largeur, hauteur), actif - 1));
+  $("k-aplatir").addEventListener("click", () => changerCalques((pile) => aplatirCalques(pile, largeur, hauteur), 0));
+  $("k-supprimer").addEventListener("click", () => changerCalques((pile) => (pile.length > 1 ? pile.filter((_, i) => i !== actif) : null), actif - 1));
+
+  // ── Texte ───────────────────────────────────────────────────────────────
+  function ajusterChamp() {
+    const lignes = champ.value.split("\n");
+    champ.style.width = (Math.max(1, ...lignes.map((l) => l.length)) + 2) + "ch";
+    champ.style.height = (lignes.length * 1.2 + 0.2) + "em";
+  }
+
+  // Ouvre le champ au point `p` de l'image — sur le texte `index`, ou neuf (-1).
+  function ouvrirChamp(p, index) {
+    const existant = index >= 0 ? objets()[index] : null;
+    edition = { p, index, couleur: existant ? existant.couleur : couleur, niveau: existant ? existant.niveau : niveau };
+    const r = toile.getBoundingClientRect();
+    const s = scene.getBoundingClientRect();
+    const k = r.width / toile.width;
+    champ.value = existant ? existant.texte : "";
+    champ.style.left = (r.left - s.left + scene.scrollLeft + p.x * k) + "px";
+    champ.style.top = (r.top - s.top + scene.scrollTop + p.y * k) + "px";
+    champ.style.font = policeDe(NIVEAUX[edition.niveau].police * k);
+    champ.style.color = edition.couleur;
+    champ.style.display = "block";
+    ajusterChamp();
+    champ.focus();
+    rendre();
+  }
+
+  function fermerChamp() {
+    edition = null;
+    champ.style.display = "none";
+    champ.blur();
+    rendre();
+  }
+
+  function validerTexte() {
+    if (!edition) return;
+    const { p, index, couleur: teinte, niveau: taille } = edition;
+    const texte = champ.value.replace(/\s+$/, "");
+    fermerChamp();
+    if (index >= 0) {
+      choisi = -1;
+      if (!texte) changer(objets().filter((_, i) => i !== index));
+      else if (texte !== objets()[index].texte) changer(objets().map((o, i) => (i === index ? { ...o, texte } : o)));
+    } else if (texte) {
+      ajouter({ type: "texte", points: [p], texte, couleur: teinte, niveau: taille });
+    }
+  }
+
+  function annulerTexte() {
+    if (edition) fermerChamp();
+  }
+
+  champ.addEventListener("input", ajusterChamp);
+  champ.addEventListener("blur", validerTexte);
+  champ.addEventListener("keydown", (e) => {
+    // Maj+Entrée : une nouvelle ligne ; Entrée seule : valider.
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      validerTexte();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      annulerTexte();
+    }
+    e.stopPropagation();
+  });
+
+  // ── Boîte à outils ──────────────────────────────────────────────────────
+  // Des GROUPES empilés dans #boite : outils, couleurs, épaisseur, suppression.
+  function groupe(classe) {
+    const g = document.createElement("div");
+    g.className = `groupe ${classe}`;
+    $("boite").appendChild(g);
+    return g;
+  }
+
+  function trait() {
+    const t = document.createElement("div");
+    t.className = "trait";
+    $("boite").appendChild(t);
+  }
+
+  function bouton(parent, texte, titre, action, classe) {
+    const b = document.createElement("button");
+    b.textContent = texte;
+    b.title = titre;
+    if (classe) b.className = classe;
+    b.addEventListener("click", action);
+    parent.appendChild(b);
+    return b;
+  }
+
+  const TOUS_OUTILS = [...OUTILS, ...OUTILS_TRACES_GEOMETRIE, ...OUTILS_CALQUES];
+  const groupeOutils = groupe("outils");
+  const boutonsOutils = TOUS_OUTILS.map(([nom, glyphe, touche, titre]) => {
+    const b = bouton(groupeOutils, glyphe, `${titre} (${touche.toUpperCase()})`, () => choisirOutil(nom), "outil");
+    const t = document.createElement("span");
+    t.className = "touche";
+    t.textContent = touche.toUpperCase();
+    b.appendChild(t);
+    b.dataset.outil = nom;
+    return b;
+  });
+  trait();
+  const groupeTeintes = groupe("teintes");
+  const boutonsCouleurs = COULEURS.map(([nom, valeur]) => {
+    const b = bouton(groupeTeintes, "", nom, () => choisirCouleur(valeur), "teinte");
+    const pastille = document.createElement("span");
+    pastille.style.background = valeur;
+    b.appendChild(pastille);
+    b.dataset.couleur = valeur;
+    return b;
+  });
+  trait();
+  const groupeEpaisseur = groupe("epaisseur");
+  bouton(groupeEpaisseur, "−", "Plus fin ([)", () => choisirNiveau(niveau - 1));
+  const affichageNiveau = document.createElement("span");
+  affichageNiveau.id = "epaisseur";
+  affichageNiveau.title = "Épaisseur du trait";
+  groupeEpaisseur.appendChild(affichageNiveau);
+  bouton(groupeEpaisseur, "+", "Plus épais (])", () => choisirNiveau(niveau + 1));
+  const groupeNiveaux = groupe("une-colonne");
+  const boutonsNiveaux = PRESELECTIONS.map(([nom, i]) => {
+    const b = bouton(groupeNiveaux, nom, `Épaisseur : ${nom.toLowerCase()}`, () => choisirNiveau(i));
+    b.dataset.niveau = String(i);
+    return b;
+  });
+  trait();
+  bouton(groupe("une-colonne"), "Supprimer", "Supprimer l'objet choisi (Suppr)", supprimerChoisi);
+  $("b-annuler").addEventListener("click", annuler);
+  $("b-retablir").addEventListener("click", retablir);
+
+  // ── Menus de la barre et onglets du panneau de droite ───────────────────
+  // Un menu se ferme au choix d'une entrée (le clic remonte jusqu'à lui) ou à
+  // un clic ailleurs ; Échap le ferme aussi (voir le `keydown`).
+  function fermerMenus() {
+    let ouvert = false;
+    for (const m of document.querySelectorAll(".menu")) {
+      ouvert ||= !m.hidden;
+      m.hidden = true;
+    }
+    return ouvert;
+  }
+  for (const d of document.querySelectorAll(".deroulant")) {
+    const menu = d.querySelector(".menu");
+    d.querySelector(".ouvre-menu").addEventListener("click", () => {
+      const etaitFerme = menu.hidden;
+      fermerMenus();
+      menu.hidden = !etaitFerme;
+    });
+    menu.addEventListener("click", fermerMenus);
+  }
+  document.addEventListener("mousedown", (e) => {
+    if (!e.target.closest(".deroulant")) fermerMenus();
+  });
+
+  const boutonsOnglets = [...document.querySelectorAll("[data-onglet]")];
+  function montrerOnglet(nom) {
+    for (const b of boutonsOnglets) {
+      b.classList.toggle("actif", b.dataset.onglet === nom);
+      $(b.dataset.onglet).hidden = b.dataset.onglet !== nom;
+    }
+  }
+  for (const b of boutonsOnglets) b.addEventListener("click", () => montrerOnglet(b.dataset.onglet));
+
+  // ── Fond de présentation (editeur_fond.js) ──────────────────────────────
+  let reglagesFond = { ...REGLAGES_FOND_DEFAUT };
+  // Le dernier fond posé : l'état d'AVANT, et la pile qu'il a produite. Tant que
+  // la pile est encore CELLE-LÀ (rien d'autre n'a changé), un réglage retouché
+  // refait le fond depuis l'image d'avant au lieu d'en empiler un second.
+  let fondPose = null;
+  let fondPlanifie = 0;
+
+  function appliquerFond() {
+    if (!chargee) return;
+    validerTexte();
+    appliquerCouleurs();
+    const refaire = fondPose !== null && fondPose.apres === calques;
+    if (refaire) {
+      ({ calques, actif, largeur, hauteur } = fondPose.avant);
+    }
+    const avant = etat();
+    const plat = nouvelleToile(largeur, hauteur);
+    composerCalques(plat.getContext("2d", { colorSpace: "srgb" }), calques, largeur, hauteur);
+    const doc = documentAvecFond(plat, reglagesFond);
+    choisi = -1;
+    if (!doc) {
+      // « Aucun » : l'image d'avant revient (déjà restaurée si on refaisait).
+      fondPose = null;
+      poserTaille(largeur, hauteur);
+      return;
+    }
+    if (!refaire) historique.noter(avant);
+    calques = doc.calques;
+    actif = calques.length - 1;
+    fondPose = { avant, apres: calques };
+    poserTaille(doc.largeur, doc.hauteur);
+    go("geometrie", "fond", largeur, hauteur);
+  }
+
+  // Un curseur émet à chaque pas : un seul fond par image affichée.
+  function planifierFond() {
+    if (fondPlanifie) return;
+    fondPlanifie = requestAnimationFrame(() => {
+      fondPlanifie = 0;
+      appliquerFond();
+    });
+  }
+
+  function changerFond(modif) {
+    reglagesFond = { ...reglagesFond, ...modif };
+    marquerFond();
+    planifierFond();
+  }
+
+  function boutonFond(texte, titre, surClic) {
+    const b = document.createElement("button");
+    b.textContent = texte;
+    b.title = titre;
+    b.disabled = !chargee;
+    b.addEventListener("click", surClic);
+    return b;
+  }
+
+  const GENRES_FOND = [["aucun", "Aucun"], ["degrade", "Dégradé"], ["uni", "Uni"]];
+  const boutonsGenresFond = GENRES_FOND.map(([genre, nom]) => {
+    const b = boutonFond(nom, nom === "Aucun" ? "Pas de fond" : `Fond ${nom.toLowerCase()}`, () => {
+      if (genre !== reglagesFond.genre) changerFond({ genre, teinte: 0 });
+    });
+    b.dataset.genre = genre;
+    $("f-genres").appendChild(b);
+    return b;
+  });
+  const boutonsFormatsFond = FORMATS_FOND.map(([nom], i) => {
+    const b = boutonFond(nom, nom === "Libre" ? "Le format suit l'image et la marge" : `Format ${nom}`, () => changerFond({ format: i }));
+    $("f-formats").appendChild(b);
+    return b;
+  });
+  for (const nom of ["marge", "coins", "ombre"]) {
+    $(`f-${nom}`).addEventListener("input", (e) => changerFond({ [nom]: Number(e.target.value) }));
+  }
+
+  // Les pastilles suivent le genre : dégradés ou couleurs unies.
+  function marquerFond() {
+    for (const b of boutonsGenresFond) b.classList.toggle("actif", b.dataset.genre === reglagesFond.genre);
+    for (const [i, b] of boutonsFormatsFond.entries()) b.classList.toggle("actif", i === reglagesFond.format);
+    for (const nom of ["marge", "coins", "ombre"]) {
+      $(`f-${nom}`).value = reglagesFond[nom];
+      $(`f-${nom}-valeur`).textContent = reglagesFond[nom];
+    }
+    const grille = $("f-teintes");
+    grille.replaceChildren();
+    grille.hidden = reglagesFond.genre === "aucun";
+    const teintes = reglagesFond.genre === "degrade"
+      ? DEGRADES_FOND.map(([nom, a, b]) => [nom, `linear-gradient(135deg, ${a}, ${b})`])
+      : COULEURS_FOND;
+    teintes.forEach(([nom, fond], i) => {
+      const b = boutonFond("", nom, () => changerFond({ teinte: i }));
+      b.style.background = fond;
+      b.classList.toggle("actif", i === reglagesFond.teinte);
+      grille.appendChild(b);
+    });
+  }
+  marquerFond();
+
+  function marquer() {
+    for (const b of boutonsOutils) b.classList.toggle("actif", b.dataset.outil === outil);
+    for (const b of boutonsCouleurs) b.classList.toggle("actif", b.dataset.couleur === couleur);
+    for (const b of boutonsNiveaux) b.classList.toggle("actif", b.dataset.niveau === String(niveau));
+    affichageNiveau.textContent = `${NIVEAUX[niveau].trait} px`;
+    scene.classList.toggle("trace", outil !== "selection" && outil !== "calque");
+    scene.classList.toggle("calque", outil === "calque");
+  }
+
+  function choisirOutil(nom) {
+    validerTexte();
+    outil = nom;
+    if (nom !== "selection") choisi = -1;
+    marquer();
+    rendre();
+  }
+
+  // Couleur et épaisseur s'appliquent AUSSI à l'objet choisi.
+  function choisirCouleur(valeur) {
+    couleur = valeur;
+    remplacerChoisi((o) => ({ ...o, couleur: valeur }));
+    marquer();
+  }
+
+  function choisirNiveau(demande) {
+    const i = Math.max(0, Math.min(NIVEAUX.length - 1, demande));
+    niveau = i;
+    remplacerChoisi((o) => ({ ...o, niveau: i }));
+    marquer();
+  }
+
+  marquer();
+
+  // ── Les émoticônes, dans le panneau de droite ───────────────────────────
+  // Visibles avec leur outil, OU quand l'objet choisi en est une : c'est là
+  // qu'on la remplace par une autre. Dans le panneau et non dans la barre :
+  // l'y faire apparaître changerait la hauteur de la scène sous la souris.
+  const blocEmoticones = $("emoticones");
+  const boutonsEmoji = EMOTICONES.map((valeur) => {
+    const b = document.createElement("button");
+    b.textContent = valeur;
+    b.title = "Poser cette émoticône";
+    b.addEventListener("click", () => choisirEmoji(valeur));
+    blocEmoticones.querySelector(".grille-emoji").appendChild(b);
+    return b;
+  });
+
+  function emojiChoisi() {
+    return choisi >= 0 && objets()[choisi] && objets()[choisi].type === "emoji";
+  }
+
+  function choisirEmoji(valeur) {
+    emoji = valeur;
+    if (emojiChoisi()) remplacerChoisi((o) => ({ ...o, emoji: valeur }));
+    else if (outil !== "emoji") choisirOutil("emoji");
+    rendre();
+  }
+
+  function afficherEmoticones() {
+    blocEmoticones.hidden = !(outil === "emoji" || emojiChoisi());
+    const courant = emojiChoisi() ? objets()[choisi].emoji : emoji;
+    for (const b of boutonsEmoji) b.classList.toggle("actif", b.textContent === courant);
+  }
+
+  // ── Barre de la géométrie ───────────────────────────────────────────────
+  const entreeLargeur = $("g-largeur");
+  const entreeHauteur = $("g-hauteur");
+  let lier = true;
+  let ancre = ANCRES[4];
+
+  function afficherTaille() {
+    entreeLargeur.value = largeur;
+    entreeHauteur.value = hauteur;
+  }
+
+  function lireCote(entree) {
+    const v = Math.round(Number(entree.value));
+    return v >= 1 && v <= COTE_MAX ? v : null;
+  }
+
+  function tailleDemandee() {
+    const l = lireCote(entreeLargeur), h = lireCote(entreeHauteur);
+    if (l && h) return { l, h };
+    window.editeurMessage(`Taille invalide : de 1 à ${COTE_MAX} pixels`);
+    return null;
+  }
+
+  function redimensionnerA() {
+    const t = tailleDemandee();
+    if (t && (t.l !== largeur || t.h !== hauteur)) appliquerGeometrie({ genre: "redimensionner", l: t.l, h: t.h });
+  }
+
+  function canevasA() {
+    const t = tailleDemandee();
+    if (t && (t.l !== largeur || t.h !== hauteur)) appliquerGeometrie({ genre: "canevas", l: t.l, h: t.h, ancre });
+  }
+
+  // Proportions liées : l'autre côté suit la saisie.
+  entreeLargeur.addEventListener("input", () => {
+    const l = lireCote(entreeLargeur);
+    if (lier && l) entreeHauteur.value = Math.max(1, Math.round((l * hauteur) / largeur));
+  });
+  entreeHauteur.addEventListener("input", () => {
+    const h = lireCote(entreeHauteur);
+    if (lier && h) entreeLargeur.value = Math.max(1, Math.round((h * largeur) / hauteur));
+  });
+  // Les chiffres et « - » sont aussi des raccourcis (zoom) : ils restent au champ.
+  for (const entree of [entreeLargeur, entreeHauteur]) {
+    entree.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        redimensionnerA();
+      } else if (e.key === "Escape") {
+        afficherTaille();
+        entree.blur();
+      }
+    });
+  }
+
+  const NOMS_ANCRES = ["haut-gauche", "haut", "haut-droite", "gauche", "centre", "droite", "bas-gauche", "bas", "bas-droite"];
+  const boutonsAncres = ANCRES.map((a, i) => {
+    const b = document.createElement("button");
+    b.title = `Ancre : ${NOMS_ANCRES[i]}`;
+    b.addEventListener("click", () => {
+      ancre = a;
+      marquerAncres();
+    });
+    $("g-ancres").appendChild(b);
+    return b;
+  });
+  function marquerAncres() {
+    boutonsAncres.forEach((b, i) => b.classList.toggle("actif", ANCRES[i] === ancre));
+  }
+  marquerAncres();
+
+  $("g-gauche").addEventListener("click", () => appliquerGeometrie({ genre: "pivoter", sens: -1 }));
+  $("g-droite").addEventListener("click", () => appliquerGeometrie({ genre: "pivoter", sens: 1 }));
+  $("g-miroir-h").addEventListener("click", () => appliquerGeometrie({ genre: "retourner", axe: "h" }));
+  $("g-miroir-v").addEventListener("click", () => appliquerGeometrie({ genre: "retourner", axe: "v" }));
+  // Angle libre : le champ garde sa valeur, pour répéter le même pas.
+  function pivoterDeLAngle() {
+    const degres = Number(String($("g-angle").value).replace(",", "."));
+    if (!Number.isFinite(degres) || degres % 360 === 0) return;
+    const b = boiteTournee(largeur, hauteur, (degres * Math.PI) / 180);
+    if (b.l > COTE_MAX || b.h > COTE_MAX) {
+      window.editeurMessage(`Image tournée trop grande : plus de ${COTE_MAX} pixels`);
+      return;
+    }
+    appliquerGeometrie({ genre: "angle", degres });
+  }
+  $("g-pivoter-angle").addEventListener("click", pivoterDeLAngle);
+  $("g-angle").addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      pivoterDeLAngle();
+    } else if (e.key === "Escape") {
+      $("g-angle").blur();
+    }
+  });
+  $("g-lier").addEventListener("click", () => {
+    lier = !lier;
+    $("g-lier").classList.toggle("actif", lier);
+  });
+  $("g-redim").addEventListener("click", redimensionnerA);
+  $("g-canevas").addEventListener("click", canevasA);
+
+  // ── Luminosité, contraste, saturation ───────────────────────────────────
+  // Les curseurs restent EN ATTENTE : l'aperçu ne touche que l'écran
+  // (`composer`), et « Appliquer » pose une nouvelle toile au calque ACTIF,
+  // annulable comme une géométrie. Tout ce qui lit les calques — export,
+  // copie, géométrie, changement de calque — applique
+  // d'abord (`appliquerCouleurs`) : ce qu'on voit est ce qu'on obtient.
+  const curseursCouleur = Object.fromEntries(REGLAGES_COULEUR.map(([cle, libelle]) => {
+    const etiquette = document.createElement("label");
+    const entree = document.createElement("input");
+    entree.type = "range";
+    entree.min = String(-BORNE_REGLAGE_COULEUR);
+    entree.max = String(BORNE_REGLAGE_COULEUR);
+    entree.value = "0";
+    entree.disabled = true;
+    entree.title = `${libelle} (double-clic : 0)`;
+    const valeur = document.createElement("span");
+    valeur.className = "valeur-couleur";
+    etiquette.append(libelle, entree, valeur);
+    $("g-couleurs").appendChild(etiquette);
+    entree.addEventListener("input", () => changerCouleur(cle, Number(entree.value)));
+    entree.addEventListener("dblclick", () => changerCouleur(cle, 0));
+    // Rendre le clavier aux raccourcis une fois le curseur lâché — sinon Ctrl+Z
+    // resterait au curseur (voir le `keydown` ci-dessous).
+    entree.addEventListener("change", () => entree.blur());
+    // Les flèches font bouger le curseur, pas l'objet choisi ; les chiffres ne zooment pas.
+    entree.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") entree.blur();
+    });
+    return [cle, { entree, valeur }];
+  }));
+
+  function couleursNeutres() {
+    return REGLAGES_COULEUR.every(([cle]) => !couleurs[cle]);
+  }
+
+  function afficherCouleurs() {
+    for (const [cle, { entree, valeur }] of Object.entries(curseursCouleur)) {
+      const v = couleurs[cle] || 0;
+      entree.value = String(v);
+      valeur.textContent = (v > 0 ? "+" : "") + v;
+    }
+  }
+
+  function changerCouleur(cle, v) {
+    couleurs = { ...couleurs, [cle]: v };
+    afficherCouleurs();
+    rendre();
+  }
+
+  function remettreCouleurs() {
+    couleurs = {};
+    afficherCouleurs();
+    rendre();
+  }
+
+  // `annoncer` : seul le bouton le dit à Rust — l'application implicite d'un
+  // export ou d'une géométrie ne doit pas ajouter une navigation à la leur.
+  function appliquerCouleurs(annoncer = false) {
+    if (!chargee || couleursNeutres()) return;
+    const valeurs = couleurs;
+    remettreCouleurs();
+    historique.noter(etat());
+    calques = remplacerCalque(calques, actif, (k) => ({ ...k, toile: ajusterCouleurs(k.toile, valeurs).toile }));
+    rendre();
+    if (annoncer) go("geometrie", "couleurs", largeur, hauteur);
+  }
+
+  afficherCouleurs();
+  $("g-couleurs-appliquer").addEventListener("click", () => {
+    validerTexte();
+    appliquerCouleurs(true);
+  });
+  $("g-couleurs-zero").addEventListener("click", remettreCouleurs);
+
+  // ── Interactions ────────────────────────────────────────────────────────
+  $("b-ouvrir").addEventListener("click", () => go("ouvrir"));
+  $("b-ouvrir-calques").addEventListener("click", () => go("ouvrir-calques"));
+  $("b-coller").addEventListener("click", () => go("coller"));
+  $("b-copier").addEventListener("click", copier);
+  // Le nom envoyé est celui de `ocr::Moteur::nom` — jamais le libellé.
+  $("b-texte-naps2").addEventListener("click", () => envoyer("png", "texte", "tesseract"));
+  $("b-texte-copilot").addEventListener("click", () => envoyer("png", "texte", "windows"));
+  $("b-png").addEventListener("click", () => window.editeurEnregistrer("png"));
+  $("b-jpg").addEventListener("click", () => window.editeurEnregistrer("jpg"));
+  $("b-xcf").addEventListener("click", () => window.editeurEnregistrer("xcf"));
+  $("b-psd").addEventListener("click", () => window.editeurEnregistrer("psd"));
+  $("b-epingler").addEventListener("click", () => envoyer("png", "epingler"));
+  $("b-ouvrir-avec").addEventListener("click", () => envoyer("png", "ouvrir-avec"));
+  $("b-en-ligne").addEventListener("click", envoyerEnLigne);
+  $("b-valider").addEventListener("click", valider);
+  $("b-fermer").addEventListener("click", fermer);
+  $("b-moins").addEventListener("click", () => zoomer(zoom / PAS_ZOOM));
+  $("b-plus").addEventListener("click", () => zoomer(zoom * PAS_ZOOM));
+  $("b-cent").addEventListener("click", () => zoomer(1));
+  $("b-ajuster").addEventListener("click", () => zoomer(zoomAjuste()));
+
+  const OUTIL_DE_TOUCHE = Object.fromEntries(TOUS_OUTILS.map(([nom, , touche]) => [touche, nom]));
+
+  document.addEventListener("keydown", (e) => {
+    const touche = e.key.toLowerCase();
+    // Ctrl+Alt+O : « Ouvrir en tant que calques », comme dans GIMP.
+    if (e.ctrlKey && e.altKey && touche === "o") {
+      e.preventDefault();
+      go("ouvrir-calques");
+      return;
+    }
+    if (e.ctrlKey && !e.altKey) {
+      // Ctrl+V n'arrive jamais ici : la fenêtre l'avale et colle côté Rust
+      // (voir `cef_image_editor::wndproc`).
+      if (touche === "o") go("ouvrir");
+      else if (touche === "c") copier();
+      else if (touche === "s") window.editeurEnregistrer("png");
+      else if (touche === "z" && !e.shiftKey) annuler();
+      else if (touche === "y" || (touche === "z" && e.shiftKey)) retablir();
+      else if (e.key === "Enter") valider();
+      else return;
+      e.preventDefault();
+      return;
+    }
+    if (e.altKey) return;
+    if (e.key === " ") {
+      espace = true;
+      scene.classList.add("espace");
+    } else if (OUTIL_DE_TOUCHE[touche]) choisirOutil(OUTIL_DE_TOUCHE[touche]);
+    else if (e.key === "Delete" || e.key === "Backspace") supprimerChoisi();
+    else if (e.key === "Escape") {
+      // Échap annule d'abord le geste ou la sélection ; sans rien à annuler, il
+      // ferme le panneau (l'outil « exit » de Flameshot). Un menu ouvert passe avant tout.
+      if (fermerMenus()) return;
+      if (!geste && choisi < 0) return fermer();
+      geste = null;
+      choisi = -1;
+      rendre();
+    } else if (e.key.startsWith("Arrow") && choisi >= 0) {
+      const pas = e.shiftKey ? PAS_FLECHE_MAJ : PAS_FLECHE;
+      const [dx, dy] = { ArrowLeft: [-pas, 0], ArrowRight: [pas, 0], ArrowUp: [0, -pas], ArrowDown: [0, pas] }[e.key];
+      remplacerChoisi((o) => deplacer(o, dx, dy));
+    } else if (e.key.startsWith("Arrow") && outil === "calque" && calques[actif]) {
+      const pas = e.shiftKey ? PAS_FLECHE_MAJ : PAS_FLECHE;
+      const [dx, dy] = { ArrowLeft: [-pas, 0], ArrowRight: [pas, 0], ArrowUp: [0, -pas], ArrowDown: [0, pas] }[e.key];
+      changerCalques((pile) => remplacerCalque(pile, actif, (k) => decalerCalque(k, dx, dy)), actif);
+    } else if (e.key === "+" || e.key === "=") zoomer(zoom * PAS_ZOOM);
+    else if (e.key === "-") zoomer(zoom / PAS_ZOOM);
+    else if (e.key === "0") zoomer(1);
+    else if (e.key === "[") choisirNiveau(niveau - 1);
+    else if (e.key === "]") choisirNiveau(niveau + 1);
+    else return;
+    e.preventDefault();
+  });
+
+  document.addEventListener("keyup", (e) => {
+    if (e.key === " ") {
+      espace = false;
+      scene.classList.remove("espace");
+    }
+  });
+
+  // LA MOLETTE ZOOME autour du curseur — DEMANDE (2026-10-24) ; avant, il
+  // fallait Ctrl. Maj+molette garde le défilement natif ; le bouton du milieu et
+  // Espace+glisser déplacent toujours la vue. Le pas suit l'amplitude du cran :
+  // une molette fine (ou un pavé tactile) envoie de petits `deltaY` en rafale, un
+  // pas entier par évènement y zoomerait d'un coup.
+  scene.addEventListener("wheel", (e) => {
+    if (e.shiftKey) return;
+    e.preventDefault();
+    const cadre = scene.getBoundingClientRect();
+    const crans = Math.max(-3, Math.min(3, -e.deltaY / 100));
+    zoomer(zoom * PAS_ZOOM ** crans, e.clientX - cadre.left, e.clientY - cadre.top);
+  }, { passive: false });
+
+  function commencerGlisse(e) {
+    geste = { genre: "glisse", x: e.clientX, y: e.clientY, gauche: scene.scrollLeft, haut: scene.scrollTop };
+    scene.classList.add("glisse");
+  }
+
+  // Bouton du milieu, ou Espace + gauche : déplace la vue, quel que soit l'outil.
+  // Avec la sélection, glisser dans le vide la déplace aussi.
+  scene.addEventListener("mousedown", (e) => {
+    if (e.target === champ || !chargee) return;
+    validerTexte();
+    // `preventDefault` empêche le clic de retirer le focus : un champ de taille
+    // le garderait, et avec lui toutes les touches d'outil.
+    if (document.activeElement instanceof HTMLInputElement) document.activeElement.blur();
+    e.preventDefault();
+    if (e.button === 1 || (e.button === 0 && espace)) {
+      commencerGlisse(e);
+      return;
+    }
+    if (e.button !== 0) return;
+    const p = versImage(e);
+    if (outil === "selection") {
+      choisi = objetSous(p);
+      if (choisi >= 0) geste = { genre: "deplace", depart: p, origine: objets()[choisi], note: false };
+      else commencerGlisse(e);
+      rendre();
+      return;
+    }
+    choisi = -1;
+    if (outil === "calque") geste = { genre: "calque", depart: p, origine: calques[actif], note: false };
+    else if (outil === "texte") ouvrirChamp(p, -1);
+    else if (outil === "emoji") ajouter({ type: "emoji", points: [p], emoji, couleur, niveau });
+    else geste = { genre: "trace", objet: { type: outil, points: outil === "main" ? [p] : [p, p], couleur, niveau } };
+    rendre();
+  });
+
+  scene.addEventListener("dblclick", (e) => {
+    if (!chargee || outil !== "selection") return;
+    const i = objetSous(versImage(e));
+    if (i >= 0 && objets()[i].type === "texte") {
+      geste = null;
+      ouvrirChamp(objets()[i].points[0], i);
+    }
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    if (!geste) return;
+    if (geste.genre === "glisse") {
+      scene.scrollLeft = geste.gauche - (e.clientX - geste.x);
+      scene.scrollTop = geste.haut - (e.clientY - geste.y);
+      return;
+    }
+    const p = versImage(e);
+    if (geste.genre === "calque") {
+      // Comme un objet : noté au premier mouvement, au pixel entier.
+      if (!geste.note) {
+        historique.noter(etat());
+        geste.note = true;
+      }
+      const k = decalerCalque(geste.origine, Math.round(p.x - geste.depart.x), Math.round(p.y - geste.depart.y));
+      calques = remplacerCalque(calques, actif, () => k);
+    } else if (geste.genre === "deplace") {
+      // L'historique ne note le déplacement qu'au premier mouvement : un
+      // simple clic de sélection n'est pas un changement.
+      if (!geste.note) {
+        historique.noter(etat());
+        geste.note = true;
+      }
+      const moved = deplacer(geste.origine, p.x - geste.depart.x, p.y - geste.depart.y);
+      poserObjets(objets().map((o, i) => (i === choisi ? moved : o)));
+    } else {
+      const o = geste.objet;
+      const points = o.type === "main"
+        ? [...o.points, p]
+        : [o.points[0], e.shiftKey ? contraindre(o.type, o.points[0], p) : p];
+      geste.objet = finaliser({ ...o, points });
+    }
+    rendre();
+  });
+
+  // Ce que l'objet tient de l'image sous lui : la gomme prend la teinte des
+  // bords de son cadre, lue sur la TOILE du calque actif (pas sur les
+  // annotations, ni sur les autres calques).
+  function finaliser(o) {
+    if (o.type !== "gomme") return o;
+    const k = calques[actif];
+    const r = cadreDe(o.points[0], o.points[1]);
+    const c = k.toile.getContext("2d", { colorSpace: "srgb" });
+    return { ...o, couleur: teinteDesBords(c, { ...r, x: r.x - k.x, y: r.y - k.y }) };
+  }
+
+  window.addEventListener("mouseup", () => {
+    if (geste && geste.genre === "trace") {
+      const o = geste.objet;
+      const [a, b] = o.points;
+      // Un clic sans glisser ne laisse pas une forme invisible — sauf l'étape,
+      // dont le clic pose la pastille (glisser ajoute la pointe).
+      const assez = o.type === "main" || o.type === "etape" || Math.hypot(b.x - a.x, b.y - a.y) >= TOLERANCE_ECRAN * pixelsParEcran() / 2;
+      geste = null;
+      if (assez && TRACES_GEOMETRIE.has(o.type)) appliquerTrace(o);
+      else if (assez) ajouter(o);
+    }
+    geste = null;
+    scene.classList.remove("glisse");
+    rendre();
+  });
+
+  window.addEventListener("resize", () => { if (chargee) appliquerZoom(); });
+
+  // **LEVIER DE VÉRIFICATION** (`NEURADESK_DEBUG_EDITEUR_ANNOTER`, voir
+  // `cef_image_editor::debug_leviers`) : pose un objet de chaque sorte, sans
+  // aucune entrée simulée — pour que la capture et le fichier enregistré les
+  // montrent tous.
+  window.editeurDebugAnnoter = () => {
+    const l = largeur, h = hauteur;
+    const p = (fx, fy) => ({ x: l * fx, y: h * fy });
+    // L'inversion est la PREMIÈRE et tombe dans le trou du projecteur : rien
+    // d'autre ne touche ses pixels, qui doivent valoir 255 − l'original.
+    const exemples = [
+      { type: "inverser", points: [p(0.46, 0.915), p(0.54, 0.945)] },
+      { type: "rectangle", points: [p(0.05, 0.05), p(0.30, 0.20)] },
+      { type: "ellipse", points: [p(0.35, 0.05), p(0.60, 0.20)] },
+      { type: "ligne", points: [p(0.65, 0.05), p(0.95, 0.20)] },
+      { type: "fleche", points: [p(0.05, 0.30), p(0.30, 0.45)] },
+      { type: "main", points: [0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => p(0.35 + i * 0.03, 0.30 + (i % 2) * 0.1)) },
+      { type: "surligneur", points: [p(0.65, 0.30), p(0.95, 0.40)] },
+      { type: "texte", points: [p(0.05, 0.55)], texte: "Texte\nsur deux lignes" },
+      { type: "etape", points: [p(0.45, 0.60)] },
+      { type: "etape", points: [p(0.55, 0.60)] },
+      { type: "etape", points: [p(0.65, 0.60), p(0.72, 0.48)] },
+      { type: "pave", points: [p(0.78, 0.47), p(0.95, 0.62)] },
+      { type: "flou", points: [p(0.05, 0.70), p(0.25, 0.85)] },
+      { type: "pixeliser", points: [p(0.28, 0.70), p(0.48, 0.85)] },
+      { type: "gomme", points: [p(0.51, 0.70), p(0.71, 0.85)] },
+      { type: "loupe", points: [p(0.74, 0.70), p(0.95, 0.85)] },
+      { type: "projecteur", points: [p(0.30, 0.88), p(0.70, 0.98)] },
+      { type: "emoji", points: [p(0.33, 0.62)], emoji: "😀" },
+    ];
+    exemples.forEach((o, i) => ajouter(finaliser({ ...o, couleur: COULEURS[i % COULEURS.length][1], niveau: i % NIVEAUX.length })));
+    choisi = 0;
+    rendre();
+    go("annote", objets().length);
+  };
+
+  // **LEVIER DE VÉRIFICATION** (`NEURADESK_DEBUG_EDITEUR_GEOMETRIE`) : mode 1,
+  // une suite qui DOIT rendre l'image d'origine (quatre quarts de tour, un
+  // aller-retour, des miroirs doublés, le canevas agrandi puis recadré) — le
+  // fichier enregistré doit être identique au pixel près. Mode 2 : la même
+  // suite puis un quart de tour, un recadrage et une réduction, pour voir les
+  // annotations suivre. UNE seule navigation à la fin (deux se télescopent).
+  window.editeurDebugGeometrie = (mode) => {
+    const L = largeur, H = hauteur;
+    const etapes = [];
+    const faire = (op) => {
+      appliquerGeometrie(op, false);
+      etapes.push(`${op.genre}_${largeur}x${hauteur}`);
+    };
+    for (let i = 0; i < 4; i++) faire({ genre: "pivoter", sens: 1 });
+    faire({ genre: "pivoter", sens: -1 });
+    faire({ genre: "pivoter", sens: 1 });
+    for (const axe of ["h", "h", "v", "v"]) faire({ genre: "retourner", axe });
+    faire({ genre: "canevas", l: L + 40, h: H + 60, ancre: ANCRES[4] });
+    faire({ genre: "recadrer", r: { x: 20, y: 30, l: L, h: H } });
+    if (mode === 2) {
+      faire({ genre: "pivoter", sens: 1 });
+      faire({ genre: "recadrer", r: { x: largeur * 0.1, y: 0, l: largeur * 0.8, h: hauteur } });
+      faire({ genre: "redimensionner", l: Math.round(largeur * 0.75), h: Math.round(hauteur * 0.75) });
+    }
+    rendre();
+    go("geometrie", "suite", etapes.join("-"), `objets_${objets().length}`);
+  };
+
+  // **LEVIER DE VÉRIFICATION** (`NEURADESK_DEBUG_EDITEUR_COULEURS`) : pose des
+  // réglages SANS les appliquer — l'enregistrement qui suit doit les appliquer
+  // lui-même (`encoder`). Saturation à −100 : le fichier doit être GRIS, chaque
+  // pixel avec r = g = b, ce qui se mesure.
+  window.editeurDebugCouleurs = () => {
+    montrerOnglet("geometrie");
+    couleurs = { luminosite: 20, contraste: 10, saturation: -BORNE_REGLAGE_COULEUR };
+    afficherCouleurs();
+    rendre();
+  };
+
+  go("pret");
+</script>
+</body>
+</html>

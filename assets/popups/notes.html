@@ -1,0 +1,2676 @@
+<!doctype html>
+<!--
+  win32::cef_notes (icône Notes) — prise de notes libres inspirée de
+  usememos/memos (https://github.com/usememos/memos) : zone de saisie
+  rapide en haut, liste anté-chronologique des notes (épinglées d'abord),
+  étiquettes `#tag` extraites du CONTENU (jamais stockées à part, voir
+  win32::notes::extract_tags), recherche + filtre par étiquette. PAS un
+  portage de sa pile Go/React/SQL : juste l'inspiration fonctionnelle/UX,
+  adaptée au modèle local mono-utilisateur de ce dock.
+
+  Même "zone libre" que le Dash/la visionneuse du presse-papiers (voir
+  app::dash_rect, win32::cef_clipboard, doc de module) — reprend son
+  séparateur glissable `.splitter` (identique, voir plus bas) entre la
+  barre latérale (recherche + étiquettes) et la liste.
+
+  Recherche et filtre par étiquette sont PURE JS ici (voir `applyFilters`) :
+  l'ensemble des notes arrive déjà en entier depuis Rust (voir
+  win32::cef_notes::push_state), inutile d'aller-retourner par frappe
+  clavier.
+
+  Adressage des actions TOUJOURS par `id`, jamais par index (voir
+  win32::notes::Note::id, doc de champ : l'ordre affiché change avec
+  l'épinglage/le tri).
+
+  PAS de `background` sur `<html>`/`<body>` : transparent par défaut en
+  rendu hors-écran CEF.
+
+  ⚠️ **`lang="fr"` N'EST PAS DÉCORATIF** : sans lui, CEF rend les champs
+  `<input type="date">` et `<input type="time">` au format AMÉRICAIN
+  (`09/25/2026`, `03:30 PM`) — mesuré à la capture. Dans une application
+  française, `09/25/2026` se lit de travers : on y voit le 25 septembre, mais
+  rien ne dit que c'est l'ordre mois/jour avant d'avoir essayé de saisir un 13
+  comme mois.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<script src="menu_contextuel.js"></script>
+<style>
+  html {
+    /* Réglables en direct par window.setState (voir push_state côté Rust,
+       curseurs "Texte"/"Images" — section "Taille du contenu des dashs" du
+       panneau de réglages, sous-section "Notes") — DEMANDE EXPLICITE
+       ("ajoutes la possibilité de modification des réglages du dash notes
+       dans taille du contenu des dashs").
+       --text-scale : TOUT LE PANNEAU, appliqué en `zoom` sur .root ci-dessous
+       — DEMANDE EXPLICITE, et c'est un ÉLARGISSEMENT assumé du sens d'origine
+       (qui ne portait, comme clipboard.html, que sur le corps du texte) :
+       « j'attends que TOUT le panneau grossisse ». Une seule variable plutôt
+       que des `calc()` sur chaque taille garde l'ensemble COHÉRENT — titres,
+       dates, boutons, zone d'édition, espacements et images grandissent dans
+       les mêmes proportions, au lieu d'un texte qui grossit dans des boîtes
+       qui ne suivent pas.
+       --image-scale : taille des images de notes RELATIVE au panneau, donc
+       composée avec --text-scale (une image est zoomée comme le reste, puis
+       multipliée par ce facteur-là) — c'est ce qui garde les deux curseurs
+       utiles l'un à côté de l'autre. */
+    --text-scale: 1;
+    --image-scale: 1;
+    /* Palette du CONTENU, dérivée de l'accent de CETTE fenêtre — poussée par
+       win32::cef_popup::push_window_palette à chaque frame où le panneau est
+       visible. MÊMES variables et même doctrine que Dash/Réglages/
+       Presse-papiers : ce panneau a été le premier à les recevoir, il n'a plus
+       rien de particulier — voir la doc de `push_window_palette` pour le
+       pourquoi des DEUX familles.
+       Les valeurs par défaut sont EXACTEMENT les littéraux remplacés, donc le
+       rendu est identique tant que Rust n'a rien poussé (et il ne pousse qu'une
+       fois la fenêtre visible) — un `var()` non déclaré rendrait au contraire la
+       déclaration entière invalide, donc AUCUN fond plutôt qu'un fond nuancé.
+       `--popup-accent-solid-rgb`/`--popup-on-accent-rgb` ne servent qu'aux
+       aplats PLEINS portant du texte, et vont toujours PAR PAIRE. */
+    --popup-fg-rgb: 255, 255, 255;
+    --popup-accent-rgb: 255, 255, 255;
+    --popup-accent-solid-rgb: 255, 255, 255;
+    --popup-on-accent-rgb: 0, 0, 0;
+    /* Multiplicateur de TRANSPARENCE des éléments — un SEUL réglage pour les
+       quatre panneaux (curseur "Opacité des éléments" de la section
+       "Transparence et flou" des Réglages, voir
+       win32::cef_popup::set_popup_alpha). Chaque alpha de ce fichier s'écrit
+       `calc(<valeur> * var(--popup-alpha))`, donc 1 = tel que conçu, et la
+       hiérarchie entre les éléments (un survol plus marqué qu'un repos) est
+       PRÉSERVÉE quel que soit le réglage. */
+    --popup-alpha: 1;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    font-family: var(--nd-police);
+    /* ⛔ LE TEXTE PLEIN SUIT AUSSI LE CURSEUR — BUG RÉEL SIGNALÉ (2026-10-23) :
+       « opacité des éléments n'agit pas sur tous les niveaux de textes ». La
+       couleur de base était un `rgb()` OPAQUE : titres, libellés et contenu
+       restaient à 100 % quand on descendait, seuls les textes déjà atténués
+       bougeaient. Elle porte maintenant `min(1, a)` ; et comme une `opacity`
+       se MULTIPLIE avec la couleur héritée, les textes atténués s'écrivent
+       `calc(k * max(1, a))` : sous 100 %, c'est la couleur qui apporte le
+       facteur (k·a, pas k·a²) ; au-dessus, l'opacité monte seule (min(1, k·a)). */
+    color: rgba(var(--popup-fg-rgb), min(1, var(--popup-alpha)));
+  }
+  /* Textes de SUBSTITUTION (les deux seuls du panneau : « Une idée, une
+     note… » dans la zone de rédaction, « Rechercher… » dans la colonne) —
+     AUCUNE règle n'existait pour eux, alors que les deux champs posent bien
+     leur propre `color:` un peu plus bas. Ils prenaient donc la couleur PAR
+     DÉFAUT du navigateur, un gris translucide — DÉFAUT RÉEL SIGNALÉ : « il y
+     a encore des textes trop transparents », et c'est bien le seul texte du
+     panneau que rien ne pilotait.
+     `opacity: 1` est nécessaire : Chromium applique sa PROPRE opacité aux
+     placeholders (celle du gris par défaut), qui se composerait avec l'alpha
+     ci-dessous et rendrait le résultat à nouveau translucide. Un cran sous le
+     texte saisi (0,72 contre pleine opacité), pour que « vide » et « rempli »
+     restent distinguables. */
+  ::placeholder {
+    color: rgba(var(--popup-fg-rgb), calc(0.72 * var(--popup-alpha)));
+    opacity: 1;
+  }
+  .root {
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    /* Grossissement de TOUT le panneau (voir --text-scale, en-tête <style>).
+       `zoom` plutôt que des `calc()` dispersés sur chaque taille : une seule
+       règle, et rien ne peut être oublié. Les deux dimensions sont divisées par
+       le facteur pour COMPENSER exactement ce que `zoom` multiplie — sans quoi
+       un panneau à 180 % déborderait de la fenêtre au lieu de la remplir, et la
+       barre latérale sortirait de l'écran.
+       Le `.lightbox` (visionneuse plein écran, `position: fixed`) est un FRÈRE
+       de .root, pas un descendant : il n'est donc pas atteint par ce zoom, ce
+       qui est voulu — il doit couvrir la fenêtre quelle que soit l'échelle. */
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    height: calc(100vh / var(--text-scale));
+  }
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    flex-shrink: 0;
+  }
+  .topbar h1 {
+    font-size: 20px;
+    margin: 0;
+    font-weight: 600;
+  }
+  .close-btn {
+    all: unset;
+    cursor: pointer;
+    padding: 6px 10px;
+    border-radius: var(--nd-rayon-controle);
+    font-size: 16px;
+  }
+  .close-btn:hover {
+    background: rgba(var(--popup-accent-rgb), calc(0.23 * var(--popup-fond-alpha, 1)));
+  }
+  /* ⭐ **LA RÉDACTION EST UNE COLONNE À DROITE** — DEMANDE EXPLICITE
+     (2026-10-11) : « il y a trop d'espace pour écrire une nouvelle note, ça perd
+     de la place verticalement, pousse la partie nouvelle note sur la droite et
+     utilise la place gagnée pour la partie avec le calendrier et la recherche ».
+     Elle était une bande pleine largeur AU-DESSUS de la colonne et de la liste,
+     qui leur prenait douze lignes de hauteur ; elle est désormais la dernière
+     colonne de `.body`, et les deux autres vont du haut au bas du panneau. */
+  .compose {
+    width: 380px;
+    flex-shrink: 0;
+    min-height: 0;
+    padding: 0 18px 16px 6px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .compose textarea {
+    /* La zone REMPLIT la colonne : c'est sa hauteur entière qui sert à écrire,
+       et non plus douze lignes prises à la liste. Le plancher garde une zone
+       utilisable quand le panneau est bas. */
+    flex: 1 1 auto;
+    resize: none;
+    /* DEMANDE EXPLICITE : « la zone de texte pour entrer du texte dans une note
+       [doit avoir] une douzaine de lignes ». Exprimé en `em` plutôt qu'en pixels
+       pour que le compte reste JUSTE : `1.4em` est la hauteur d'une ligne à la
+       taille de police de la zone, donc `12 * 1.4em` vaut douze lignes — et le
+       chiffre 12 reste lisible dans la règle, ce qu'un `235px` calculé à la
+       main ne permettrait pas.
+       Le PLAFOND devait suivre : il était à 220px, soit MOINS de douze lignes —
+       la zone n'aurait donc jamais pu les atteindre, même redimensionnée à la
+       main. Il est doublé pour laisser de la marge au redimensionnement
+       vertical, qui reste possible. */
+    min-height: calc(8 * 1.4em);
+    /* Fixé EXPLICITEMENT, et pas pour le style : `1.4em` ne vaut une ligne que
+       si l'interligne vaut 1,4. Sans cette ligne, la zone héritait du
+       `line-height: normal` du navigateur (≈1,2 selon la police), et les
+       « douze lignes » ci-dessus en auraient fait quatorze — le compte aurait
+       été faux, et faux d'une valeur qui dépend de la police. */
+    line-height: 1.4;
+    background: rgba(var(--popup-accent-rgb), calc(0.22 * var(--popup-fond-alpha, 1)));
+    color: rgba(var(--popup-fg-rgb), min(1, var(--popup-alpha)));
+    border: none;
+    border-radius: var(--nd-rayon-surface);
+    padding: 10px 12px;
+    font-family: var(--nd-police);
+    font-size: 14px;
+    outline: none;
+    box-sizing: border-box;
+  }
+  /* Dans une colonne étroite, la barre de mise en forme et les boutons passent
+     à la ligne au lieu de déborder. */
+  .compose .row {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .compose .gauche {
+    flex-wrap: wrap;
+  }
+  .compose .hint {
+    font-size: 12px;
+    opacity: calc(0.84 * max(1, var(--popup-alpha)));
+  }
+  .compose .row .buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .compose h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: calc(0.84 * max(1, var(--popup-alpha)));
+    margin: 4px 0 0;
+  }
+  .compose button.add,
+  .compose button.paste {
+    all: unset;
+    cursor: pointer;
+    padding: 8px 16px;
+    border-radius: var(--nd-rayon-surface);
+    /* « Ajouter » et « Coller » : remontés comme les autres zones (voir
+       `.tag-btn` ci-dessus) — à 0,16 sur le bureau flouté, le fond ne se
+       distinguait pas. Ce sont les deux actions principales du panneau, elles
+       doivent se voir au repos, pas seulement au survol. */
+    background: rgba(var(--popup-accent-rgb), calc(0.3 * var(--popup-fond-alpha, 1)));
+    font-size: 13px;
+  }
+  .compose button.add:hover,
+  .compose button.paste:hover {
+    background: rgba(var(--popup-accent-rgb), calc(0.26 * var(--popup-fond-alpha, 1)));
+  }
+  .body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+  .sidebar {
+    width: 220px;
+    flex-shrink: 0;
+    overflow-y: auto;
+    padding: 0 12px 12px 18px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .sidebar input[type="search"] {
+    background: rgba(var(--popup-accent-rgb), calc(0.22 * var(--popup-fond-alpha, 1)));
+    color: rgba(var(--popup-fg-rgb), min(1, var(--popup-alpha)));
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 7px 10px;
+    font-size: 13px;
+    outline: none;
+    box-sizing: border-box;
+    width: 100%;
+  }
+  .sidebar label.pinned-only {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    opacity: calc(0.95 * max(1, var(--popup-alpha)));
+    cursor: pointer;
+  }
+  .sidebar h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: calc(0.84 * max(1, var(--popup-alpha)));
+    margin: 4px 0 2px;
+  }
+  .tag-btn {
+    all: unset;
+    display: flex;
+    justify-content: space-between;
+    cursor: pointer;
+    padding: 5px 8px;
+    border-radius: var(--nd-rayon-controle);
+    /* DÉFAUT RÉEL SIGNALÉ : « les fonds des zones ne sont pas visibles » —
+       vérifié sur une capture du harnais. Les lignes de la colonne latérale
+       n'avaient AUCUN fond : elles se lisaient comme du texte posé sur le
+       bureau flouté, sans qu'on voie qu'elles étaient cliquables ni où
+       s'arrêtait chacune. `background` vient APRÈS `all: unset`, qui le
+       remettrait sinon à `transparent`. */
+    background: rgba(var(--popup-accent-rgb), calc(0.22 * var(--popup-fond-alpha, 1)));
+    font-size: 13px;
+  }
+  .tag-btn:hover {
+    background: rgba(var(--popup-accent-rgb), calc(0.18 * var(--popup-fond-alpha, 1)));
+  }
+  .tag-btn.active {
+    background: rgba(var(--popup-accent-rgb), calc(0.22 * var(--popup-fond-alpha, 1)));
+  }
+  .tag-btn .count {
+    opacity: calc(0.84 * max(1, var(--popup-alpha)));
+  }
+  /* Séparateur glissable — voir assets/popups/clipboard.html, même logique
+     de glisser-déposer exacte (mousedown/mousemove/mouseup sur `document`),
+     copiée ici plutôt que factorisée : chaque page CEF est un document HTML
+     indépendant, sans module JS partagé entre popups (voir doc de module de
+     win32::cef_popup). */
+  .splitter {
+    width: 6px;
+    flex-shrink: 0;
+    cursor: col-resize;
+    position: relative;
+    background: transparent;
+  }
+  .splitter::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 2px;
+    transform: translateX(-50%);
+    border-radius: 1px;
+    background: rgba(var(--popup-accent-rgb), calc(0.35 * var(--popup-fond-alpha, 1)));
+  }
+  .splitter:hover,
+  .splitter.dragging {
+    background: rgba(var(--popup-accent-rgb), calc(0.18 * var(--popup-fond-alpha, 1)));
+  }
+  .splitter:hover::before,
+  .splitter.dragging::before {
+    background: rgba(var(--popup-accent-rgb), calc(0.65 * var(--popup-fond-alpha, 1)));
+  }
+  .list {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+    padding: 0 18px 16px 12px;
+    box-sizing: border-box;
+  }
+  .empty {
+    padding: 16px;
+    opacity: calc(0.88 * max(1, var(--popup-alpha)));
+  }
+  /* La cloche d'alarme d'une carte — même famille que `.pin-btn` (voir plus haut). */
+  .alarm-btn {
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    opacity: calc(0.55 * max(1, var(--popup-alpha)));
+  }
+  .alarm-btn.active { opacity: 1; }
+  /* Le rappel d'une note HORS édition — un simple INDICATEUR : les commandes
+     n'existent qu'en édition (voir renderAlarme dans la page), pour qu'aucun
+     champ ne puisse être modifié sans qu'un bouton ne le valide. */
+  .alarm-badge {
+    font-size: 12px;
+    white-space: nowrap;
+    opacity: calc(0.75 * max(1, var(--popup-alpha)));
+  }
+  /* La ligne d'une étiquette : la pastille cliquable, PUIS le bouton qui filtre.
+     Deux boutons côte à côte — un bouton dans un bouton serait invalide. */
+  .tag-rangee {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .tag-rangee .tag-btn {
+    flex: 1 1 auto;
+  }
+  .tag-couleur {
+    flex: 0 0 auto;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1px solid rgba(var(--popup-accent-rgb), calc(0.6 * var(--popup-fond-alpha, 1)));
+    background: currentColor;
+    cursor: pointer;
+    padding: 0;
+  }
+  /* LA PASTILLE DE COULEUR D'UNE ÉTIQUETTE, et la palette qui la choisit.
+     DEMANDE EXPLICITE : « choisies par l'utilisateur ». La couleur vit dans
+     `tag_colors.toml` (voir config::load_tag_colors) et arrive par l'état. */
+  /* ⚠️ **UN `<span>` EST EN LIGNE, DONC `width`/`height` Y SONT IGNORES** : sans
+     ce conteneur flex, la pastille ne se dessinerait pas du tout — un cercle de
+     10 px dans un contexte en ligne n'a ni largeur ni hauteur. */
+  .tag-titre {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .tag-pastille {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    background: currentColor;
+  }
+  /* La palette : en position FIXE, parce qu'elle s'ouvre au clic droit sur une
+     pastille, n'importe où dans la colonne — et non dans le flux, où elle
+     deplacerait la liste. */
+  #palette-etiquette {
+    position: fixed;
+    z-index: 10;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px;
+    border-radius: var(--nd-rayon-surface);
+    background: rgba(20, 20, 20, calc(0.92 * var(--popup-fond-alpha, 1)));
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  }
+  .palette-case {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.35 * var(--popup-fond-alpha, 1)));
+    cursor: pointer;
+    padding: 0;
+  }
+  /* LES DEUX BOUTONS D'HISTORIQUE — voir `peutAnnuler`/`peutRefaire`. Le grisage
+     vient d'un `disabled` pose par la page : un bouton qui ne peut rien faire doit
+     le dire, sinon on clique dessus en croyant que c'est casse. */
+  .historique {
+    display: flex;
+    gap: 6px;
+  }
+  .historique button {
+    flex: 1 1 auto;
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 4px 6px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .historique button:disabled {
+    opacity: calc(0.35 * max(1, var(--popup-alpha)));
+    cursor: default;
+  }
+  /* LE BANDEAU D'AVERTISSEMENT — voir rendreAvertissement. Il doit frapper
+     l'oeil AVANT tout le reste : c'est le seul endroit ou l'utilisateur apprend
+     que ses notes n'ont pas pu etre lues, et le chemin du fichier est dedans. */
+  #avertissement {
+    margin: 8px;
+    padding: 8px 10px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(255, 90, 90, calc(0.35 * var(--popup-fond-alpha, 1)));
+    /* Le message porte un saut de ligne (voir `config::avertissement_notes`). */
+    white-space: pre-line;
+    font-size: 13px;
+  }
+  /* Le bouton d'acquittement d'un rappel de note — la SEULE façon de faire taire
+     la sonnerie, et il n'apparaît que tant qu'il y a quelque chose à taire (voir
+     renderAlarme dans la page). */
+  .ack-btn {
+    background: rgba(var(--popup-accent-rgb), calc(0.45 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 2px 6px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  /* Les sept jours de répétition d'un rappel (voir renderAlarme) : allumé =
+     le rappel revient ce jour-là ; aucun allumé = une seule fois. */
+  .jour-btn {
+    background: rgba(var(--popup-accent-rgb), calc(0.15 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 2px 5px;
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    opacity: calc(0.6 * max(1, var(--popup-alpha, 1)));
+  }
+  .jour-btn.active {
+    background: rgba(var(--popup-accent-rgb), calc(0.55 * var(--popup-fond-alpha, 1)));
+    opacity: 1;
+  }
+  .alarm-time {
+    background: rgba(var(--popup-accent-rgb), calc(0.35 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 2px 4px;
+    font: inherit;
+    font-size: 12px;
+  }
+  .card {
+    /* Remonté depuis 0,06 — DÉFAUT RÉEL SIGNALÉ : « les éléments du panneau
+       notes n'utilisent pas tout l'espace disponible », et la capture du
+       harnais a montré pourquoi. À 6 % d'opacité sur un bureau flouté, la
+       carte n'a AUCUN fond perceptible : on ne voyait plus où une note
+       commence ni où elle finit, et son texte comme ses boutons semblaient
+       flotter sur une grande surface vide alors qu'ils occupaient déjà toute
+       la largeur. Le problème n'était donc pas la place prise, mais sa
+       VISIBILITÉ — d'autant plus avec un accent sombre. */
+    background: rgba(var(--popup-accent-rgb), calc(0.24 * var(--popup-fond-alpha, 1)));
+    border-radius: var(--nd-rayon-grand);
+    padding: 10px 12px;
+    margin-bottom: 10px;
+  }
+  .card.pinned {
+    /* Teinte de l'ACCENT (et non le pôle de texte) : une note épinglée doit
+       ressortir par sa couleur, pas seulement par sa luminosité. Remonté en
+       même temps que `.card` ci-dessus, et davantage encore : c'est l'écart
+       entre les deux qui doit rester lisible, pas la valeur absolue. */
+    background: rgba(var(--popup-accent-rgb), calc(0.3 * var(--popup-fond-alpha, 1)));
+  }
+  .card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .card-head .date {
+    font-size: 11px;
+    /* Remonté depuis 0,55 — DÉFAUT RÉEL SIGNALÉ : « certains des textes du
+       panneau notes ne sont pas assez contrastés, ils sont trop sombres ».
+       Toutes les atténuations de ce panneau passaient par `opacity` sur le
+       pôle de texte : du BLANC rendu GRIS, jamais une couleur sombre. Sur un
+       fond flouté, cela se lit d'autant moins que les aplats sont désormais
+       teintés par l'accent, qui assombrit l'ensemble. La date reste la plus
+       discrète du panneau, mais elle doit rester LISIBLE. */
+    opacity: calc(0.8 * max(1, var(--popup-alpha)));
+  }
+  .card-head .actions {
+    display: flex;
+    gap: 4px;
+  }
+  .card-head button {
+    all: unset;
+    cursor: pointer;
+    padding: 3px 7px;
+    border-radius: var(--nd-rayon-controle);
+    /* Ces boutons (épingler, image, Modifier, Supprimer) n'avaient de fond
+       QU'AU SURVOL — voir « les fonds des zones ne sont pas visibles », constaté
+       sur capture : au repos, ils se lisaient comme du simple texte, alors que
+       les étiquettes voisines ont, elles, un fond. Même famille de teinte, un
+       cran au-dessus d'elles puisqu'ils sont l'action principale d'une note. */
+    /* 0,45 et non 0,22 — leçon de la première tentative, vérifiée sur capture :
+       la carte est DÉJÀ de l'accent à 0,16, donc un bouton à 0,22 ne se
+       distinguait pas d'elle. Empiler la MÊME teinte à des alphas faibles ne
+       produit presque aucune différence ; c'est l'ÉCART entre les deux qui rend
+       la superposition visible, pas la valeur absolue. */
+    background: rgba(var(--popup-accent-rgb), calc(0.45 * var(--popup-fond-alpha, 1)));
+    font-size: 12px;
+    opacity: calc(0.9 * max(1, var(--popup-alpha)));
+  }
+  .card-head button:hover {
+    background: rgba(var(--popup-accent-rgb), calc(0.23 * var(--popup-fond-alpha, 1)));
+    opacity: 1;
+  }
+  .card-head button.pin-btn.active {
+    opacity: 1;
+  }
+  .card-body {
+    white-space: pre-wrap;
+    word-break: break-word;
+    /* Taille de BASE : le grossissement vient du `zoom` de .root, PAS d'ici —
+       l'y laisser l'appliquerait DEUX fois (voir --text-scale, en-tête). */
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  .card .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .chip {
+    all: unset;
+    cursor: pointer;
+    /* Idem `.card-body` ci-dessus : la base, pas le grossissement. */
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    /* Comme les boutons de note ci-dessus : les étiquettes sont POSÉES SUR la
+       carte (accent 0,16), il leur faut donc un écart franc pour se voir. */
+    background: rgba(var(--popup-accent-rgb), calc(0.38 * var(--popup-fond-alpha, 1)));
+  }
+  .chip:hover {
+    background: rgba(var(--popup-accent-rgb), calc(0.3 * var(--popup-fond-alpha, 1)));
+  }
+  .chip.active {
+    /* Filtre ACTIF : teinte de l'accent, comme la note épinglée ci-dessus —
+       c'est ce qui doit se lire d'un coup d'œil dans la colonne. */
+    background: rgba(var(--popup-accent-rgb), calc(0.45 * var(--popup-fond-alpha, 1)));
+  }
+  .card textarea.edit-area {
+    width: 100%;
+    /* Même traitement que la zone de rédaction en haut du panneau (voir
+       `.compose textarea`), et pour la même demande — DEMANDE EXPLICITE : « la
+       zone de texte pour modifier une note n'a pas assez de lignes ». Elle
+       démarrait à 80px, soit quatre lignes environ.
+       Même expression `calc(12 * 1.4em)` et même interligne fixé EXPLICITEMENT,
+       pour la même raison : sans lui, `1.4em` ne vaut pas une ligne (la zone
+       hérite alors du `line-height: normal` du navigateur, ≈1,2 selon la
+       police), et le compte serait faux — d'une quantité qui dépend de la
+       police, donc invisible à la relecture. */
+    min-height: calc(12 * 1.4em);
+    line-height: 1.4;
+    resize: vertical;
+    background: rgba(0, 0, 0, calc(0.2 * var(--popup-fond-alpha, 1)));
+    color: rgba(var(--popup-fg-rgb), min(1, var(--popup-alpha)));
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 8px;
+    font-family: var(--nd-police);
+    font-size: 14px;
+    outline: none;
+    box-sizing: border-box;
+  }
+  /* La mise en forme d'une note (voir `formaterNote`). */
+  .card-body mark {
+    background: rgba(255, 214, 10, 0.45);
+    color: inherit;
+    border-radius: 2px;
+    padding: 0 1px;
+  }
+  .card-body a.lien {
+    color: inherit;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+  .card-body a.lien:hover {
+    opacity: calc(0.75 * max(1, var(--popup-alpha, 1)));
+  }
+  .compose .gauche {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .format {
+    display: flex;
+    gap: 4px;
+  }
+  .format button {
+    all: unset;
+    cursor: pointer;
+    width: 24px;
+    height: 24px;
+    line-height: 24px;
+    text-align: center;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-accent-rgb), calc(0.3 * var(--popup-fond-alpha, 1)));
+    font-size: 13px;
+  }
+  .format button:hover {
+    background: rgba(var(--popup-accent-rgb), calc(0.45 * var(--popup-fond-alpha, 1)));
+  }
+  .format .f-gras { font-weight: 700; }
+  .format .f-italique { font-style: italic; }
+  .format .f-barre { text-decoration: line-through; }
+  .format .f-surligne { background-image: linear-gradient(transparent 55%, rgba(255, 214, 10, 0.7) 55%); }
+  .barre-selection {
+    position: fixed;
+    display: none;
+    z-index: 50;
+    padding: 4px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(20, 20, 28, 0.92);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  }
+  .barre-selection.visible {
+    display: block;
+  }
+  .format .f-couleur {
+    font-weight: 700;
+    background-image: linear-gradient(90deg, #ff6b6b, #ffa94d, #ffe066, #69db7c, #74c0fc, #da77f2);
+    -webkit-background-clip: text;
+    color: transparent;
+  }
+  .format .pastilles {
+    display: none;
+    gap: 4px;
+    align-items: center;
+  }
+  .format .pastilles.ouvertes {
+    display: flex;
+  }
+  .format button.pastille {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+  }
+  /* La palette des couleurs de texte (voir `COULEURS`) — des teintes CLAIRES,
+     parce que le texte du panneau est clair sur un fond sombre et flouté. */
+  .c-rouge { color: #ff6b6b; }
+  .c-orange { color: #ffa94d; }
+  .c-jaune { color: #ffe066; }
+  .c-vert { color: #69db7c; }
+  .c-bleu { color: #74c0fc; }
+  .c-violet { color: #da77f2; }
+  .format button.c-fond-rouge { background: #ff6b6b; }
+  .format button.c-fond-orange { background: #ffa94d; }
+  .format button.c-fond-jaune { background: #ffe066; }
+  .format button.c-fond-vert { background: #69db7c; }
+  .format button.c-fond-bleu { background: #74c0fc; }
+  .format button.c-fond-violet { background: #da77f2; }
+  .card .edit-format {
+    margin-bottom: 6px;
+  }
+  .card .edit-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .card .edit-actions button {
+    all: unset;
+    cursor: pointer;
+    padding: 6px 12px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-accent-rgb), calc(0.45 * var(--popup-fond-alpha, 1)));
+    font-size: 12px;
+  }
+  .card .edit-actions button:hover {
+    background: rgba(var(--popup-accent-rgb), calc(0.26 * var(--popup-fond-alpha, 1)));
+  }
+  .card .images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .card .image-thumb {
+    position: relative;
+    line-height: 0;
+  }
+  .card .image-thumb img {
+    max-width: calc(160px * var(--image-scale));
+    max-height: calc(160px * var(--image-scale));
+    border-radius: var(--nd-rayon-controle);
+    cursor: zoom-in;
+    display: block;
+  }
+  .card .image-thumb .remove-image,
+  .card .image-thumb .texte-image,
+  .card .image-thumb .pivoter-image {
+    all: unset;
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    cursor: pointer;
+    background: rgba(0, 0, 0, calc(0.55 * var(--popup-fond-alpha, 1)));
+    color: rgba(var(--popup-fg-rgb), min(1, var(--popup-alpha)));
+    border-radius: 999px;
+    width: 18px;
+    height: 18px;
+    font-size: 11px;
+    line-height: 18px;
+    text-align: center;
+  }
+  /* La reconnaissance prend le coin OPPOSÉ à « retirer » : deux boutons dans le
+     même coin se recouvriraient, et c'est « retirer » qu'on ne veut pas cliquer
+     par erreur. */
+  .card .image-thumb .texte-image { top: auto; bottom: 2px; right: 2px; }
+  /* Les quarts de tour : les deux coins de GAUCHE. */
+  .card .image-thumb .pivoter-image.gauche { right: auto; left: 2px; }
+  .card .image-thumb .pivoter-image.droite { top: auto; right: auto; bottom: 2px; left: 2px; }
+  .card .image-thumb .remove-image:hover,
+  .card .image-thumb .texte-image:hover,
+  .card .image-thumb .pivoter-image:hover {
+    background: rgba(0, 0, 0, calc(0.8 * var(--popup-fond-alpha, 1)));
+  }
+  .lightbox {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, calc(0.75 * var(--popup-fond-alpha, 1)));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: zoom-out;
+    z-index: 10;
+  }
+  .lightbox img {
+    max-width: 92vw;
+    max-height: 92vh;
+    border-radius: var(--nd-rayon-surface);
+  }
+  .lightbox.hidden {
+    display: none;
+  }
+
+  /* ---- D'APRÈS MEMOS (2026-10-11) ---------------------------------------
+     DEMANDE EXPLICITE : tâches, étiquettes imbriquées, calendrier, recherche
+     surlignée, code, archives, notes repliées, vues, export ZIP. */
+
+  /* L'arbre des étiquettes : le pli, ou sa place quand il n'y en a pas. */
+  .tag-rangee .pli {
+    all: unset;
+    flex: 0 0 auto;
+    width: 12px;
+    text-align: center;
+    font-size: 10px;
+    cursor: pointer;
+    opacity: calc(0.8 * max(1, var(--popup-alpha)));
+  }
+  .tag-rangee .pli.vide { cursor: default; }
+  .tag-couleur.heritee { opacity: calc(0.55 * max(1, var(--popup-alpha, 1))); }
+
+  /* Le calendrier d'activité : un jour est plus foncé quand il porte plus de
+     notes créées ; un clic ne garde que les notes de ce jour. */
+  .cal-tete {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 13px;
+    margin-bottom: 4px;
+  }
+  .cal-tete button {
+    all: unset;
+    cursor: pointer;
+    padding: 0 8px;
+    border-radius: var(--nd-rayon-controle);
+    font-size: 15px;
+  }
+  .cal-tete button:hover { background: rgba(var(--popup-accent-rgb), calc(0.3 * var(--popup-fond-alpha, 1))); }
+  .cal-grille {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+    font-size: 11px;
+    text-align: center;
+  }
+  .cal-nom { opacity: calc(0.7 * max(1, var(--popup-alpha))); }
+  .cal-jour {
+    all: unset;
+    cursor: pointer;
+    padding: 3px 0;
+    border-radius: 4px;
+    text-align: center;
+  }
+  .cal-jour.niveau-0 { opacity: calc(0.55 * max(1, var(--popup-alpha, 1))); }
+  .cal-jour.niveau-1 { background: rgba(var(--popup-accent-rgb), calc(0.3 * var(--popup-fond-alpha, 1))); }
+  .cal-jour.niveau-2 { background: rgba(var(--popup-accent-rgb), calc(0.55 * var(--popup-fond-alpha, 1))); }
+  .cal-jour.niveau-3 { background: rgba(var(--popup-accent-rgb), calc(0.85 * var(--popup-fond-alpha, 1))); }
+  .cal-jour:hover { outline: 1px solid rgba(var(--popup-fg-rgb), calc(0.5 * var(--popup-fond-alpha, 1))); }
+  .cal-jour.aujourdhui { outline: 1px solid rgba(var(--popup-fg-rgb), calc(0.8 * var(--popup-fond-alpha, 1))); }
+  .cal-jour.choisi {
+    background: rgb(var(--popup-accent-solid-rgb));
+    color: rgba(var(--popup-on-accent-rgb), min(1, var(--popup-alpha, 1)));
+    opacity: 1;
+  }
+
+  /* Les vues enregistrées. */
+  .vue-retirer {
+    all: unset;
+    flex: 0 0 auto;
+    cursor: pointer;
+    padding: 2px 6px;
+    font-size: 11px;
+    border-radius: var(--nd-rayon-controle);
+    opacity: calc(0.75 * max(1, var(--popup-alpha)));
+  }
+  .vue-retirer:hover { background: rgba(var(--popup-accent-rgb), calc(0.3 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  .vue-ajouter {
+    all: unset;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 4px 8px;
+    border-radius: var(--nd-rayon-controle);
+    border: 1px dashed rgba(var(--popup-fg-rgb), calc(0.45 * var(--popup-fond-alpha, 1)));
+  }
+  .vue-saisie {
+    background: rgba(var(--popup-accent-rgb), calc(0.22 * var(--popup-fond-alpha, 1)));
+    color: rgba(var(--popup-fg-rgb), min(1, var(--popup-alpha)));
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 6px 8px;
+    font-size: 13px;
+    outline: none;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  /* Ce que la recherche a trouvé — une autre teinte que le `==surligné==`. */
+  .card-body mark.trouve {
+    background: rgba(255, 140, 0, 0.6);
+  }
+  /* Une tâche : la case, puis le texte de sa ligne. */
+  .card-body input.tache {
+    margin: 0 6px 0 0;
+    vertical-align: -2px;
+    cursor: pointer;
+  }
+  /* Le code : une ligne (`code`) ou un bloc (```), en chasse fixe. */
+  .card-body code.code-ligne {
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 13px;
+    background: rgba(0, 0, 0, calc(0.28 * var(--popup-fond-alpha, 1)));
+    border-radius: 3px;
+    padding: 0 4px;
+  }
+  .card-body .bloc-code {
+    position: relative;
+    margin: 4px 0;
+    padding: 8px 10px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(0, 0, 0, calc(0.32 * var(--popup-fond-alpha, 1)));
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 13px;
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .card-body .bloc-code .copier {
+    all: unset;
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    cursor: pointer;
+    font-family: var(--nd-police);
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-accent-rgb), calc(0.45 * var(--popup-fond-alpha, 1)));
+  }
+  .card-body .bloc-code .copier:hover { background: rgba(var(--popup-accent-rgb), calc(0.7 * var(--popup-fond-alpha, 1))); }
+  /* Une note longue se replie : quatorze lignes, puis un fondu et « Voir plus ». */
+  .card-body.repliee {
+    max-height: calc(14 * 1.4em);
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(to bottom, black 75%, transparent);
+  }
+  .voir-plus {
+    all: unset;
+    cursor: pointer;
+    font-size: 12px;
+    margin-top: 4px;
+    padding: 2px 8px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-accent-rgb), calc(0.3 * var(--popup-fond-alpha, 1)));
+  }
+  .voir-plus:hover { background: rgba(var(--popup-accent-rgb), calc(0.5 * var(--popup-fond-alpha, 1))); }
+  .format .f-code { font-family: Consolas, monospace; font-size: 11px; }
+</style>
+</head>
+<body>
+  <div class="root">
+    <div class="topbar">
+      <h1>Notes</h1>
+      <button class="close-btn" onclick="go('close')" title="Fermer"><span class="ico ico-x"></span></button>
+    </div>
+    <div class="body">
+      <div class="sidebar">
+        <!-- ANNULER / REFAIRE — DEMANDE EXPLICITE : « toutes les actions ».
+             L'etat vient de Rust (voir `peutAnnuler`/`peutRefaire` dans
+             `cef_notes::push_state`) : c'est lui qui sait s'il reste quelque
+             chose a annuler, la page ne fait que l'afficher. -->
+        <div class="historique">
+          <button id="annuler" title="Annuler la derniere action (Ctrl+Z)"><span class="ico ico-arrow-u-up-left"></span> Annuler</button>
+          <button id="refaire" title="Refaire (Ctrl+Y)"><span class="ico ico-arrow-u-up-right"></span> Refaire</button>
+        </div>
+        <input type="search" id="search" placeholder="Rechercher…">
+        <label class="pinned-only">
+          <input type="checkbox" id="pinned-only">
+          Épinglées seulement
+        </label>
+        <!-- Les notes archivées ne se voient QUE par ici (voir `notesDuMode`). -->
+        <label class="pinned-only">
+          <input type="checkbox" id="archives">
+          Archives
+        </label>
+        <!-- ⭐ LES TÂCHES À FAIRE — DEMANDE EXPLICITE (2026-10-24) : « une liste de
+             tâches ». Les notes savent déjà porter des cases (`- [ ]`) ; ce filtre
+             ne garde que celles qui en ont une NON cochée, et leurs cases se
+             cochent sur place. Le nombre est celui des cases ouvertes. -->
+        <label class="pinned-only">
+          <input type="checkbox" id="a-faire">
+          <span id="a-faire-libelle">Tâches à faire</span>
+        </label>
+        <div id="vues"></div>
+        <div id="calendrier"></div>
+        <div id="tags"></div>
+      </div>
+      <div class="splitter" id="splitter"></div>
+      <div class="list" id="list"></div>
+      <!-- La rédaction, en COLONNE à droite — voir `.compose` dans le style. -->
+      <div class="compose">
+        <h2>Nouvelle note</h2>
+        <!-- maxlength statique = plancher avant le premier window.setState (voir
+             MAX_NOTE_CHARS côté Rust) ; ré-affecté dynamiquement dès l'arrivée
+             du premier état, au cas où la limite serveur changerait un jour. -->
+        <textarea id="compose" maxlength="8000" placeholder="Une idée, une note… (#étiquette pour l'organiser)"></textarea>
+        <div class="row">
+          <div class="gauche">
+            <div id="format-compose"></div>
+            <span class="hint">Ctrl+Entrée pour ajouter</span>
+          </div>
+          <div class="buttons">
+            <!-- Collage à la souris (demande explicite : pas seulement Ctrl+V
+                 clavier) — lit le presse-papiers RÉEL de Windows côté Rust
+                 (voir win32::cef_notes::handle_paste), pas l'API Clipboard du
+                 navigateur intégré. Si une note est en cours d'édition
+                 (editingId non nul), le collage l'enrichit ELLE plutôt que de
+                 créer une nouvelle note (voir win32::cef_notes::
+                 handle_paste_into_active — demande explicite) : du texte
+                 s'insère alors dans sa zone d'édition (window.
+                 insertIntoEditArea), une image s'y attache directement. Sinon,
+                 comportement historique : le texte s'insère dans la zone de
+                 composition, une image crée directement une nouvelle note
+                 (voir window.insertIntoCompose/clearCompose plus bas). -->
+            <button class="paste" onclick="go('paste', editingId === null ? '' : editingId, document.getElementById('compose').value)"><span class="ico ico-clipboard-text"></span> Coller</button>
+            <!-- IMPORTER — ouvre la fenetre « Ouvrir » de Windows (voir
+                 `cef_notes::handle_importer`). C'est le pendant de « Exporter », et
+                 il cree une NOUVELLE note : il vit donc ici, avec « Ajouter » et
+                 « Coller », et non dans les actions d'une note. -->
+            <button class="paste" title="Importer un fichier Markdown ou texte" onclick="go('importer')"><span class="ico ico-folder-open"></span> Importer</button>
+            <!-- TOUT EXPORTER — une archive ZIP : chaque note en Markdown avec ses
+                 images, les archivées dans `archives/` (voir
+                 `cef_notes::handle_exporter_tout`). -->
+            <button class="paste" title="Exporter toutes les notes dans une archive ZIP" onclick="go('exporter-tout')"><span class="ico ico-archive"></span> Tout exporter</button>
+            <button class="add" onclick="submitCompose()">Ajouter</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- Agrandissement d'une image de note au clic (voir renderImages plus
+       bas) — pleine résolution chargée À LA DEMANDE (voir
+       window.setFullImage, win32::cef_notes::handle_full_image) : la
+       miniature seule est poussée avec le reste de l'état. -->
+  <div class="lightbox hidden" id="lightbox" onclick="closeLightbox()">
+    <img id="lightbox-img" src="">
+  </div>
+  <script>
+    function go(...segments) {
+      location.href = "neuradesk://notes/" + segments.map(encodeURIComponent).join("/");
+    }
+
+    // ⛔ **TOUT `on…` PASSE PAR `addEventListener`, PAS PAR `setAttribute`.**
+    // Ce helper ne traitait que `onclick`, et renvoyait tout le reste à
+    // `setAttribute` — donc `onchange: (e) => …` devenait l'ATTRIBUT
+    // `onchange="(e) => …"`, c'est-à-dire une chaîne de caractères que le
+    // navigateur n'exécute jamais.
+    //
+    // ⚠️ **LE DÉFAUT ÉTAIT INVISIBLE** : les champs s'affichaient, se
+    // remplissaient, et ne faisaient RIEN quand on les modifiait — sans erreur,
+    // sans message. La capture ne pouvait pas le montrer, elle ne voit que le
+    // rendu. Ce sont LES TROIS handlers de cette page qui étaient morts : le
+    // sélecteur de son (il a depuis déménagé dans les Réglages, avec un réglage
+    // par famille) et les deux champs date/heure de l'alarme. C'est l'utilisateur
+    // qui l'a signalé — « il n'y a pas d'option pour enregistrer ».
+    function el(tag, attrs, children) {
+      const node = document.createElement(tag);
+      for (const [key, value] of Object.entries(attrs || {})) {
+        if (key === "class") node.className = value;
+        // `onclick` → `click`, `onchange` → `change`, `oninput` → `input`…
+        else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+        else node.setAttribute(key, value);
+      }
+      for (const child of children || []) {
+        node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+      }
+      return node;
+    }
+
+    // Glisser-déposer du séparateur — copié tel quel d'assets/popups/
+    // clipboard.html (voir sa doc CSS/.splitter pour le détail du
+    // raisonnement), simplement appliqué à `.sidebar` au lieu de `.list`.
+    const MIN_SIDEBAR_WIDTH = 160;
+    const MIN_LIST_WIDTH = 280;
+    (function setupSplitter() {
+      const splitter = document.getElementById("splitter");
+      const sidebar = document.querySelector(".sidebar");
+      const body = document.querySelector(".body");
+
+      function clampSidebarWidth(width) {
+        // La colonne de rédaction (à droite) prend sa part de `.body` : la liste
+        // n'a que ce qui reste.
+        const redaction = document.querySelector(".compose").offsetWidth;
+        const maxWidth = body.getBoundingClientRect().width - splitter.offsetWidth - redaction - MIN_LIST_WIDTH;
+        return Math.min(Math.max(width, MIN_SIDEBAR_WIDTH), Math.max(maxWidth, MIN_SIDEBAR_WIDTH));
+      }
+
+      splitter.addEventListener("mousedown", (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        splitter.classList.add("dragging");
+        document.body.style.userSelect = "none";
+
+        function onMove(moveEvent) {
+          const bodyLeft = body.getBoundingClientRect().left;
+          sidebar.style.width = `${clampSidebarWidth(moveEvent.clientX - bodyLeft)}px`;
+        }
+        function onUp() {
+          splitter.classList.remove("dragging");
+          document.body.style.userSelect = "";
+          document.removeEventListener("mousemove", onMove);
+          document.removeEventListener("mouseup", onUp);
+        }
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+      });
+
+      // Cette fenêtre peut se redimensionner PENDANT qu'elle est ouverte
+      // (voir win32::cef_popup::resize_if_needed, doc de module de
+      // win32::cef_notes) — reclamp au cas où `.sidebar` déborderait après
+      // un rétrécissement.
+      window.addEventListener("resize", () => {
+        const current = sidebar.getBoundingClientRect().width;
+        sidebar.style.width = `${clampSidebarWidth(current)}px`;
+      });
+    })();
+
+    // État reçu de Rust (voir win32::cef_notes::push_state) : notes déjà
+    // triées (épinglées d'abord, plus récemment modifiées en tête, voir
+    // win32::notes::sorted_for_display) et étiquetées (voir extract_tags).
+    let notes = [];
+    let allTags = [];
+    let maxChars = 8000;
+    // Dernier état APPLIQUÉ, sérialisé — voir window.setState plus bas :
+    // un état identique au précédent est ignoré, pour ne jamais faire
+    // perdre le focus d'une saisie en cours (zone de composition, édition
+    // en ligne) à cause du re-envoi périodique de win32::cef_notes::
+    // refresh_if_visible (appelé à CHAQUE frame, voir sa doc).
+    let lastStateJson = null;
+
+    // État purement local (jamais poussé par Rust) : filtre de recherche/
+    // étiquette, brouillon de la note en cours d'édition.
+    let query = "";
+    let activeTag = null;
+    let pinnedOnly = false;
+    let editingId = null;
+    let editDraft = "";
+
+    // **LE RAPPEL EN COURS D'ÉDITION** — exactement le motif d'`editDraft`
+    // juste au-dessus, et pour la même raison : tant que la note est en édition,
+    // la date et l'heure vivent ICI, et ne partent nulle part. Elles ne sont
+    // écrites qu'au clic sur « Enregistrer » (voir `saveEdit`) — DEMANDE
+    // EXPLICITE (2026-09-24) : « que le rappel soit pris en compte seulement
+    // quand j'enregistre la note ».
+    //
+    // ⛔ **ET C'EST CE QUI FERME LE DÉFAUT « JE SUIS ÉJECTÉ EN PLEINE SAISIE ».**
+    // Avant, chaque `change` d'un champ de rappel envoyait une action ; Rust
+    // répondait ; `renderList()` faisait `replaceChildren()` et DÉTRUISAIT le
+    // champ sous les doigts. Or `change` se déclenche à CHAQUE frappe dès que la
+    // valeur est complète — donc, sur un champ qui PORTE DÉJÀ une date (le cas
+    // de tout rappel posé), dès le PREMIER chiffre tapé : un chiffre par clic,
+    // indéfiniment. Le correctif précédent (79d2854) restaurait le focus, mais
+    // `focus()` sur un nœud NEUF repose le curseur sur le PREMIER segment — le
+    // focus était donc bien rendu et la saisie perdue quand même, parce qu'un
+    // `<input type="date">` ne dit à personne lequel de ses segments est actif.
+    //
+    // Ici la cause disparaît au lieu d'être compensée : rien n'est écrit pendant
+    // la saisie, donc rien n'est poussé, donc rien n'est reconstruit.
+    let alarmeDraft = null;
+
+    // **D'APRÈS MEMOS** — DEMANDE EXPLICITE (2026-10-11). Tout est local à la
+    // page, comme la recherche : rien de cela n'est une donnée des notes.
+    //   showArchived  la liste montre les archivées, et SEULEMENT elles ;
+    //   activeDay     « AAAA-MM-JJ » du calendrier — les notes CRÉÉES ce jour-là ;
+    //   moisAffiche   [année, mois 0-11] du calendrier, null = celui du jour ;
+    //   depliees      les notes longues que l'utilisateur a dépliées ;
+    //   vues          les vues enregistrées (de Rust, `config::load_vues_notes`) ;
+    //   saisieVue     le nom d'une vue en cours de saisie, ou null.
+    let showArchived = false;
+    // Le filtre « Tâches à faire » — voir `tachesOuvertes`.
+    let aFaireSeulement = false;
+
+    // Le NOMBRE de cases non cochées d'une note. MÊMES règles que
+    // `zonesProtegees` et que `notes::basculer_tache` côté Rust : une ligne
+    // `- [ ]` ou `* [ ]` suivie d'une espace ou de la fin, HORS bloc ```.
+    function tachesOuvertes(texte) {
+      let dansBloc = false;
+      let n = 0;
+      for (const ligne of texte.split("\n")) {
+        if (/^[ \t]*```/.test(ligne)) { dansBloc = !dansBloc; continue; }
+        if (!dansBloc && /^[ \t]*[-*] \[ \](?= |$)/.test(ligne)) n += 1;
+      }
+      return n;
+    }
+    let activeDay = null;
+    let moisAffiche = null;
+    const depliees = new Set();
+    let vues = [];
+    let saisieVue = null;
+    // Les branches repliées de l'arbre des étiquettes — un confort d'affichage,
+    // gardé dans le stockage de la page d'une ouverture à l'autre.
+    const CLE_PLIS = "notes-etiquettes-repliees";
+    let etiquettesRepliees = new Set();
+    try { etiquettesRepliees = new Set(JSON.parse(localStorage.getItem(CLE_PLIS) || "[]")); } catch (_) {}
+
+    function pad2(n) {
+      return String(n).padStart(2, "0");
+    }
+
+    // Le jour LOCAL d'un instant Unix, en « AAAA-MM-JJ ».
+    function jourDe(unixSeconds) {
+      const d = new Date(unixSeconds * 1000);
+      return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+    }
+
+    // Les notes du MODE courant : les archivées, ou toutes les autres. Le
+    // calendrier, l'arbre des étiquettes et la liste partent tous de là.
+    function notesDuMode() {
+      return notes.filter((note) => !!note.archived === showArchived);
+    }
+
+    // ⭐ **UNE ÉTIQUETTE PORTE SES DESCENDANTES** : filtrer sur `projets` garde
+    // aussi les notes `#projets/neuradesk`. `cle` est en minuscules.
+    function porteEtiquette(note, cle) {
+      return note.tags.some((t) => {
+        const l = t.toLowerCase();
+        return l === cle || l.startsWith(cle + "/");
+      });
+    }
+
+    function filteredNotes() {
+      const q = query.trim().toLowerCase();
+      return notesDuMode().filter((note) => {
+        if (pinnedOnly && !note.pinned) return false;
+        if (aFaireSeulement && tachesOuvertes(note.content) === 0) return false;
+        if (activeTag && !porteEtiquette(note, activeTag)) return false;
+        if (activeDay && jourDe(note.createdAt) !== activeDay) return false;
+        if (q && !note.content.toLowerCase().includes(q)) return false;
+        return true;
+      });
+    }
+
+    // Tout ce qui dépend des filtres — à rappeler dès que l'un d'eux change.
+    function renderTout() {
+      renderVues();
+      renderCalendrier();
+      renderTags();
+      renderList();
+    }
+
+    // ---- LES VUES ENREGISTRÉES -------------------------------------------
+    //
+    // ⚠️ Le jour du calendrier n'en fait pas partie : un filtre de date se
+    // périme, et la vue « Travail » de lundi ne voudrait plus rien dire mardi.
+    function etatDesFiltres() {
+      return { recherche: query.trim(), etiquette: activeTag || "", epinglees: pinnedOnly, archivees: showArchived };
+    }
+
+    function vueActive(vue) {
+      const e = etatDesFiltres();
+      return activeDay === null && vue.recherche === e.recherche && vue.etiquette === e.etiquette
+        && vue.epinglees === e.epinglees && vue.archivees === e.archivees;
+    }
+
+    function appliquerVue(vue) {
+      query = vue.recherche;
+      document.getElementById("search").value = vue.recherche;
+      activeTag = vue.etiquette || null;
+      pinnedOnly = vue.epinglees;
+      document.getElementById("pinned-only").checked = pinnedOnly;
+      showArchived = vue.archivees;
+      document.getElementById("archives").checked = showArchived;
+      activeDay = null;
+      renderTout();
+    }
+
+    function enregistrerVue() {
+      const nom = (saisieVue || "").trim();
+      if (!nom) return;
+      saisieVue = null;
+      go("vue-enregistrer", JSON.stringify({ nom, ...etatDesFiltres() }));
+      renderVues();
+    }
+
+    function renderVues() {
+      const boite = document.getElementById("vues");
+      const avaitLeFocus = document.activeElement && document.activeElement.classList.contains("vue-saisie");
+      const unFiltre = query.trim() !== "" || activeTag !== null || pinnedOnly || showArchived;
+      if (!vues.length && !unFiltre && saisieVue === null) {
+        boite.replaceChildren();
+        return;
+      }
+      const lignes = [el("h2", {}, ["Vues"])];
+      for (const vue of vues) {
+        lignes.push(el("div", { class: "tag-rangee" }, [
+          el("button", {
+            class: "tag-btn" + (vueActive(vue) ? " active" : ""),
+            title: "Appliquer cette vue",
+            onclick: () => appliquerVue(vue),
+          }, [el("span", {}, [vue.nom])]),
+          el("button", { class: "vue-retirer", title: "Retirer cette vue", onclick: () => go("vue-retirer", vue.nom) }, [el("span", { class: "ico ico-x" })]),
+        ]));
+      }
+      if (saisieVue !== null) {
+        const champ = el("input", { type: "text", class: "vue-saisie", maxlength: "40", placeholder: "Nom de la vue — Entrée" });
+        champ.value = saisieVue;
+        champ.addEventListener("input", (e) => { saisieVue = e.target.value; });
+        champ.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { e.preventDefault(); enregistrerVue(); }
+          else if (e.key === "Escape") { e.preventDefault(); saisieVue = null; renderVues(); }
+        });
+        lignes.push(champ);
+        boite.replaceChildren(...lignes);
+        if (avaitLeFocus || champ.value === "") {
+          champ.focus();
+          champ.setSelectionRange(champ.value.length, champ.value.length);
+        }
+        return;
+      }
+      if (unFiltre && !vues.some(vueActive)) {
+        lignes.push(el("button", {
+          class: "vue-ajouter",
+          title: "Retenir la recherche, l'étiquette et les cases actuelles sous un nom",
+          onclick: () => { saisieVue = ""; renderVues(); },
+        }, ["＋ Enregistrer cette vue"]));
+      }
+      boite.replaceChildren(...lignes);
+    }
+
+    // ---- LE CALENDRIER D'ACTIVITÉ ----------------------------------------
+    //
+    // Un mois, une case par jour, plus foncée quand plus de notes y ont été
+    // CRÉÉES ; un clic ne garde que celles-là, un second clic retire le filtre.
+    const MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+      "août", "septembre", "octobre", "novembre", "décembre"];
+
+    function changerMois(pas) {
+      const [annee, mois] = moisAffiche;
+      const d = new Date(annee, mois + pas, 1);
+      moisAffiche = [d.getFullYear(), d.getMonth()];
+      renderCalendrier();
+    }
+
+    function renderCalendrier() {
+      const boite = document.getElementById("calendrier");
+      const maintenant = new Date();
+      if (!moisAffiche) moisAffiche = [maintenant.getFullYear(), maintenant.getMonth()];
+      const [annee, mois] = moisAffiche;
+      const comptes = new Map();
+      for (const note of notesDuMode()) {
+        const jour = jourDe(note.createdAt);
+        comptes.set(jour, (comptes.get(jour) || 0) + 1);
+      }
+      const tete = el("div", { class: "cal-tete" }, [
+        el("button", { title: "Mois précédent", onclick: () => changerMois(-1) }, ["‹"]),
+        el("span", {}, [MOIS[mois] + " " + annee]),
+        el("button", { title: "Mois suivant", onclick: () => changerMois(1) }, ["›"]),
+      ]);
+      const grille = el("div", { class: "cal-grille" }, JOURS_COURTS.map((l) => el("span", { class: "cal-nom" }, [l])));
+      // Lundi en tête : `getDay()` compte depuis le dimanche.
+      const decalage = (new Date(annee, mois, 1).getDay() + 6) % 7;
+      for (let i = 0; i < decalage; i += 1) grille.appendChild(el("span", {}, []));
+      const nombreDeJours = new Date(annee, mois + 1, 0).getDate();
+      const aujourdhui = jourDe(Date.now() / 1000);
+      for (let j = 1; j <= nombreDeJours; j += 1) {
+        const cle = annee + "-" + pad2(mois + 1) + "-" + pad2(j);
+        const n = comptes.get(cle) || 0;
+        const niveau = n === 0 ? 0 : n === 1 ? 1 : n <= 3 ? 2 : 3;
+        grille.appendChild(el("button", {
+          class: "cal-jour niveau-" + niveau + (cle === aujourdhui ? " aujourdhui" : "") + (cle === activeDay ? " choisi" : ""),
+          title: (n ? n + (n > 1 ? " notes créées" : " note créée") : "Aucune note") + " le " + j + " " + MOIS[mois],
+          onclick: () => { activeDay = activeDay === cle ? null : cle; renderTout(); },
+        }, [String(j)]));
+      }
+      // **« TOUS » : AUCUN FILTRE DE DATE** — DEMANDE EXPLICITE (2026-10-11) :
+      // « une case à cocher intitulée tous, pour afficher toutes les notes sans
+      // tenir compte de la date des notes ». Elle est cochée tant qu'aucun jour
+      // n'est choisi ; la cocher retire le jour, cliquer un jour la décoche. La
+      // décocher sans jour choisi prend AUJOURD'HUI — une case qu'on décoche
+      // doit filtrer quelque chose, sinon elle se recocherait au rendu suivant.
+      const tous = el("input", { type: "checkbox" }, []);
+      tous.checked = activeDay === null;
+      tous.addEventListener("change", () => {
+        activeDay = tous.checked ? null : aujourdhui;
+        if (!tous.checked) moisAffiche = null;
+        renderTout();
+      });
+      const caseTous = el("label", { class: "pinned-only", title: "Afficher les notes de tous les jours" }, [tous, "Tous"]);
+      boite.replaceChildren(el("h2", {}, ["Activité"]), caseTous, tete, grille);
+    }
+
+    // ---- L'ARBRE DES ÉTIQUETTES ------------------------------------------
+    //
+    // `#projets/neuradesk` se range sous `projets`, qui existe dans l'arbre même
+    // si aucune note ne le porte SEUL. Chaque nœud compte les notes qui le
+    // portent, lui ou une descendante — une note n'est comptée qu'une fois.
+    function arbreEtiquettes() {
+      const noeuds = new Map();
+      const racines = [];
+      for (const note of notesDuMode()) {
+        for (const tag of note.tags) {
+          const niveaux = tag.split("/");
+          for (let k = 1; k <= niveaux.length; k += 1) {
+            const chemin = niveaux.slice(0, k).join("/");
+            const cle = chemin.toLowerCase();
+            let noeud = noeuds.get(cle);
+            if (!noeud) {
+              noeud = { nom: niveaux[k - 1], chemin, cle, ids: new Set(), enfants: [] };
+              noeuds.set(cle, noeud);
+              if (k === 1) racines.push(noeud);
+              else noeuds.get(niveaux.slice(0, k - 1).join("/").toLowerCase()).enfants.push(noeud);
+            }
+            noeud.ids.add(note.id);
+          }
+        }
+      }
+      const trier = (liste) => {
+        liste.sort((a, b) => b.ids.size - a.ids.size || a.cle.localeCompare(b.cle));
+        for (const n of liste) trier(n.enfants);
+        return liste;
+      };
+      return { racines: trier(racines), noeuds };
+    }
+
+    // La couleur d'une étiquette — la sienne, sinon celle de son plus proche
+    // parent coloré (`projets/neuradesk` prend celle de `projets`). Le second
+    // membre dit si elle est HÉRITÉE.
+    function couleurDe(cle) {
+      let c = cle;
+      for (;;) {
+        if (couleursEtiquettes[c]) return [couleursEtiquettes[c], c !== cle];
+        const i = c.lastIndexOf("/");
+        if (i < 0) return [null, false];
+        c = c.slice(0, i);
+      }
+    }
+
+    function formatDate(unixSeconds) {
+      return new Date(unixSeconds * 1000).toLocaleString("fr-FR");
+    }
+
+    // L'heure d'une alarme, au format `HH:MM` que réclame `<input type="time">`.
+    // ⚠️ `aPartirDe` est un INSTANT Unix, pas une heure : on le rend dans l'heure
+    // LOCALE — c'est celle que l'utilisateur a choisie, et l'afficher en UTC
+    // décalerait le champ de deux heures en France.
+    // ⚠️ **LA DATE ET L'HEURE SONT DES DONNÉES**, pas un instant : Rust les garde
+    // telles quelles (voir `notes::AlarmeNote`), et la page les rend telles
+    // quelles. Les reconvertir depuis un instant les ferait passer par le fuseau
+    // du NAVIGATEUR, qui n'est pas forcément celui de la machine.
+    function heureDeLAlarme(heure) {
+      return String(heure[0]).padStart(2, "0") + ":" + String(heure[1]).padStart(2, "0");
+    }
+
+    function dateDeLAlarme(date) {
+      return date[0] + "-" + String(date[1]).padStart(2, "0") + "-" + String(date[2]).padStart(2, "0");
+    }
+
+    // **LE SEGMENT `quand` QUE RUST ATTEND** — `"<date>_<heure>"`, chaque moitié
+    // valant `aucun` quand elle est vide, ou `aucune` pour « pas de rappel ».
+    // C'est le format d'`analyse_quand` côté Rust, et c'est celui qui part AVEC
+    // le texte au clic sur « Enregistrer » (voir `saveEdit`).
+    //
+    // ⚠️ **LES DEUX MOITIÉS SONT TOUJOURS NOMMÉES** : un segment VIDE en fin
+    // d'URL est mangé par `on_before_browse` (`trim_end_matches('/')`), et
+    // l'argument disparaîtrait — le piège d'arité déjà documenté pour `paste`.
+    //
+    // La répétition part en TROISIÈME moitié, seulement quand il y en a une :
+    // le masque des jours en décimal (bit 0 = lundi, voir `notes::AlarmeNote`).
+    function quandDeLAlarme(draft) {
+      if (!draft || !draft.actif) return "aucune";
+      const base = (draft.date === "" ? "aucun" : draft.date) + "_" + (draft.heure === "" ? "aucun" : draft.heure);
+      return draft.jours ? base + "_" + draft.jours : base;
+    }
+
+    // Les jours de répétition, dans l'ordre des bits de `AlarmeNote::jours`.
+    const JOURS_COURTS = ["L", "M", "M", "J", "V", "S", "D"];
+    const JOURS_LONGS = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"];
+    const TOUS_LES_JOURS = 0x7F;
+
+    function resumeJours(jours) {
+      if (!jours) return "";
+      if (jours === TOUS_LES_JOURS) return "tous les jours";
+      return JOURS_LONGS.filter((_, i) => jours & (1 << i)).join(", ");
+    }
+
+    // Le rappel d'une note, en une ligne — pour l'INDICATEUR hors édition (voir
+    // `renderAlarme`), qui ne montre plus les champs.
+    function resumeAlarme(alarme) {
+      const parties = [];
+      if (alarme.date) parties.push(dateDeLAlarme(alarme.date).split("-").reverse().join("/"));
+      if (alarme.heure) parties.push(heureDeLAlarme(alarme.heure));
+      if (alarme.jours) parties.push("↻ " + resumeJours(alarme.jours));
+      return parties.length ? parties.join(" ") : "tout de suite";
+    }
+
+    // **LE BANDEAU D'AVERTISSEMENT** — montre quand les notes n'ont pas pu etre
+    // lues au demarrage (voir `config::avertissement_notes`, qui porte le texte
+    // ET le chemin). Sans lui, l'utilisateur verrait un panneau vide et croirait
+    // avoir tout perdu, sans savoir quel fichier regarder.
+    //
+    // Il vit en tete de `.root` et non dans la liste : c'est un etat du PANNEAU,
+    // pas d'une note, et il doit rester visible quelle que soit la note affichee.
+    function rendreAvertissement(texte) {
+      let bandeau = document.getElementById("avertissement");
+      if (!texte) {
+        if (bandeau) bandeau.remove();
+        return;
+      }
+      if (!bandeau) {
+        bandeau = el("div", { id: "avertissement" }, []);
+        const racine = document.querySelector(".root") || document.body;
+        racine.insertBefore(bandeau, racine.firstChild);
+      }
+      bandeau.replaceChildren(document.createTextNode(texte));
+    }
+
+    // **L'ÉTIQUETTE SURVOLÉE** — voir `neuradeskRightClick` plus bas : le clic
+    // droit ne transporte pas de coordonnées, donc c'est ce survol qui dit sur
+    // quoi il est tombé.
+    // **COMBIEN D'IMAGES CEF A-T-IL DESSINÉES ?** — `requestAnimationFrame` ne se
+    // déclenche qu'au moment où le moteur peint. Ce compteur est donc la seule
+    // sonde dont on dispose sur la SANTÉ DE LA SURFACE : s'il cesse d'avancer
+    // pendant que la page continue de vivre, l'écran est figé sur une image
+    // ancienne, quoi que dise le DOM.
+    let etiquetteSurvolee = null;
+    // Nom d'etiquette (minuscules) -> couleur choisie. Voir `window.setState`.
+    let couleursEtiquettes = {};
+
+    // Les couleurs proposées. La DERNIÈRE est vide : elle RETIRE la couleur et
+    // rend l'étiquette à sa teinte neutre — sans elle, un choix serait définitif.
+    const COULEURS_ETIQUETTES = [
+      "#ff9f43", "#e06c75", "#e5c07b", "#98c379", "#7fe0c0",
+      "#56b6c2", "#61afef", "#c792ea", "#f28fad", "#abb2bf", "",
+    ];
+
+    // **LA PALETTE DE L'ÉTIQUETTE SURVOLÉE** — ouverte par le clic droit (voir
+    // `neuradeskRightClick`). Elle se referme au clic n'importe où ailleurs.
+    function fermerPalette() {
+      const palette = document.getElementById("palette-etiquette");
+      if (palette) palette.remove();
+    }
+
+    function ouvrirPalette(nom) {
+      fermerPalette();
+      const palette = el("div", { id: "palette-etiquette" }, []);
+      for (const couleur of COULEURS_ETIQUETTES) {
+        const case_ = el("button", {
+          class: "palette-case",
+          title: couleur === "" ? "Aucune couleur" : couleur,
+          onclick: () => {
+            fermerPalette();
+            go("couleur-etiquette", nom, couleur);
+          },
+        }, []);
+        if (couleur === "") {
+          // La case « aucune » se distingue : un rond barré plutôt qu'un aplat.
+          case_.style.background = "transparent";
+          case_.textContent = "∅";
+        } else {
+          case_.style.background = couleur;
+        }
+        palette.appendChild(case_);
+      }
+      document.body.appendChild(palette);
+      // ⛔ **IL FAUT LA POSER EXPLICITEMENT, SINON ELLE S'OUVRE HORS DE L'ÉCRAN.**
+      // Un `position: fixed` SANS `top`/`left` conserve la position STATIQUE de
+      // l'élément — et un `div` ajouté à la fin de `<body>` se retrouve donc SOUS
+      // tout le contenu, donc hors de la vue. La palette s'ouvrait bel et bien, et
+      // personne ne la voyait : c'est ce qui a fait dire « ça ne fonctionne pas »
+      // trois fois de suite, alors que le hook marchait depuis le début (mesuré au
+      // journal : `:hover=survol-oui`, bonne étiquette).
+      //
+      // ⚠️ **LE HOOK NE TRANSPORTE AUCUNE COORDONNÉE** — on retrouve donc le bouton
+      // de l'étiquette PAR SON NOM, en parcourant la liste plutôt qu'avec un
+      // sélecteur d'attribut : un nom d'étiquette peut contenir tout ce qu'un
+      // sélecteur interprète (`"`, `]`…), et le construire serait s'exposer à une
+      // exception au moment précis où l'on ouvre la palette.
+      const bouton = Array.from(document.querySelectorAll(".tag-btn")).find(
+        (b) => b.dataset.etiquette === nom,
+      );
+      const boite = bouton ? bouton.getBoundingClientRect() : { left: 8, top: 8, bottom: 8 };
+      // La taille n'est connue qu'APRÈS l'insertion.
+      const largeur = palette.offsetWidth;
+      const hauteur = palette.offsetHeight;
+      const gauche = Math.max(4, Math.min(boite.left, window.innerWidth - largeur - 4));
+      // Sous le bouton, et AU-DESSUS s'il n'y a pas la place — le geste d'un menu.
+      let haut = boite.bottom + 4;
+      if (haut + hauteur > window.innerHeight - 4) {
+        haut = Math.max(4, boite.top - hauteur - 4);
+      }
+      palette.style.left = gauche + "px";
+      palette.style.top = haut + "px";
+    }
+
+    // **LE CLIC DROIT SUR UNE ÉTIQUETTE PASSE PAR ICI.** Écrit quand le bouton
+    // droit n'était pas transmis à CEF ; il l'est depuis le 2026-09-26
+    // (`contextmenu` part, voir `menu_contextuel.js`), mais ce chemin validé est
+    // gardé.
+    window.neuradeskRightClick = function () {
+      // **DEUX SOURCES, DANS CET ORDRE** — la recette du Dash, mesurée là-bas :
+      // `:hover` est l'état natif du moteur, le plus juste QUAND IL EST TENU (et
+      // il ne l'est pas toujours sur ces clics ré-entrants), et à défaut la
+      // dernière étiquette vue par un `mousemove`.
+      const parHover = document.querySelector(".tag-btn:hover");
+      const nom = (parHover && parHover.dataset.etiquette) || etiquetteSurvolee;
+      // ⚠️ **TRACE, ET ELLE RESTE.** Ce hook ne transporte aucune coordonnée : sans
+      // cette ligne, « le clic droit ne fait rien » et « le clic droit n'arrive
+      // jamais » laissent le même journal vide. C'est la même leçon que le bouton
+      // d'écoute des Réglages, qui a coûté sept mesures.
+      go("clic-droit", parHover ? "survol-oui" : "survol-non", etiquetteSurvolee || "aucune");
+      if (!nom) return;
+      ouvrirPalette(nom);
+    };
+    // Et un clic gauche n'importe où referme la palette — sinon elle resterait
+    // posée par-dessus la liste jusqu'au prochain clic droit.
+    // Bouton gauche seulement : le clic droit qui OUVRE la palette arrive lui
+    // aussi en `mousedown` (voir `cef_popup::dispatch_input`), et la refermerait.
+    document.addEventListener("mousedown", (e) => {
+      if (e.button === 0 && !e.target.closest("#palette-etiquette")) fermerPalette();
+    });
+
+    function renderTags() {
+      const container = document.getElementById("tags");
+      container.replaceChildren();
+      const { racines } = arbreEtiquettes();
+      if (racines.length === 0) return;
+      container.appendChild(el("h2", {}, ["Étiquettes"]));
+      // ⛔ **PAS DE BOUTON « TOUT AFFICHER », ET C'EST UN RETRAIT.** Il ne faisait
+      // qu'une chose -- `activeTag = null` -- et **cliquer l'etiquette ACTIVE la
+      // retire deja** (voir la boucle ci-dessous : `activeTag === lower ? null :
+      // lower`). Un bouton qui double un geste naturel, et dont le libelle promet
+      // plus que son effet, a coute une soiree entiere de mesures : l'utilisateur
+      // avait une etiquette ET « epinglees seulement » actifs, ne voyait plus ses
+      // notes, et « Tout afficher » ne les faisait pas revenir puisqu'il ne touchait
+      // ni a la recherche ni a la case.
+      //
+      // ⚠️ L'indice est donc desormais dans le MESSAGE de liste vide : c'est la que
+      // l'utilisateur cherche, pas dans un bouton qui n'en fait pas assez.
+      const poser = (noeud, profondeur) => {
+        const lower = noeud.cle;
+        const replie = etiquettesRepliees.has(lower);
+        // ⛔ **LA PASTILLE EST UN BOUTON, ET C'EST LA VOIE ROBUSTE.** Le clic droit
+        // passait par le hook `neuradeskRightClick`, qui ne transporte AUCUNE
+        // coordonnée et repose sur une source de survol que le Dash a mesurée
+        // défaillante sur ces clics ré-entrants. Une pastille qu'on clique utilise
+        // le chemin de clic ordinaire — celui qui fonctionne partout ailleurs dans
+        // ce panneau.
+        //
+        // ⚠️ **UN BOUTON DANS UN BOUTON SERAIT INVALIDE** : c'est pourquoi chaque
+        // ligne est une `div` qui porte DEUX boutons côte à côte, et non un bouton
+        // qui en contiendrait un.
+        const [couleur, heritee] = couleurDe(lower);
+        const pastille = el("button", {
+          class: "tag-couleur" + (heritee ? " heritee" : ""),
+          title: "Choisir la couleur de cette étiquette",
+          onclick: () => ouvrirPalette(noeud.chemin),
+        }, []);
+        if (couleur) pastille.style.background = couleur;
+        else pastille.style.opacity = "0.35";
+        const pli = noeud.enfants.length
+          ? el("button", {
+            class: "pli",
+            title: replie ? "Déplier" : "Replier",
+            onclick: () => {
+              if (replie) etiquettesRepliees.delete(lower); else etiquettesRepliees.add(lower);
+              try { localStorage.setItem(CLE_PLIS, JSON.stringify([...etiquettesRepliees])); } catch (_) {}
+              renderTags();
+            },
+          }, [replie ? "▸" : "▾"])
+          : el("span", { class: "pli vide" }, []);
+        const bouton = el("button", {
+          class: "tag-btn" + (activeTag === lower ? " active" : ""),
+          title: "#" + noeud.chemin,
+          onclick: () => { activeTag = activeTag === lower ? null : lower; renderTout(); },
+          "data-etiquette": noeud.chemin,
+          onmousemove: () => { etiquetteSurvolee = noeud.chemin; },
+        }, [el("span", {}, [noeud.nom]), el("span", { class: "count" }, [String(noeud.ids.size)])]);
+        const rangee = el("div", { class: "tag-rangee" }, [pli, pastille, bouton]);
+        rangee.style.paddingLeft = (profondeur * 12) + "px";
+        container.appendChild(rangee);
+        if (!replie) for (const enfant of noeud.enfants) poser(enfant, profondeur + 1);
+      };
+      for (const racine of racines) poser(racine, 0);
+    }
+
+    function renderChips(note) {
+      if (note.tags.length === 0) return null;
+      const chips = el("div", { class: "chips" }, []);
+      for (const tag of note.tags) {
+        const lower = tag.toLowerCase();
+        // **LA COULEUR SUIT L'ÉTIQUETTE PARTOUT** : la choisir dans la colonne et
+        // ne pas la revoir dans la note aurait été une couleur à moitié posée.
+        // `couleursEtiquettes` est construite à l'application de l'état.
+        const pastille = el("span", { class: "tag-pastille" }, []);
+        const [couleur] = couleurDe(lower);
+        if (couleur) pastille.style.background = couleur;
+        else pastille.style.opacity = "0.35";
+        chips.appendChild(el("button", {
+          class: "chip" + (activeTag === lower ? " active" : ""),
+          onclick: () => { activeTag = activeTag === lower ? null : lower; renderTout(); },
+        }, [pastille, `#${tag}`]));
+      }
+      return chips;
+    }
+
+    // Cible de l'agrandissement actuellement affiché (voir openLightbox) —
+    // gardée pour ignorer une réponse `window.setFullImage` obsolète (image
+    // fermée ou remplacée par une autre avant l'arrivée de la pleine
+    // résolution, voir win32::cef_notes::handle_full_image, chargée à la
+    // demande donc pas instantanée).
+    let lightboxTarget = null;
+
+    function openLightbox(note, index) {
+      lightboxTarget = { id: note.id, index };
+      // Aperçu immédiat avec la miniature déjà en mémoire, remplacée par la
+      // pleine résolution dès qu'elle arrive (voir window.setFullImage).
+      document.getElementById("lightbox-img").src = note.images[index].thumb;
+      document.getElementById("lightbox").classList.remove("hidden");
+      go("full-image", note.id, index);
+    }
+
+    function closeLightbox() {
+      lightboxTarget = null;
+      document.getElementById("lightbox").classList.add("hidden");
+    }
+
+    function renderImages(note) {
+      if (!note.images || note.images.length === 0) return null;
+      const container = el("div", { class: "images" }, []);
+      note.images.forEach((image, index) => {
+        container.appendChild(el("div", { class: "image-thumb" }, [
+          el("img", { src: image.thumb, onclick: () => openLightbox(note, index) }, []),
+          el("button", { class: "remove-image cible-24", title: "Retirer l'image", onclick: () => go("remove-image", note.id, index) }, [el("span", { class: "ico ico-x" })]),
+          // ⭐ LE TEXTE DE L'IMAGE (demande 2026-11-04) : le moteur se CHOISIT,
+          // par le menu du clic droit, ouvert ici par un bouton.
+          el("button", {
+            class: "texte-image cible-24",
+            title: "Reconnaître le texte de l'image — avec NAPS2 (en local) ou Copilot",
+            onclick: (e) => menuContextuel.ouvrir(e, [
+              { texte: "Reconnaître avec NAPS2", action: () => go("texte", note.id, index, "tesseract") },
+              { texte: "Reconnaître avec Copilot", action: () => go("texte", note.id, index, "windows") },
+            ]),
+          }, [el("span", { class: "ico ico-clipboard-text" })]),
+          // ⭐ UN QUART DE TOUR (demande 2026-11-08) : les deux coins de GAUCHE,
+          // libres (voir `cef_notes::handle_pivoter_image`).
+          el("button", {
+            class: "pivoter-image gauche cible-24",
+            title: "Pivoter l'image d'un quart de tour à gauche",
+            onclick: () => go("pivoter-image", note.id, index, "gauche"),
+          }, [el("span", { class: "ico ico-arrow-counter-clockwise" })]),
+          el("button", {
+            class: "pivoter-image droite cible-24",
+            title: "Pivoter l'image d'un quart de tour à droite",
+            onclick: () => go("pivoter-image", note.id, index, "droite"),
+          }, [el("span", { class: "ico ico-arrow-clockwise" })]),
+        ]));
+      });
+      return container;
+    }
+
+    function startEdit(note) {
+      editingId = note.id;
+      editDraft = note.content;
+      // Le rappel entre dans l'édition en même temps que le texte : les
+      // commandes apparaissent alors (voir `renderAlarme`) et travaillent sur ce
+      // brouillon, jamais sur la note.
+      alarmeDraft = brouillonDeLAlarme(note);
+      renderList();
+      focusEditArea();
+    }
+
+    // « Annuler » n'abandonne pas que le texte : le rappel aussi, puisqu'il n'a
+    // jamais quitté le brouillon.
+    function cancelEdit() {
+      editingId = null;
+      alarmeDraft = null;
+      renderList();
+    }
+
+    // `note.images` est passé explicitement (plutôt que relu depuis
+    // `notes`) : une note illustrée peut voir sa légende entièrement effacée
+    // sans devenir invalide (voir win32::cef_notes::handle_update) — bloquer
+    // ce cas ici rendrait cette possibilité du backend inatteignable depuis
+    // l'UI. Seule une note SANS aucune image doit garder du texte non vide.
+    function saveEdit(id, hasImages) {
+      const content = editDraft.trim();
+      if (content === "" && !hasImages) return;
+      // ⚠️ **LE RAPPEL PART AVEC LE TEXTE, DANS LA MÊME ACTION** : deux
+      // `location.href` d'une même tâche se TÉLESCOPENT (seul le dernier
+      // survit), donc une seconde requête pour le rappel serait perdue en
+      // silence. C'est un segment de plus, pas un aller-retour de plus.
+      go("update", id, content, quandDeLAlarme(alarmeDraft));
+      editingId = null;
+      alarmeDraft = null;
+    }
+
+    // Focalise la zone d'édition tout juste (re)créée et place le curseur —
+    // à `caretPos` si fourni (préservation à travers un re-rendu, voir
+    // `renderList`), sinon en fin de texte (première ouverture, voir
+    // `startEdit`). Sans appel explicite, cliquer "Modifier" exigerait un
+    // clic supplémentaire dans la zone avant de pouvoir taper.
+    function focusEditArea(caretPos) {
+      const textarea = document.querySelector(".edit-area");
+      if (!textarea) return;
+      textarea.focus();
+      const caret = caretPos ?? textarea.value.length;
+      textarea.setSelectionRange(caret, caret);
+    }
+
+    // **LES COMMANDES DU RAPPEL — SEULEMENT EN ÉDITION** (voir `alarmeDraft`) :
+    // elles remplissent le brouillon et n'écrivent RIEN ; « Enregistrer » les
+    // envoie avec le texte (voir `saveEdit`). Hors édition il ne reste qu'un
+    // INDICATEUR en lecture seule — un champ qu'aucun bouton ne valide serait
+    // un piège, et l'ancien design (envoi au `change`) est justement celui qui
+    // éjectait l'utilisateur en pleine saisie.
+    function renderAlarme(note) {
+      const commandes = [];
+      // **LE BOUTON D'ACQUITTEMENT — PAR NOTE.** DEMANDE EXPLICITE : « un bouton
+      // par note, dans le panneau ». Il n'apparaît QUE quand le rappel est en
+      // attente (dû, et pas encore acquitté aujourd'hui — c'est Rust qui tranche,
+      // voir `cef_notes::rappel_en_attente`).
+      //
+      // ⚠️ **IL N'EST PLUS LE SEUL MOYEN DE FAIRE TAIRE** : l'icône de la barre du
+      // haut acquitte désormais TOUTE la famille d'un clic (voir `app::run`, au
+      // clic sur l'icône, qui porte le récit de ce revirement). Ce bouton-ci garde
+      // la finesse que l'icône ne peut pas offrir : **n'en taire qu'une seule**.
+      //
+      // ⚠️ **Il fait taire POUR LA JOURNÉE, pas pour de bon** : le rappel reste
+      // posé et revient demain, exactement comme celui de la cloche. Le retirer
+      // pour de bon, c'est le 🔔 du rappel, en édition.
+      if (note.rappelEnAttente) {
+        commandes.push(el("button", {
+          class: "ack-btn",
+          title: "Acquitter ce rappel — il se taira pour aujourd'hui et reviendra demain",
+          onclick: () => go("acquitter", note.id),
+        }, ["Acquitter"]));
+      }
+      if (editingId === note.id && alarmeDraft) {
+        const cloche = el("button", {
+          class: "alarm-btn" + (alarmeDraft.actif ? " active" : ""),
+          title: alarmeDraft.actif
+            ? "Retirer le rappel"
+            : "Poser un rappel — il sonnera dès l'enregistrement de la note",
+          // ⚠️ **UN RENDU LOCAL, AUCUN ALLER-RETOUR** : ce clic ne change que le
+          // brouillon. Rien n'est poussé par Rust, donc la liste n'est pas
+          // reconstruite à contretemps.
+          onclick: () => { alarmeDraft.actif = !alarmeDraft.actif; renderList(); },
+        }, [alarmeDraft.actif ? "🔔" : "🔕"]);
+        if (!alarmeDraft.actif) return [...commandes, cloche];
+        // ⚠️ **LES DEUX ÉVÉNEMENTS, ET C'EST DÉLIBÉRÉ.** On ne sait pas lequel
+        // Chromium émet en cours de frappe sur un `<input type="date">` — et sa
+        // `value` ne devient non vide qu'une fois la date COMPLÈTE, donc une
+        // saisie partielle vaut `""` et remettrait le brouillon à « aucun ».
+        // Les écouter tous les deux rend la question sans conséquence : le
+        // dernier qui passe a la bonne valeur. Et `change` est de toute façon
+        // émis au `blur`, donc AVANT que le clic sur « Enregistrer » n'atteigne
+        // son handler — le brouillon est donc à jour au moment d'enregistrer,
+        // quel que soit celui qui manque à l'appel. Rien n'est envoyé ici :
+        // c'est tout l'intérêt, ces événements ne coûtent plus rien.
+        const champDate = el("input", {
+          type: "date",
+          class: "alarm-time",
+          title: "Date du rappel — laisser vide pour aujourd'hui",
+          value: alarmeDraft.date,
+        });
+        const champHeure = el("input", {
+          type: "time",
+          class: "alarm-time",
+          title: "Heure du rappel — laisser vide pour « dès que possible »",
+          value: alarmeDraft.heure,
+        });
+        const suivre = (champ, cle) => {
+          const reporter = (e) => { alarmeDraft[cle] = e.target.value; };
+          champ.addEventListener("input", reporter);
+          champ.addEventListener("change", reporter);
+        };
+        suivre(champDate, "date");
+        suivre(champHeure, "heure");
+        // **LA RÉPÉTITION** — DEMANDE EXPLICITE (2026-09-25). Sept bascules,
+        // aucune = une seule fois ; même discipline que la cloche : un rendu
+        // local, rien n'est envoyé avant « Enregistrer ».
+        const jours = JOURS_COURTS.map((lettre, i) => el("button", {
+          class: "jour-btn" + (alarmeDraft.jours & (1 << i) ? " active" : ""),
+          title: "Répéter le " + ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"][i]
+            + " — avec des jours choisis, la date devient le jour de début",
+          onclick: () => { alarmeDraft.jours ^= (1 << i); renderList(); },
+        }, [lettre]));
+        return [...commandes, cloche, champDate, champHeure, ...jours];
+      }
+      if (note.alarme) {
+        commandes.push(el("span", { class: "alarm-badge", title: "Rappel — modifiable via « Modifier »" },
+          ["🔔 " + resumeAlarme(note.alarme)]));
+      }
+      return commandes;
+    }
+
+    // **LA MISE EN FORME D'UNE NOTE** — DEMANDE EXPLICITE (2026-10-10) : « gras,
+    // surbrillance, italique, barré, et que les liens internet soient
+    // cliquables ». La note reste du TEXTE : la mise en forme s'y écrit en
+    // marques Markdown (`**gras**`, `*italique*`, `~~barré~~`, `==surligné==`),
+    // que l'export Markdown garde telles quelles et qu'une note importée apporte.
+    //
+    // ⛔ **AUCUN `innerHTML`** : le texte vient de collages et d'imports, il ne
+    // devient jamais du HTML. Chaque morceau est un nœud texte, chaque marque un
+    // élément créé ici.
+    //
+    // ⚠️ **PAS DE `_italique_`** : les étiquettes portent des `_` (`#site_Pierre`).
+    //
+    // **LA COULEUR** — DEMANDE EXPLICITE (2026-10-10) : « mettre le texte en
+    // couleur ». Markdown n'en a pas : elle s'écrit `{rouge}texte{/}`, avec une
+    // palette FIXE, choisie lisible sur le fond du panneau. Un nom hors palette
+    // reste du texte.
+    const MARQUES = [["**", "strong"], ["~~", "s"], ["==", "mark"], ["*", "em"]];
+    const COULEURS = ["rouge", "orange", "jaune", "vert", "bleu", "violet"];
+    const FIN_COULEUR = "{/}";
+    const OUVRE_COULEUR = new RegExp("^\\{(" + COULEURS.join("|") + ")\\}");
+    // Pas d'accolade dans un lien : `{rouge}https://x.fr{/}` ne doit pas avaler `{/}`.
+    const LIEN = /\b(?:https?:\/\/|www\.)[^\s<>"{}]+/gi;
+    // La ponctuation qui suit un lien n'en fait pas partie (« voir https://x.fr. »),
+    // ni une marque qui le referme (`**https://x.fr**`) ; une parenthèse fermante
+    // reste si le lien en a ouvert une.
+    function finDeLien(url) {
+      let fin = url;
+      while (/[.,;:!?'"»)\]*~=]$/.test(fin)) {
+        if (fin.endsWith(")") && fin.split("(").length > fin.split(")").length - 1) break;
+        fin = fin.slice(0, -1);
+      }
+      return fin;
+    }
+
+    // Un nœud texte qui RETIENT SA PLACE dans la note (`ndDebut`) — c'est ce qui
+    // permet de ramener une sélection faite dans une note affichée au texte de la
+    // note (voir `versSource`).
+    function noeudTexte(morceau, debut) {
+      const noeud = document.createTextNode(morceau);
+      noeud.ndDebut = debut;
+      return noeud;
+    }
+
+    // **LES ZONES PROTÉGÉES D'UNE NOTE** — ce qui n'est pas du texte à mettre en
+    // forme : les blocs de code ```` ``` ````, le `code` d'une ligne, les cases
+    // des tâches (`- [ ] …`) et les liens. Relevées DANS CET ORDRE, et une zone
+    // qui en chevauche une déjà relevée est écartée : un lien dans du code reste
+    // du code, une tâche dans un bloc n'est pas une case.
+    //
+    // ⛔ **LA RÈGLE DU CODE ET DES TÂCHES EST AUSSI CÔTÉ RUST**
+    // (`notes::masque_de_code`, `notes::basculer_tache`) : une case désigne sa
+    // tâche par son RANG, et les deux doivent compter les mêmes. Un bloc s'ouvre
+    // et se ferme sur une ligne qui commence par ```` ``` ```` (un bloc non
+    // refermé court jusqu'à la fin) ; une tâche est une ligne `- [ ]`, `- [x]`,
+    // `* [ ]`… suivie d'une espace ou de la fin de ligne.
+    function zonesProtegees(texte, surTache) {
+      const zones = [];
+      const libre = (d, f) => !zones.some((z) => d < z.fin && f > z.debut);
+      const lignes = [];
+      let position = 0;
+      for (const ligne of texte.split("\n")) {
+        lignes.push({ debut: position, fin: position + ligne.length, texte: ligne });
+        position += ligne.length + 1;
+      }
+
+      // 1. Les blocs. Le saut de ligne qui précède et celui qui suit vont avec
+      //    le bloc : c'est un bloc, il fait déjà sa propre ligne, et les laisser
+      //    dans le texte ajouterait une ligne vide de chaque côté.
+      let ouverture = null;
+      const blocs = [];
+      for (const ligne of lignes) {
+        if (!/^[ \t]*```/.test(ligne.texte)) continue;
+        if (ouverture === null) ouverture = ligne;
+        else { blocs.push([ouverture, ligne]); ouverture = null; }
+      }
+      if (ouverture !== null) blocs.push([ouverture, null]);
+      for (const [o, f] of blocs) {
+        const interieur = f ? texte.slice(o.fin + 1, Math.max(o.fin + 1, f.debut - 1)) : texte.slice(o.fin + 1);
+        const debut = o.debut > 0 && texte[o.debut - 1] === "\n" ? o.debut - 1 : o.debut;
+        const fin = f ? f.fin + (texte[f.fin] === "\n" ? 1 : 0) : texte.length;
+        zones.push({
+          debut: libre(debut, debut + 1) ? debut : o.debut,
+          fin,
+          rendre: () => {
+            const copier = el("button", { class: "copier", title: "Copier le code" }, ["Copier"]);
+            copier.addEventListener("click", (e) => {
+              e.stopPropagation();
+              if (!interieur) return;
+              go("copier", interieur);
+              copier.textContent = "Copié ✓";
+              setTimeout(() => { copier.textContent = "Copier"; }, 1200);
+            });
+            return el("div", { class: "bloc-code" }, [copier, el("code", {}, [interieur])]);
+          },
+        });
+      }
+
+      // 2. Le `code` d'une ligne.
+      for (const m of texte.matchAll(/`([^`\n]+)`/g)) {
+        if (!libre(m.index, m.index + m[0].length)) continue;
+        zones.push({ debut: m.index, fin: m.index + m[0].length, rendre: () => el("code", { class: "code-ligne" }, [m[1]]) });
+      }
+
+      // 3. Les cases des tâches — le rang ne compte que les lignes HORS bloc.
+      let rang = 0;
+      for (const ligne of lignes) {
+        const m = /^([ \t]*)[-*] \[( |x|X)\](?= |$)/.exec(ligne.texte);
+        if (!m) continue;
+        const debut = ligne.debut + m[1].length;
+        if (zones.some((z) => z.rendre && debut >= z.debut && debut < z.fin)) continue;
+        const fin = debut + 5 + (texte[debut + 5] === " " ? 1 : 0);
+        const ceRang = rang;
+        rang += 1;
+        zones.push({
+          debut,
+          fin,
+          rendre: () => {
+            const caseACocher = el("input", { type: "checkbox", class: "tache", title: "Cocher / décocher" }, []);
+            caseACocher.checked = m[2] !== " ";
+            caseACocher.addEventListener("click", (e) => { e.stopPropagation(); if (surTache) surTache(ceRang); });
+            return caseACocher;
+          },
+        });
+      }
+
+      // 4. Les liens.
+      for (const trouve of texte.matchAll(LIEN)) {
+        const url = finDeLien(trouve[0]);
+        const debut = trouve.index;
+        if (!libre(debut, debut + url.length)) continue;
+        zones.push({
+          debut,
+          fin: debut + url.length,
+          rendre: () => {
+            const ancre = el("a", { class: "lien", title: "Ouvrir dans le navigateur — " + url }, []);
+            ancre.appendChild(noeudTexte(url, debut));
+            ancre.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); go("ouvrir-lien", url); });
+            return ancre;
+          },
+        });
+      }
+      return zones.sort((a, b) => a.debut - b.debut);
+    }
+
+    // Le texte d'une note, mis en forme. `surTache(rang)` : le clic sur une case.
+    //
+    // ⚠️ **TOUT SE FAIT DANS LES POSITIONS DU TEXTE D'ORIGINE** : les zones
+    // protégées (voir `zonesProtegees`) sont relevées d'abord, et l'analyse SAUTE
+    // leur intérieur — un `==` ou une `*` dans une adresse ou du code ne met rien
+    // en forme, et aucune marque ne s'y ferme.
+    function formaterNote(texte, surTache) {
+      const zones = zonesProtegees(texte, surTache);
+      const lienEn = (j) => zones.find((z) => j >= z.debut && j < z.fin);
+
+      // **CE QUE LA RECHERCHE A TROUVÉ, SURLIGNÉ** — DEMANDE EXPLICITE
+      // (2026-10-11), d'après memos. Chaque morceau garde sa place (`ndDebut`),
+      // la barre de mise en forme d'une sélection marche donc aussi dessus.
+      function ajouterSurligne(parent, de, a) {
+        const q = query.trim();
+        const morceau = texte.slice(de, a);
+        if (!q) {
+          parent.appendChild(noeudTexte(morceau, de));
+          return;
+        }
+        const motif = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+        let k = 0;
+        for (const m of morceau.matchAll(motif)) {
+          if (m.index > k) parent.appendChild(noeudTexte(morceau.slice(k, m.index), de + k));
+          const trouve = el("mark", { class: "trouve" }, []);
+          trouve.appendChild(noeudTexte(m[0], de + m.index));
+          parent.appendChild(trouve);
+          k = m.index + m[0].length;
+        }
+        if (k < morceau.length) parent.appendChild(noeudTexte(morceau.slice(k), de + k));
+      }
+
+      function ajouterTexte(parent, de, a) {
+        let j = de;
+        while (j < a) {
+          const zone = zones.find((z) => z.debut >= j && z.debut < a);
+          const finTexte = zone ? zone.debut : a;
+          if (finTexte > j) ajouterSurligne(parent, j, finTexte);
+          if (!zone) return;
+          parent.appendChild(zone.rendre());
+          j = zone.fin;
+        }
+      }
+
+      // Où se ferme la marque `m` ouverte avant `depuis`, sans dépasser `a` —
+      // `-1` si nulle part. Une `*` seule ne se ferme pas sur une `**`.
+      function fermeture(m, depuis, a) {
+        let j = texte.indexOf(m, depuis);
+        while (j !== -1 && j + m.length <= a) {
+          const collee = m === "*" && (texte[j + 1] === "*" || texte[j - 1] === "*");
+          if (!collee && !lienEn(j)) return j;
+          j = texte.indexOf(m, j + 1);
+        }
+        return -1;
+      }
+
+      // La fin de la couleur ouverte avant `depuis` — les couleurs s'emboîtent,
+      // donc chaque `{nom}` rencontré en route demande un `{/}` de plus.
+      function finDeCouleur(depuis, a) {
+        let profondeur = 1;
+        for (let j = depuis; j + FIN_COULEUR.length <= a; j += 1) {
+          if (lienEn(j)) continue;
+          if (texte.startsWith(FIN_COULEUR, j)) {
+            profondeur -= 1;
+            if (profondeur === 0) return j;
+          } else if (OUVRE_COULEUR.test(texte.slice(j, j + 9))) {
+            profondeur += 1;
+          }
+        }
+        return -1;
+      }
+
+      // La marque qui s'ouvre en `i` : `{ ouvre, ferme, noeud, fin }`, ou `null`.
+      function marqueEn(i, a) {
+        const couleur = texte[i] === "{" ? OUVRE_COULEUR.exec(texte.slice(i, i + 9)) : null;
+        if (couleur) {
+          const dedans = i + couleur[0].length;
+          const fin = finDeCouleur(dedans, a);
+          return fin > dedans ? { ouvre: couleur[0].length, ferme: FIN_COULEUR.length, noeud: () => el("span", { class: "c-" + couleur[1] }, []), fin } : null;
+        }
+        for (const [m, balise] of MARQUES) {
+          if (!texte.startsWith(m, i)) continue;
+          const dedans = i + m.length;
+          const fin = fermeture(m, dedans, a);
+          const serree = fin > dedans && !/\s/.test(texte[dedans]) && !/\s/.test(texte[fin - 1]);
+          return serree ? { ouvre: m.length, ferme: m.length, noeud: () => document.createElement(balise), fin } : null;
+        }
+        return null;
+      }
+
+      function analyser(de, a, parent) {
+        let i = de;
+        let debut = de;
+        while (i < a) {
+          const lien = lienEn(i);
+          if (lien) { i = lien.fin; continue; }
+          const marque = marqueEn(i, a);
+          if (!marque) { i += 1; continue; }
+          ajouterTexte(parent, debut, i);
+          const noeud = marque.noeud();
+          analyser(i + marque.ouvre, marque.fin, noeud);
+          parent.appendChild(noeud);
+          i = marque.fin + marque.ferme;
+          debut = i;
+        }
+        ajouterTexte(parent, debut, a);
+      }
+
+      const fragment = document.createDocumentFragment();
+      analyser(0, texte.length, fragment);
+      return fragment;
+    }
+
+    // **UNE POSITION DE SÉLECTION → UNE POSITION DANS LE TEXTE DE LA NOTE.** Dans
+    // un nœud texte, c'est sa place plus le décalage ; sur un bord d'élément, c'est
+    // le début du texte qui suit, ou à défaut la fin de celui qui précède.
+    function versSource(noeud, decalage) {
+      if (noeud.nodeType === Node.TEXT_NODE) return noeud.ndDebut === undefined ? null : noeud.ndDebut + decalage;
+      const premier = (n) => n.nodeType === Node.TEXT_NODE ? (n.ndDebut === undefined ? null : n) : [...n.childNodes].map(premier).find(Boolean) || null;
+      const dernier = (n) => n.nodeType === Node.TEXT_NODE ? (n.ndDebut === undefined ? null : n) : [...n.childNodes].reverse().map(dernier).find(Boolean) || null;
+      const apres = noeud.childNodes[decalage] && premier(noeud.childNodes[decalage]);
+      if (apres) return apres.ndDebut;
+      const avant = decalage > 0 && dernier(noeud.childNodes[decalage - 1]);
+      return avant ? avant.ndDebut + avant.length : null;
+    }
+
+    // Le brouillon de rappel d'une note telle qu'elle est — pour que la modifier
+    // sans passer par « Modifier » garde son rappel (voir `quandDeLAlarme`).
+    function brouillonDeLAlarme(note) {
+      return {
+        actif: !!note.alarme,
+        date: note.alarme && note.alarme.date ? dateDeLAlarme(note.alarme.date) : "",
+        heure: note.alarme && note.alarme.heure ? heureDeLAlarme(note.alarme.heure) : "",
+        jours: note.alarme && note.alarme.jours ? note.alarme.jours : 0,
+      };
+    }
+
+    // **LA SÉLECTION DANS UNE NOTE AFFICHÉE, VUE COMME UNE ZONE DE SAISIE** —
+    // `basculerFormat` et `basculerCouleur` travaillent dessus comme sur un
+    // `<textarea>`, et son `input` ENREGISTRE la note. `null` hors d'une note.
+    function zoneDeLaSelection() {
+      const selection = window.getSelection();
+      if (!selection || !selection.rangeCount || selection.isCollapsed) return null;
+      const plage = selection.getRangeAt(0);
+      const commun = plage.commonAncestorContainer;
+      const corps = (commun.nodeType === Node.TEXT_NODE ? commun.parentElement : commun).closest(".card-body");
+      if (!corps || !corps.ndNote) return null;
+      const a = versSource(plage.startContainer, plage.startOffset);
+      const b = versSource(plage.endContainer, plage.endOffset);
+      if (a === null || b === null || b <= a) return null;
+      const note = corps.ndNote;
+      return {
+        value: note.content,
+        selectionStart: a,
+        selectionEnd: b,
+        focus() {},
+        setSelectionRange() {},
+        dispatchEvent() {
+          if (this.value === note.content) return;
+          window.getSelection().removeAllRanges();
+          go("update", note.id, this.value, quandDeLAlarme(brouillonDeLAlarme(note)));
+        },
+      };
+    }
+
+    // **ENTOURE OU DÉPOUILLE LA SÉLECTION** de la marque `m`. Les espaces aux
+    // bords de la sélection restent dehors — un double-clic sous Windows prend
+    // l'espace qui suit le mot, et `**mot **` ne serait pas du gras.
+    function basculerFormat(zone, m) {
+      const v = zone.value;
+      let a = zone.selectionStart ?? v.length;
+      let b = zone.selectionEnd ?? a;
+      while (a < b && /\s/.test(v[a])) a += 1;
+      while (b > a && /\s/.test(v[b - 1])) b -= 1;
+      let nouveau, na, nb;
+      if (a >= m.length && v.slice(a - m.length, a) === m && v.slice(b, b + m.length) === m) {
+        nouveau = v.slice(0, a - m.length) + v.slice(a, b) + v.slice(b + m.length);
+        na = a - m.length; nb = b - m.length;
+      } else if (b - a >= 2 * m.length && v.slice(a, a + m.length) === m && v.slice(b - m.length, b) === m) {
+        nouveau = v.slice(0, a) + v.slice(a + m.length, b - m.length) + v.slice(b);
+        na = a; nb = b - 2 * m.length;
+      } else {
+        nouveau = v.slice(0, a) + m + v.slice(a, b) + m + v.slice(b);
+        na = a + m.length; nb = b + m.length;
+      }
+      poserLaSaisie(zone, nouveau, na, nb);
+    }
+
+    function poserLaSaisie(zone, nouveau, na, nb) {
+      if (nouveau.length > maxChars) return;
+      zone.value = nouveau;
+      zone.focus();
+      zone.setSelectionRange(na, nb);
+      // Le brouillon d'édition suit `input` (voir `renderCard`).
+      zone.dispatchEvent(new Event("input"));
+    }
+
+    // **MET LA SÉLECTION EN COULEUR** — la même couleur une seconde fois la
+    // retire, une autre la REMPLACE (pas d'emboîtement par accident).
+    function basculerCouleur(zone, nom) {
+      const v = zone.value;
+      let a = zone.selectionStart ?? v.length;
+      let b = zone.selectionEnd ?? a;
+      while (a < b && /\s/.test(v[a])) a += 1;
+      while (b > a && /\s/.test(v[b - 1])) b -= 1;
+      // La couleur qui entoure déjà la sélection, marques hors sélection.
+      const avant = COULEURS.map((c) => "{" + c + "}").find((o) => v.slice(a - o.length, a) === o);
+      if (avant && v.slice(b, b + FIN_COULEUR.length) === FIN_COULEUR) {
+        const retire = avant === "{" + nom + "}";
+        const ouvre = retire ? "" : "{" + nom + "}";
+        const ferme = retire ? "" : FIN_COULEUR;
+        const debut = a - avant.length;
+        const nouveau = v.slice(0, debut) + ouvre + v.slice(a, b) + ferme + v.slice(b + FIN_COULEUR.length);
+        poserLaSaisie(zone, nouveau, debut + ouvre.length, debut + ouvre.length + (b - a));
+        return;
+      }
+      const ouvre = "{" + nom + "}";
+      poserLaSaisie(zone, v.slice(0, a) + ouvre + v.slice(a, b) + FIN_COULEUR + v.slice(b), a + ouvre.length, b + ouvre.length);
+    }
+
+    const FORMATS = [
+      { m: "**", libelle: "G", classe: "f-gras", titre: "Gras (Ctrl+B)", touche: "b", maj: false },
+      { m: "*", libelle: "I", classe: "f-italique", titre: "Italique (Ctrl+I)", touche: "i", maj: false },
+      { m: "~~", libelle: "S", classe: "f-barre", titre: "Barré (Ctrl+Maj+X)", touche: "x", maj: true },
+      { m: "==", libelle: "A", classe: "f-surligne", titre: "Surligner (Ctrl+Maj+H)", touche: "h", maj: true },
+      { m: "`", libelle: "</>", classe: "f-code", titre: "Code (Ctrl+E) — pour un bloc, une ligne ``` avant et après", touche: "e", maj: false },
+    ];
+
+    // **TRANSFORME LES LIGNES DE LA SÉLECTION EN TÂCHES**, ou les rend à du texte
+    // si elles en sont TOUTES déjà — le bouton ☐ de la barre.
+    function basculerTache(zone) {
+      const v = zone.value;
+      const a = zone.selectionStart ?? v.length;
+      const b = zone.selectionEnd ?? a;
+      const debut = a === 0 ? 0 : v.lastIndexOf("\n", a - 1) + 1;
+      // Une sélection qui finit juste APRÈS un saut de ligne ne prend pas la
+      // ligne suivante.
+      const dernier = b > a && v[b - 1] === "\n" ? b - 1 : b;
+      let fin = v.indexOf("\n", dernier);
+      if (fin === -1) fin = v.length;
+      const TACHE = /^([ \t]*)[-*] \[[ xX]\] ?/;
+      const lignes = v.slice(debut, fin).split("\n");
+      const toutes = lignes.every((l) => TACHE.test(l));
+      const bloc = lignes
+        .map((l) => (toutes ? l.replace(TACHE, "$1") : TACHE.test(l) ? l : l.replace(/^([ \t]*)/, "$1- [ ] ")))
+        .join("\n");
+      poserLaSaisie(zone, v.slice(0, debut) + bloc + v.slice(fin), debut + bloc.length, debut + bloc.length);
+    }
+
+    // Un bouton de la barre. `mousedown` est retenu : sans lui, le clic ôte le
+    // focus à la zone et sa sélection avec.
+    function boutonDeFormat(classe, titre, libelle, agir) {
+      const bouton = el("button", { class: classe, title: titre }, [libelle]);
+      bouton.addEventListener("mousedown", (e) => e.preventDefault());
+      bouton.addEventListener("click", agir);
+      return bouton;
+    }
+
+    // Les boutons, pour la zone que `zone()` désigne. Les pastilles de couleur
+    // s'ouvrent au clic sur le bouton de couleur — six pastilles en permanence
+    // chargeraient la ligne du compositeur.
+    function barreDeFormat(zone) {
+      const pastilles = el("div", { class: "pastilles" }, COULEURS.map((nom) =>
+        boutonDeFormat("pastille c-fond-" + nom, nom[0].toUpperCase() + nom.slice(1), "", () => {
+          const z = zone();
+          if (z) basculerCouleur(z, nom);
+          pastilles.classList.remove("ouvertes");
+        })));
+      return el("div", { class: "format" }, [
+        ...FORMATS.map((f) => boutonDeFormat(f.classe, f.titre, f.libelle, () => { const z = zone(); if (z) basculerFormat(z, f.m); })),
+        boutonDeFormat("f-tache", "Liste de tâches — une case à cocher par ligne", "☐", () => { const z = zone(); if (z) basculerTache(z); }),
+        boutonDeFormat("f-couleur", "Couleur du texte", "A", () => pastilles.classList.toggle("ouvertes")),
+        pastilles,
+      ]);
+    }
+
+    // Les raccourcis, sur les deux zones de saisie.
+    function raccourcisDeFormat(event) {
+      if (!event.ctrlKey || event.altKey) return;
+      const f = FORMATS.find((f) => f.touche === event.key.toLowerCase() && f.maj === event.shiftKey);
+      if (!f) return;
+      event.preventDefault();
+      basculerFormat(event.target, f.m);
+    }
+
+    function renderCard(note) {
+      const card = el("div", { class: "card" + (note.pinned ? " pinned" : "") }, []);
+      // Le bouton "Modifier" est créé à part (plutôt que dans le tableau
+      // passé à `el` ci-dessous) pour y attacher sa poignée par référence
+      // directe — indexer `actions.children[N]` serait fragile au moindre
+      // réordonnancement futur des boutons.
+      const editButton = el("button", {}, ["Modifier"]);
+      editButton.addEventListener("click", () => startEdit(note));
+      const actions = el("div", { class: "actions" }, [
+        el("button", { class: "pin-btn" + (note.pinned ? " active" : ""), title: note.pinned ? "Désépingler" : "Épingler", onclick: () => go("toggle-pin", note.id) }, [el("span", { class: "ico ico-" + (note.pinned ? "push-pin-fill" : "push-pin") })]),
+        ...renderAlarme(note),
+        // Colle une image du presse-papiers directement dans CETTE note
+        // (voir win32::cef_notes::handle_paste_into) — distinct du bouton
+        // "Coller" du compositeur, qui ne peut que créer une note neuve.
+        el("button", { title: "Coller une image ici", onclick: () => go("paste-into", note.id) }, [el("span", { class: "ico ico-image" }), "+"]),
+        // **EXPORTER** — ouvre la fenêtre « Enregistrer sous » de Windows (voir
+        // `cef_notes::handle_exporter_md`). C'est une action de la NOTE, donc
+        // elle est ici et non dans le clic droit — lequel sert déjà aux
+        // couleurs d'étiquettes.
+        el("button", { title: "Exporter la note en Markdown", onclick: () => go("exporter-md", note.id) }, ["Exporter"]),
+        // **ARCHIVER** — sortir la note de la liste sans la supprimer ; elle ne se
+        // voit plus que dans « Archives », et son rappel se tait.
+        el("button", {
+          title: note.archived ? "Désarchiver — la remettre dans la liste" : "Archiver — la sortir de la liste sans la supprimer",
+          onclick: () => go("archiver", note.id),
+        }, [note.archived ? "📤" : "🗄️"]),
+        editButton,
+        el("button", { onclick: () => go("delete", note.id) }, ["Supprimer"]),
+      ]);
+
+      card.appendChild(el("div", { class: "card-head" }, [
+        el("span", { class: "date" }, [formatDate(note.updatedAt)]),
+        actions,
+      ]));
+
+      if (editingId === note.id) {
+        const textarea = el("textarea", { class: "edit-area", maxlength: String(maxChars) }, []);
+        textarea.value = editDraft;
+        textarea.addEventListener("input", (e) => { editDraft = e.target.value; });
+        textarea.addEventListener("keydown", raccourcisDeFormat);
+        // ⛔ **LA BARRE N'EST PAS DANS `.edit-actions`** — défaut réel signalé
+        // (« je ne vois rien pour mettre de la couleur… en mode édition ») : la
+        // règle `.card .edit-actions button` y repeignait tous les boutons, ce qui
+        // effaçait le dégradé du bouton de couleur (texte transparent : bouton
+        // INVISIBLE) et donnait aux six pastilles la même teinte.
+        card.appendChild(el("div", { class: "edit-format" }, [barreDeFormat(() => document.querySelector(".edit-area"))]));
+        card.appendChild(textarea);
+        card.appendChild(el("div", { class: "edit-actions" }, [
+          el("button", { onclick: () => saveEdit(note.id, note.images && note.images.length > 0) }, ["Enregistrer"]),
+          el("button", { onclick: () => cancelEdit() }, ["Annuler"]),
+        ]));
+      } else {
+        // **UNE NOTE LONGUE SE REPLIE** — DEMANDE EXPLICITE (2026-10-11), d'après
+        // memos. Pas pendant une recherche : ce qu'elle a trouvé doit se voir.
+        // Elle n'est que REPLIABLE ici : `ajusterReplis` mesure si elle déborde.
+        const replier = !depliees.has(note.id) && query.trim() === "";
+        const corps = el("div", { class: "card-body" }, [
+          formaterNote(note.content, (rang) => go("cocher", note.id, rang)),
+        ]);
+        if (replier) corps.dataset.repliable = "1";
+        corps.ndNote = note;
+        card.appendChild(corps);
+        if (replier) {
+          card.appendChild(el("button", { class: "voir-plus", onclick: () => { depliees.add(note.id); renderList(); } }, ["Voir plus ▾"]));
+        } else if (depliees.has(note.id)) {
+          card.appendChild(el("button", { class: "voir-plus", onclick: () => { depliees.delete(note.id); renderList(); } }, ["Réduire ▴"]));
+        }
+        const chips = renderChips(note);
+        if (chips) card.appendChild(chips);
+      }
+      // Affichées dans les deux modes (édition ou non) : retirer une image
+      // n'a rien à voir avec l'édition du texte, voir handle_remove_image.
+      const images = renderImages(note);
+      if (images) card.appendChild(images);
+      return card;
+    }
+
+    function renderList() {
+      const list = document.getElementById("list");
+      const ouvertes = notesDuMode().reduce((total, note) => total + tachesOuvertes(note.content), 0);
+      document.getElementById("a-faire-libelle").textContent = ouvertes ? "Tâches à faire (" + ouvertes + ")" : "Tâches à faire";
+      // Préserve le focus + la position du curseur dans la zone d'édition à
+      // travers un re-rendu déclenché par un changement SANS RAPPORT avec
+      // l'édition en cours (ex. : épingler une AUTRE note, ou une frame
+      // `setState` pendant qu'on tape) — sinon `list.replaceChildren()`
+      // détruit le <textarea> en cours d'édition et le focus/curseur sont
+      // perdus (le texte tapé, lui, survit toujours via `editDraft`). Ne
+      // touche à rien si le focus était ailleurs (ex. la zone de recherche)
+      // : on ne veut pas voler le focus à un champ que l'utilisateur est
+      // en train d'utiliser.
+      const editingHadFocus = document.activeElement && document.activeElement.classList.contains("edit-area");
+      const caretPos = editingHadFocus ? document.activeElement.selectionStart : null;
+      // ⚠️ **LES CHAMPS DU RAPPEL N'ONT PAS BESOIN DE LA RESTAURATION CI-DESSUS,
+      // ET C'EST VOULU** : ils n'envoient plus rien tant qu'on les édite (voir
+      // `alarmeDraft`), donc aucun état n'est poussé, donc plus rien ne les
+      // détruit en pleine saisie. La restauration de focus a été essayée ici
+      // même (79d2854) et abandonnée : elle ne peut pas rendre le SEGMENT actif
+      // — `focus()` sur un nœud neuf repose le curseur sur le premier, donc
+      // « le champ a le focus » était vrai et la saisie était perdue quand même.
+      list.replaceChildren();
+      const visible = filteredNotes();
+      if (visible.length === 0) {
+        // ⛔ **LE MESSAGE NOMME LES FILTRES ACTIFS, ET C'EST UN VRAI CORRECTIF.**
+        // « Aucune note ne correspond au filtre » etait exact et SANS SECOURS : avec
+        // DEUX filtres en jeu -- une etiquette cliquee dans la colonne, et
+        // « epinglees seulement » --, rien ne dit lequel retire quoi. MESURE le
+        // 2026-09-24 : une etiquette active PLUS « epinglees seulement » donne ZERO
+        // note quand la note etiquetee n'est pas epinglee. C'est juste, et
+        // l'utilisateur en a conclu que la case ne marchait plus.
+        //
+        // ⚠️ **LES FILTRES SE COMBINENT, ET C'EST LA COMBINAISON QU'IL FAUT DIRE** :
+        // nommer un seul d'entre eux aurait laisse croire que c'est lui le coupable.
+        const filtres = [];
+        if (activeTag !== null) filtres.push("l'etiquette #" + activeTag);
+        if (pinnedOnly) filtres.push("« epinglees seulement »");
+        if (aFaireSeulement) filtres.push("« tâches à faire »");
+        if (query.trim() !== "") filtres.push("la recherche");
+        if (activeDay !== null) filtres.push("le jour du " + activeDay.split("-").reverse().join("/") + " (re-cliquer le jour le retire)");
+        const message = notesDuMode().length === 0
+          ? (showArchived ? "Aucune note archivée" : "Aucune note pour l'instant")
+          : filtres.length === 0
+            ? "Aucune note ne correspond au filtre"
+            : "Aucune note ne correspond a " + filtres.join(" et a ")
+              + (activeTag !== null ? " -- re-cliquer l'etiquette active la retire" : "");
+        list.appendChild(el("div", { class: "empty" }, [message]));
+        return;
+      }
+      for (const note of visible) {
+        list.appendChild(renderCard(note));
+      }
+      ajusterReplis();
+      if (editingHadFocus) focusEditArea(caretPos);
+    }
+
+    // **REPLIE LES NOTES QUI DÉBORDENT, ET SEULEMENT ELLES** — ce qui ne se sait
+    // qu'en MESURANT, avec la largeur réelle de la liste.
+    //
+    // ⛔ **PAS UNE SEULE FOIS AU RENDU** : c'était la première version, et une
+    // note de six lignes s'affichait repliée (capture du 2026-10-11). Le premier
+    // rendu a lieu dans la fenêtre PRÉCHARGÉE, avant qu'elle ait sa taille : le
+    // texte y passe à la ligne bien plus tôt, tout déborde, et rien ne remesurait
+    // ensuite — l'état n'ayant pas changé, la liste n'était pas reconstruite.
+    // D'où la mesure à chaque changement de taille de la liste (voir
+    // l'observateur plus bas).
+    function ajusterReplis() {
+      for (const corps of document.querySelectorAll(".card-body[data-repliable]")) {
+        corps.classList.add("repliee");
+        const deborde = corps.scrollHeight > corps.clientHeight + 1;
+        corps.classList.toggle("repliee", deborde);
+        const bouton = corps.parentElement.querySelector(".voir-plus");
+        if (bouton) bouton.style.display = deborde ? "" : "none";
+      }
+    }
+    new ResizeObserver(ajusterReplis).observe(document.getElementById("list"));
+
+    function submitCompose() {
+      const textarea = document.getElementById("compose");
+      const content = textarea.value.trim();
+      if (content === "") return;
+      go("create", content);
+      textarea.value = "";
+    }
+
+    // Appelée depuis Rust (win32::cef_notes::handle_paste) quand le
+    // presse-papiers contenait du TEXTE — insérée à la position du curseur
+    // plutôt qu'ajoutée à la fin, pour se comporter comme un vrai collage.
+    window.insertIntoCompose = function (text) {
+      const textarea = document.getElementById("compose");
+      const start = textarea.selectionStart ?? textarea.value.length;
+      const end = textarea.selectionEnd ?? textarea.value.length;
+      const combined = textarea.value.slice(0, start) + text + textarea.value.slice(end);
+      textarea.value = combined.length > maxChars ? combined.slice(0, maxChars) : combined;
+      const caret = Math.min(start + text.length, textarea.value.length);
+      textarea.focus();
+      textarea.setSelectionRange(caret, caret);
+    };
+
+    // Appelée depuis Rust (win32::cef_notes::handle_paste) après la création
+    // d'une note à partir d'une IMAGE collée : le contenu de la zone de
+    // composition vient d'être "consommé" comme légende de cette note.
+    window.clearCompose = function () {
+      document.getElementById("compose").value = "";
+    };
+
+    // Appelée depuis Rust (win32::cef_notes::handle_paste_into_active)
+    // quand un collage TEXTE arrive alors qu'une note est en cours
+    // d'édition — pendant de window.insertIntoCompose ci-dessus, mais pour
+    // la zone d'édition (`.edit-area`) plutôt que le compositeur. Ignorée si
+    // l'édition a été annulée/refermée entre le clic sur "Coller" et la
+    // réponse de Rust (la zone n'existe alors plus). `editDraft` est mis à
+    // jour explicitement (pas seulement `textarea.value`) : c'est LUI que
+    // `saveEdit` lit au moment d'enregistrer, voir `startEdit`/`saveEdit`.
+    window.insertIntoEditArea = function (text) {
+      const textarea = document.querySelector(".edit-area");
+      if (!textarea) return;
+      const start = textarea.selectionStart ?? textarea.value.length;
+      const end = textarea.selectionEnd ?? textarea.value.length;
+      const combined = textarea.value.slice(0, start) + text + textarea.value.slice(end);
+      textarea.value = combined.length > maxChars ? combined.slice(0, maxChars) : combined;
+      editDraft = textarea.value;
+      const caret = Math.min(start + text.length, textarea.value.length);
+      textarea.focus();
+      textarea.setSelectionRange(caret, caret);
+    };
+
+    // Appelée depuis Rust (win32::cef_notes::handle_full_image) une fois la
+    // pleine résolution d'une image de note chargée depuis le disque —
+    // ignorée si la visionneuse a été fermée ou pointe déjà vers une autre
+    // image entre-temps (voir lightboxTarget).
+    window.setFullImage = function (id, index, dataUri) {
+      if (!lightboxTarget || lightboxTarget.id !== id || lightboxTarget.index !== index) return;
+      document.getElementById("lightbox-img").src = dataUri;
+    };
+
+    // **LA BARRE AU-DESSUS D'UNE SÉLECTION DANS UNE NOTE AFFICHÉE** — DEMANDE
+    // EXPLICITE (2026-10-10) : « je ne vois pas de boutons pour appliquer une
+    // couleur au texte sélectionné dans une note ». Hors de `.root` : le `zoom` de
+    // .root ne la touche pas, et les rectangles de la sélection, mesurés dans la
+    // fenêtre, la placent directement.
+    const barreSelection = el("div", { class: "barre-selection" }, [barreDeFormat(zoneDeLaSelection)]);
+    document.body.appendChild(barreSelection);
+    document.addEventListener("selectionchange", () => {
+      if (!zoneDeLaSelection()) {
+        barreSelection.classList.remove("visible");
+        return;
+      }
+      const cadre = window.getSelection().getRangeAt(0).getBoundingClientRect();
+      barreSelection.classList.add("visible");
+      const largeur = barreSelection.offsetWidth;
+      const hauteur = barreSelection.offsetHeight;
+      const gauche = Math.max(4, Math.min(cadre.left, window.innerWidth - largeur - 4));
+      const haut = cadre.top - hauteur - 6 >= 4 ? cadre.top - hauteur - 6 : cadre.bottom + 6;
+      barreSelection.style.left = gauche + "px";
+      barreSelection.style.top = haut + "px";
+    });
+    document.getElementById("format-compose").replaceWith(barreDeFormat(() => document.getElementById("compose")));
+    document.getElementById("compose").addEventListener("keydown", raccourcisDeFormat);
+    document.getElementById("compose").addEventListener("keydown", (event) => {
+      if (event.ctrlKey && event.key === "Enter") {
+        event.preventDefault();
+        submitCompose();
+      }
+    });
+    document.getElementById("search").addEventListener("input", (event) => {
+      query = event.target.value;
+      renderVues();
+      renderList();
+    });
+    document.getElementById("annuler").addEventListener("click", () => go("annuler"));
+    document.getElementById("refaire").addEventListener("click", () => go("refaire"));
+
+    document.getElementById("pinned-only").addEventListener("change", (event) => {
+      pinnedOnly = event.target.checked;
+      renderVues();
+      renderList();
+    });
+    document.getElementById("a-faire").addEventListener("change", (event) => {
+      aFaireSeulement = event.target.checked;
+      renderVues();
+      renderList();
+    });
+    document.getElementById("archives").addEventListener("change", (event) => {
+      showArchived = event.target.checked;
+      renderTout();
+    });
+
+    // Appelée depuis Rust (win32::cef_notes::push_state) — à l'ouverture ET
+    // à chaque frame tant que la fenêtre reste ouverte (voir
+    // win32::cef_notes::refresh_if_visible, doc de fonction) : ignorée si
+    // identique à l'état déjà appliqué, voir `lastStateJson`.
+    window.setState = function (state) {
+      // **LES TAILLES SONT REPOSÉES ICI, AVANT TOUT LE RESTE.** L'ordre
+      // précédent les posait plus bas, APRÈS le garde d'état et après du code
+      // susceptible de lever — deux fragilités qui se conjuguaient :
+      //
+      //  1. `lastStateJson` était marqué AVANT que quoi que ce soit soit
+      //     appliqué. Si une seule ligne levait entre les deux, l'état était
+      //     tenu pour « déjà appliqué » sans l'être, et TOUTES les poussées
+      //     suivantes du même état sortaient en avance (le `return` ci-dessous) ;
+      //  2. les variables étaient posées après `getElementById("compose")`, qui
+      //     peut renvoyer `null` pendant une reconstruction du DOM.
+      //
+      // Le panneau gardait alors l'échelle par défaut de la feuille de style —
+      // 100 % — et ROUVRIR NE RÉPARAIT RIEN, puisque l'état, lui, n'avait pas
+      // changé : c'est ce qui rendait le défaut si déroutant à reproduire.
+      //
+      // Deux `setProperty` sont idempotents et ne coûtent rien : rien ne
+      // justifie de les soumettre au garde. Ils le sont donc plus.
+      const root = document.documentElement.style;
+      root.setProperty("--text-scale", state.textScalePercent / 100);
+      root.setProperty("--image-scale", state.imageScalePercent / 100);
+      // Le bandeau est repose AVANT le garde d'etat, comme les deux tailles
+      // ci-dessus, et pour la meme raison : il doit s'appliquer meme si le reste
+      // de l'etat est identique a la poussee precedente.
+      rendreAvertissement(state.avertissement);
+      // L'etat des deux boutons d'historique vient de Rust, comme le reste : la
+      // page ne devine jamais s'il reste quelque chose a annuler.
+      document.getElementById("annuler").disabled = !state.peutAnnuler;
+      document.getElementById("refaire").disabled = !state.peutRefaire;
+
+      const json = JSON.stringify(state);
+      if (json === lastStateJson) return;
+      notes = state.notes;
+      allTags = state.allTags;
+      // La couleur de chaque etiquette, indexee par son nom en minuscules (la
+      // meme cle que celle employee par les pastilles et par `activeTag`).
+      couleursEtiquettes = {};
+      for (const [nom, couleur] of Object.entries(state.couleursEtiquettes || {})) {
+        if (couleur) couleursEtiquettes[nom.toLowerCase()] = couleur;
+      }
+      vues = state.vues || [];
+      maxChars = state.maxChars;
+      document.getElementById("compose").setAttribute("maxlength", String(maxChars));
+      // Les couleurs d'accent ne passent PLUS par ici : elles sont poussées par
+      // `win32::cef_popup::push_window_palette`, à chaque frame où la fenêtre
+      // est visible, exactement comme pour les menus. Un seul mécanisme pour
+      // les quatre panneaux, au lieu d'un transport par l'état ici et d'un
+      // `setProperty` ailleurs.
+      // La note en cours d'édition a disparu (supprimée, p. ex. via le
+      // bouton "Supprimer" du header pendant qu'on l'éditait) : on efface
+      // le brouillon plutôt que de le laisser traîner. Sans ça, un id
+      // supprimé qui était le max courant serait réattribué à la PROCHAINE
+      // note créée (voir `notes::next_id`), et cette note fraîche
+      // hériterait par erreur du mode édition + du contenu de l'ancienne
+      // note supprimée.
+      if (editingId !== null && !notes.some((n) => n.id === editingId)) {
+        editingId = null;
+        editDraft = "";
+      }
+      if (activeTag !== null && !arbreEtiquettes().noeuds.has(activeTag)) {
+        activeTag = null;
+      }
+      renderTout();
+      // Marqué EN DERNIER, et c'est la seconde moitié du correctif : tant que
+      // tout n'a pas été appliqué, l'état ne doit pas être tenu pour tel. Une
+      // exception en cours de route doit provoquer un NOUVEL ESSAI à la poussée
+      // suivante, et non un abandon définitif — c'est exactement ce que
+      // produisait l'ordre inverse.
+      lastStateJson = json;
+    };
+
+    renderTout();
+
+    // Signale à Rust que cette page a fini de s'initialiser (voir
+    // win32::cef_notes::handle_ready, doc de READY) — dernière ligne du
+    // script à dessein : ne peut arriver qu'UNE SEULE fois par lancement de
+    // NeuraDesk (cette page n'est jamais rechargée après sa toute première
+    // création, voir doc de win32::cef_popup::toggle_with).
+    go("ready");
+  </script>
+</body>
+</html>

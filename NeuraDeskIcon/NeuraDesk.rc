@@ -1,0 +1,11 @@
+// Icône de l'exécutable (neuradesk.exe) — vue dans l'Explorateur Windows,
+// la barre des tâches, Alt-Tab... DISTINCTE du logo affiché DANS
+// l'application (voir `gfx::texture::LOGO_PNG`, `NeuraDeskIcon/NeuraDesk-128.png`) :
+// ce fichier n'a aucun effet sur ce que dessine l'app elle-même, seulement
+// sur ce que Windows affiche à propos du fichier .exe. Compilé par
+// `build.rs` via la crate `embed_resource`. "1" = ID de ressource — premier
+// ICON du binaire, celui que Windows utilise par défaut pour l'exe entier
+// tant qu'aucun ID n'est explicitement demandé ailleurs.
+#include <windows.h>
+
+1 ICON "NeuraDeskIcon.ico"

@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<!--
+  LA MÉTÉO — le panneau de l'applet (voir `win32::cef_meteo`).
+
+  ÉTAT REÇU (`window.setState`) :
+    { contentScale, lieu: {ville, libelle} | null, chargement, erreur,
+      candidats: [{nom, libelle, latitude, longitude}],
+      bulletin: { actuel: {temperature, ressenti, humidite, precipitations, vent,
+                           code, libelle, jour},
+                  heures: [{heure, temperature, code, libelle, probabilite}],
+                  jours:  [{jour, code, libelle, min, max}],
+                  unites: {temperature, vent, precipitations} } | null }
+
+  ACTIONS ÉMISES (`go(...)`, segments encodés) :
+    ready · close · chercher/<nom> · choisir/<rang> · rafraichir
+    favori/<rang> · ajouter · retirer/<rang> · carte
+
+  ÉTAT REÇU, pour les ONGLETS DE CARTE (`carte`, voir `win32::meteo_carte`) :
+    { chargement, erreur, fond: "file:///…/osm",
+      vue: {zoom, x0, y0, colonnes, rangees, monde, centre: [x, y]} | null,
+      radar: [{temps, dossier: "file:///…"}],   (de la plus ancienne à la plus récente)
+      grille: {heures: ["14:00", …], points: [{lat, lon, pluie[], neige[], vent[],
+               direction[], cape[], foudre[], code[]}]} | null }
+    Une tuile est `<fond ou dossier>/<zoom>/<x>/<y>.png`. `foudre` vaut −1 là où
+    l'API ne sait pas (hors du domaine des modèles qui la calculent).
+
+  ÉTAT REÇU, en plus : `favoris: [{ville, libelle, actif}]` et `lieuFavori`
+  (le lieu affiché est-il déjà retenu ?).
+
+  ⚠️ **LE RANG, PAS LES COORDONNÉES.** `choisir` dit « la deuxième de la liste que
+  tu m'as envoyée » ; Rust la retrouve. Faire voyager latitude et longitude en
+  texte dans une URL ne servirait à rien.
+
+  ⚠️ **LE CHAMP DE VILLE N'EST JAMAIS RECONSTRUIT.** Une poussée d'état ne fait que
+  poser sa valeur SI ELLE DIFFÈRE, et jamais pendant qu'il a le focus — sinon on
+  effacerait ce que l'utilisateur est en train de taper à chaque frame. C'est le
+  défaut déjà payé sur le champ date.
+
+  ⚠️ **PAS DE `<select>`** (règle du dépôt) : les villes proposées sont des BOUTONS.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    display: flex;
+    flex-direction: column;
+    /* Même grossissement que les autres panneaux : `zoom` seul. */
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    height: calc(100vh / var(--text-scale));
+    overflow: hidden;
+  }
+  header { display: flex; align-items: center; gap: 10px; padding: 12px 16px 8px; flex: 0 0 auto; }
+  h1 { margin: 0; font-size: 17px; font-weight: 600; white-space: nowrap; }
+  button {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    color: inherit; border: none; border-radius: var(--nd-rayon-controle);
+    padding: 4px 10px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  button:hover { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  .close-btn { background: none; font-size: 16px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); margin-left: auto; }
+  .close-btn:hover { background: none; opacity: 1; }
+  .cache { display: none !important; }
+
+  #champ {
+    flex: 1 1 auto; min-width: 0;
+    font: inherit; font-size: 15px; color: inherit;
+    padding: 6px 12px; border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.08 * var(--popup-fond-alpha, 1)));
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.25 * var(--popup-fond-alpha, 1)));
+    outline: none;
+  }
+  #champ:focus { border-color: rgba(var(--popup-accent-rgb), calc(.9 * var(--popup-fond-alpha, 1))); }
+  #champ::placeholder { color: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.45 * var(--popup-alpha, 1))); }
+
+  #message { padding: 2px 16px 8px; font-size: 13px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); flex: 0 0 auto; }
+  #message.erreur { color: rgb(255, 130, 120); opacity: 1; }
+
+  /* Les villes proposées — des BOUTONS, jamais un `<select>`. */
+  #candidats { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 10px; flex: 0 0 auto; }
+  .candidat { font-size: 13px; }
+
+  /* ---- LES LIEUX FAVORIS — un clic bascule, la croix retire ---- */
+  /* Jusqu'à 50 lieux (`meteo::FAVORIS_MAX`) : au-delà de quatre rangées, la zone
+     DÉFILE — sans plafond, elle repousserait les prévisions hors du panneau. */
+  #favoris { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 10px; flex: 0 0 auto; max-height: 136px; overflow-y: auto; }
+  #favoris .favori { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 10px; }
+  /* Le lieu AFFICHÉ — c'est celui-là qu'on regarde, il doit se voir. */
+  #favoris .favori.actif { background: rgb(var(--popup-accent-solid-rgb)); }
+  #favoris .croix { opacity: calc(.45 * max(1, var(--popup-alpha, 1))); font-size: 12px; line-height: 1; }
+  #favoris .croix:hover { opacity: 1; }
+  /* « Ajouter » se distingue des lieux : c'est un GESTE, pas un endroit. */
+  #favoris .ajouter { background: none; border: 1px dashed rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.3 * var(--popup-fond-alpha, 1))); }
+
+  #corps { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 16px 14px; }
+
+  /* ---- LES CONDITIONS DU MOMENT ---- */
+  #actuel { display: flex; align-items: center; gap: 18px; padding: 6px 0 14px; }
+  #actuel .icone { flex: 0 0 auto; opacity: calc(.95 * max(1, var(--popup-alpha, 1))); }
+  #actuel .degres { font-size: 44px; font-weight: 300; line-height: 1; white-space: nowrap; }
+  #actuel .degres .unite { font-size: 20px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); margin-left: 2px; }
+  #actuel .texte { min-width: 0; }
+  #actuel .ciel { font-size: 16px; font-weight: 600; }
+  #actuel .lieu { font-size: 13px; opacity: calc(.65 * max(1, var(--popup-alpha, 1))); margin-top: 2px; }
+  #details { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 13px; opacity: calc(.85 * max(1, var(--popup-alpha, 1))); }
+  #details .cle { opacity: calc(.6 * max(1, var(--popup-alpha, 1))); margin-right: 5px; }
+
+  /* ---- LE SOLEIL ET LA LUNE DU JOUR ---- */
+  #soleil { display: flex; flex-wrap: wrap; gap: 10px 34px; padding: 12px 0 2px; font-size: 13px; }
+  #soleil .bloc { display: flex; align-items: center; gap: 9px; }
+  #soleil .cle { opacity: calc(.6 * max(1, var(--popup-alpha, 1))); }
+  #soleil .quand { font-variant-numeric: tabular-nums; }
+
+  /* ---- LA QUALITÉ DE L'AIR ---- */
+  #air { padding-top: 14px; }
+  #air .indice { display: flex; align-items: baseline; gap: 10px; font-size: 15px; }
+  #air .valeur { font-size: 22px; font-weight: 600; }
+  #air .bande { font-size: 13px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+  #air .particules { margin-top: 6px; font-size: 13px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+  #air .pollens { margin-top: 4px; font-size: 13px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+  #air .rien { font-size: 13px; opacity: calc(.55 * max(1, var(--popup-alpha, 1))); }
+
+  /* ---- LES 24 HEURES ---- */
+  h2 { font-size: 13px; font-weight: 600; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); margin: 16px 0 8px; }
+  #heures { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 6px; }
+  .heure {
+    flex: 0 0 auto; width: 62px; text-align: center;
+    padding: 8px 4px; border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.05 * var(--popup-fond-alpha, 1)));
+  }
+  .heure .quand { font-size: 12px; opacity: calc(.65 * max(1, var(--popup-alpha, 1))); }
+  .heure .temp { font-size: 15px; font-weight: 600; margin-top: 4px; }
+  .heure .pluie { font-size: 11px; opacity: calc(.6 * max(1, var(--popup-alpha, 1))); margin-top: 3px; min-height: 14px; }
+
+  /* ---- LES JOURS ---- */
+  .jour { display: flex; align-items: center; gap: 12px; padding: 6px 0; font-size: 14px; }
+  .jour + .jour { border-top: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.09 * var(--popup-fond-alpha, 1))); }
+  .jour .nom { flex: 0 0 96px; }
+  .jour .ciel { flex: 1 1 auto; min-width: 0; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); font-size: 13px;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .jour .temps { flex: 0 0 auto; white-space: nowrap; }
+  .jour .temps .min { opacity: calc(.6 * max(1, var(--popup-alpha, 1))); margin-right: 10px; }
+  /* La SECONDE ligne d'un jour — soleil, UV, pluie, rafales. Elle est plus
+     discrète : c'est du détail, pas l'information de tête. */
+  .jour { flex-wrap: wrap; }
+  .jour .details { flex: 1 1 100%; font-size: 12px; opacity: calc(.6 * max(1, var(--popup-alpha, 1))); padding-left: 108px; }
+  .jour .details span + span::before { content: " · "; }
+
+  /* ---- LES ONGLETS — DEMANDE EXPLICITE (2026-10-23) : « des onglets pour Carte du
+     pays avec radar pluie, vent, orage, neige » ---- */
+  #onglets { display: flex; gap: 6px; padding: 0 16px 10px; flex: 0 0 auto; }
+  #onglets button { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.06 * var(--popup-fond-alpha, 1))); }
+  #onglets button[aria-selected="true"] { background: rgb(var(--popup-accent-solid-rgb)); font-weight: 600; }
+
+  /* ---- LA CARTE ---- */
+  #vue-carte { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 0 16px 14px; }
+  #carte { flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden; }
+  /* La boîte des tuiles : sa taille est un multiple de la tuile (voir `rendreCarte`),
+     centrée dans la place disponible. */
+  #boite { position: absolute; overflow: hidden; border-radius: var(--nd-rayon-controle); }
+  #boite img { position: absolute; display: block; user-select: none; -webkit-user-drag: none; }
+  /* LE ZOOM À LA MOLETTE (voir `zoomCarte`) : les tuiles et le radar sont
+     agrandis ensemble ; le dessin, lui, est repeint à l'échelle (net). */
+  #plan { position: absolute; inset: 0; transform-origin: 0 0; }
+  #boite.zoomee { cursor: grab; }
+  #boite.glisse { cursor: grabbing; }
+  .calque-radar { position: absolute; inset: 0; opacity: .8; }
+  #dessin { position: absolute; left: 0; top: 0; pointer-events: none; }
+  #credits {
+    position: absolute; right: 0; bottom: 0; padding: 1px 6px; font-size: 10px;
+    color: #222; background: rgba(255, 255, 255, .75); border-top-left-radius: 4px;
+  }
+  #etat-carte { position: absolute; left: 8px; top: 8px; padding: 3px 8px; font-size: 12px; border-radius: 4px;
+                color: #fff; background: rgba(0, 0, 0, .55); }
+  #commandes { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; font-size: 13px; }
+  #curseur { flex: 1 1 auto; accent-color: rgb(var(--popup-accent-solid-rgb)); }
+  #quand { flex: 0 0 auto; min-width: 150px; font-variant-numeric: tabular-nums; }
+  #legende { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; font-size: 12px;
+             opacity: calc(.85 * max(1, var(--popup-alpha, 1))); }
+  #legende .degrade { width: 180px; height: 10px; border-radius: 3px; }
+  #legende .note { opacity: .8; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Météo</h1>
+    <input id="champ" type="text" placeholder="Ville…" autocomplete="off" spellcheck="false">
+    <button id="chercher">Chercher</button>
+    <button id="rafraichir" title="Rafraîchir"><span class="ico ico-arrows-clockwise"></span></button>
+    <button class="close-btn" onclick="go('close')" title="Fermer"><span class="ico ico-x"></span></button>
+  </header>
+  <!-- ⚠️ **LES FAVORIS SONT AU-DESSUS DU CHAMP, PAS EN DESSOUS** : le champ sert
+       à AJOUTER un lieu, la rangée à en CHANGER. C'est le geste le plus fréquent
+       qui va le plus haut. -->
+  <div id="favoris" class="cache"></div>
+  <div id="message"></div>
+  <div id="candidats" class="cache"></div>
+  <!-- ⚠️ **DES BOUTONS, PAS DE `<select>`** (règle du dépôt). Les noms des onglets
+       vivent ICI, pas en Rust : ce sont des vues de la page, pas des données. -->
+  <nav id="onglets">
+    <button data-onglet="previsions">Prévisions</button>
+    <button data-onglet="radar">Radar pluie</button>
+    <button data-onglet="vent">Vent</button>
+    <button data-onglet="orage">Orage</button>
+    <button data-onglet="neige">Neige</button>
+  </nav>
+
+  <div id="vue-carte" class="cache">
+    <div id="carte">
+      <div id="boite" title="Molette : zoomer · glisser : se déplacer · double-clic : vue entière">
+        <div id="plan">
+          <div id="tuiles"></div>
+          <div id="radar"></div>
+        </div>
+        <canvas id="dessin"></canvas>
+        <!-- ⛔ **LA MENTION D'OPENSTREETMAP EST OBLIGATOIRE** (licence ODbL, politique
+             d'usage des tuiles) : elle ne se retire pas. -->
+        <div id="credits">© contributeurs OpenStreetMap · Radar RainViewer · Prévisions Open-Meteo</div>
+      </div>
+      <div id="etat-carte" class="cache"></div>
+    </div>
+    <div id="commandes">
+      <button id="lecture" title="Animer"><span class="ico ico-play-fill"></span></button>
+      <input id="curseur" type="range" min="0" max="0" value="0">
+      <span id="quand"></span>
+    </div>
+    <div id="legende"></div>
+  </div>
+
+  <div id="corps">
+    <div id="vide" class="cache">Entrez le nom d'une ville pour voir sa météo.</div>
+    <section id="bulletin" class="cache">
+      <div id="actuel">
+        <div class="icone" id="actuel-icone"></div>
+        <div class="degres"><span id="actuel-degres">—</span><span class="unite" id="actuel-unite"></span></div>
+        <div class="texte">
+          <div class="ciel" id="actuel-ciel"></div>
+          <div class="lieu" id="actuel-lieu"></div>
+        </div>
+      </div>
+      <div id="details"></div>
+      <div id="soleil"></div>
+      <!-- ⚠️ **LA QUALITÉ DE L'AIR EST UNE CONDITION ACTUELLE, PAS UNE
+           PRÉVISION** : sa place est avec le ressenti et le vent, pas après sept
+           jours de prévisions où il faudrait faire défiler pour le trouver. -->
+      <div id="air"></div>
+      <h2>Prochaines 24 heures</h2>
+      <div id="heures"></div>
+      <h2>Prochains jours</h2>
+      <div id="jours"></div>
+    </section>
+  </div>
+
+<script>
+  // `el` — MÊME HELPER que `calculatrice.html` et `recherche.html`.
+  function el(tag, attrs, children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (key === "class") node.className = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value);
+    }
+    for (const child of children || []) {
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+    return node;
+  }
+
+  // Segments ENCODÉS : un nom de ville peut porter des espaces et des accents.
+  function go(...segments) {
+    location.href = "neuradesk://meteo/" + segments.map(encodeURIComponent).join("/");
+  }
+
+  // ---------------------------------------------------------------------------
+  // LES ICÔNES — les tracés de **Keyline Icons** (MIT, <https://keylineicons.com/>),
+  // les mêmes que l'icône de l'applet (voir `TopbarIcons/SOURCE.md`).
+  //
+  // ⚠️ **LE JEU N'A NI BROUILLARD, NI BRUINE, NI ORAGE.** Constaté en listant ses
+  // 9 864 glyphes. On prend donc le plus proche — `clouds` pour le brouillard,
+  // `cloud-alert` (un nuage à point d'exclamation) pour l'orage — et **c'est le
+  // LIBELLÉ qui porte la précision**, lui qui vient de Rust et couvre les 28 codes.
+  // ---------------------------------------------------------------------------
+  const TRACES = {
+    "sun-medium": "M16.5 12C16.5 14.4853 14.4853 16.5 12 16.5C9.5147 16.5 7.5 14.4853 7.5 12C7.5 9.5147 9.5147 7.5 12 7.5C14.4853 7.5 16.5 9.5147 16.5 12ZM20.5 12L21 12M18.0104 18.0104L18.364 18.364M12 20.5L12 21M5.9896 18.0104L5.636 18.364M3.5 12L3 12M5.9896 5.9896L5.636 5.636M12 3.5L12 3M18.0104 5.9896L18.364 5.636",
+    "moon": "M21 12C21 16.9706 16.9706 21 12 21C7.0294 21 3 16.9706 3 12C3 7.0294 7.0294 3 12 3C9.9618 5.5477 10.1652 9.2206 12.4723 11.5277C14.7794 13.8348 18.4523 14.0382 21 12Z",
+    "cloud-sun": "M10 22L19 22C20.6569 22 22 20.6569 22 19C22 17.3431 20.6569 16 19 16C19 13.5147 16.9853 11.5 14.5 11.5C12.0147 11.5 10 13.5147 10 16C8.3431 16 7 17.3431 7 19C7 20.6569 8.3431 22 10 22ZM7.6787 10.9281C7.5606 10.6329 7.5 10.3179 7.5 10C7.5 8.6193 8.6193 7.5 10 7.5C10.5583 7.5 11.1004 7.6868 11.5402 8.0308M3.5 10L2 10M5.4038 5.4038L4.3431 4.3431M10 3.5L10 2M14.5962 5.4038L15.6569 4.3431",
+    "cloud-moon": "M10 22L19 22C20.6569 22 22 20.6569 22 19C22 17.3431 20.6569 16 19 16C19 13.5147 16.9853 11.5 14.5 11.5C12.0147 11.5 10 13.5147 10 16C8.3431 16 7 17.3431 7 19C7 20.6569 8.3431 22 10 22ZM5.0758 14.0249C3.1634 12.8397 2 10.7498 2 8.5C2 4.9101 4.9101 2 8.5 2C7.844 2.82 7.4866 3.8388 7.4866 4.8889C7.4866 6.5491 8.3766 8.0819 9.8184 8.905",
+    "cloud": "M6 19L18 19C20.2091 19 22 17.2091 22 15C22 12.7909 20.2091 11 18 11C18 7.6863 15.3137 5 12 5C8.6863 5 6 7.6863 6 11C3.7909 11 2 12.7909 2 15C2 17.2091 3.7909 19 6 19Z",
+    "clouds": "M5 20L14 20C15.6569 20 17 18.6569 17 17C17 15.3431 15.6569 14 14 14C14 11.5147 11.9853 9.5 9.5 9.5C7.0147 9.5 5 11.5147 5 14C3.3431 14 2 15.3431 2 17C2 18.6569 3.3431 20 5 20ZM18.8989 12L19.5 12C20.8807 12 22 10.8807 22 9.5C22 8.1193 20.8807 7 19.5 7C19.5 5.3431 18.1569 4 16.5 4C15.0285 4 13.7742 5.0673 13.5387 6.5198",
+    "cloud-rain": "M6 16L18 16C20.2091 16 22 14.2091 22 12C22 9.7909 20.2091 8 18 8C18 4.6863 15.3137 2 12 2C8.6863 2 6 4.6863 6 8C3.7909 8 2 9.7909 2 12C2 14.2091 3.7909 16 6 16ZM8 20V22M12 20V22M16 20V22",
+    "snowflake": "M4.6795 12L19.3205 12M22 14.6795L19.3205 12L22 9.3205M2 9.3205L4.6795 12L2 14.6795M8.3397 5.6603L15.6603 18.3397M14.6795 22L15.6603 18.3397L19.3205 19.3205M9.3205 2L8.3397 5.6603L4.6795 4.6795M15.6603 5.6603L8.3397 18.3397M4.6795 19.3205L8.3397 18.3397L9.3205 22M19.3205 4.6795L15.6603 5.6603L14.6795 2",
+    "cloud-alert": "M6 19L18 19C20.2091 19 22 17.2091 22 15C22 12.7909 20.2091 11 18 11C18 7.6863 15.3137 5 12 5C8.6863 5 6 7.6863 6 11C3.7909 11 2 12.7909 2 15C2 17.2091 3.7909 19 6 19ZM12 9L12 11M13 15C13 15.5523 12.5523 16 12 16C11.4477 16 11 15.5523 11 15C11 14.4477 11.4477 14 12 14C12.5523 14 13 14.4477 13 15Z"
+  };
+
+  const NS = "http://www.w3.org/2000/svg";
+  function icone(nom, taille) {
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", taille);
+    svg.setAttribute("height", taille);
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    const chemin = document.createElementNS(NS, "path");
+    // Repli sur un nuage : un code que l'API inventerait demain se dessine quand
+    // même, au lieu de laisser un trou.
+    chemin.setAttribute("d", TRACES[nom] || TRACES["cloud"]);
+    svg.appendChild(chemin);
+    return svg;
+  }
+
+  /// Le code WMO → une famille d'icônes. Le LIBELLÉ, lui, vient de Rust (voir
+  /// `meteo::libelle_wmo`) : c'est lui qui doit être exhaustif, pas ceci.
+  function famille(code, jour) {
+    if (code === 0) return jour ? "sun-medium" : "moon";
+    if (code === 1 || code === 2) return jour ? "cloud-sun" : "cloud-moon";
+    if (code === 3) return "cloud";
+    if (code === 45 || code === 48) return "clouds";
+    if (code >= 51 && code <= 67) return "cloud-rain";
+    if (code >= 71 && code <= 77) return "snowflake";
+    if (code >= 80 && code <= 82) return "cloud-rain";
+    if (code >= 85 && code <= 86) return "snowflake";
+    if (code >= 95) return "cloud-alert";
+    return "cloud";
+  }
+
+  // ---------------------------------------------------------------------------
+  // L'affichage
+  // ---------------------------------------------------------------------------
+  const champ = document.getElementById("champ");
+  const message = document.getElementById("message");
+  const candidats = document.getElementById("candidats");
+  const corps = document.getElementById("corps");
+  const vide = document.getElementById("vide");
+  const bulletin = document.getElementById("bulletin");
+
+  let state = {};
+  let dernierJson = null;
+
+  /// Les nombres à la française : virgule décimale, et pas de « ,0 » inutile.
+  function degres(valeur) {
+    if (typeof valeur !== "number" || !isFinite(valeur)) return "—";
+    const arrondi = Math.round(valeur * 10) / 10;
+    return Number.isInteger(arrondi) ? String(arrondi) : arrondi.toFixed(1).replace(".", ",");
+  }
+
+  /// **LES LIEUX FAVORIS — « les choisir en un clic » (DEMANDE EXPLICITE).**
+  ///
+  /// Un clic sur le NOM bascule ; un clic sur la CROIX retire. La croix est un
+  /// `<span>` DANS le bouton, et son gestionnaire fait `stopPropagation` — sans
+  /// quoi retirer un lieu le choisirait aussi au passage.
+  ///
+  /// « Ajouter » n'apparaît QUE si le lieu affiché n'est pas déjà retenu : un
+  /// bouton qui ne ferait rien est pire que pas de bouton.
+  function rendreFavoris(liste, lieuFavori) {
+    const zone = document.getElementById("favoris");
+    const boutons = liste.map((favori, rang) => {
+      const croix = el("span", { class: "croix", title: "Retirer des favoris" }, [el("span", { class: "ico ico-x" })]);
+      croix.addEventListener("click", (evenement) => {
+        evenement.stopPropagation();
+        go("retirer", String(rang));
+      });
+      const bouton = el(
+        "button",
+        { class: favori.actif ? "favori actif" : "favori", title: favori.libelle },
+        [document.createTextNode(favori.ville), croix]
+      );
+      bouton.addEventListener("click", () => go("favori", String(rang)));
+      return bouton;
+    });
+
+    if (state.lieu && !lieuFavori) {
+      const ajouter = el("button", { class: "favori ajouter", title: "Retenir ce lieu" }, ["+ " + state.lieu.ville]);
+      // ⚠️ **LE GESTIONNAIRE EST OBLIGATOIRE ICI** : un bouton sans `go(...)`
+      // s'affiche, se clique, et ne fait RIEN — sans un mot. C'est le test de
+      // parité page ↔ `dispatch_actions` qui l'a attrapé.
+      ajouter.addEventListener("click", () => go("ajouter"));
+      boutons.push(ajouter);
+    }
+
+    zone.replaceChildren(...boutons);
+    zone.classList.toggle("cache", boutons.length === 0);
+  }
+
+  function rendreCandidats(liste) {
+    candidats.replaceChildren();
+    candidats.classList.toggle("cache", liste.length === 0);
+    // Le RANG part, pas les coordonnées : Rust retrouve la ville dans SA liste.
+    liste.forEach((ville, rang) => {
+      candidats.appendChild(el("button", { class: "candidat", onclick: () => go("choisir", String(rang)) }, [ville.libelle]));
+    });
+  }
+
+  function rendreActuel(actuel, unites, lieu) {
+    document.getElementById("actuel-icone").replaceChildren(icone(famille(actuel.code, actuel.jour), 84));
+    document.getElementById("actuel-degres").textContent = degres(actuel.temperature);
+    document.getElementById("actuel-unite").textContent = unites.temperature || "°C";
+    document.getElementById("actuel-ciel").textContent = actuel.libelle || "";
+    document.getElementById("actuel-lieu").textContent = lieu ? lieu.libelle : "";
+
+    const details = document.getElementById("details");
+    details.replaceChildren();
+    const ligne = (cle, valeur) => el("span", {}, [el("span", { class: "cle" }, [cle]), valeur]);
+    details.appendChild(ligne("Ressenti", degres(actuel.ressenti) + " " + (unites.temperature || "°C")));
+    details.appendChild(ligne("Humidité", Math.round(actuel.humidite) + " %"));
+    details.appendChild(ligne("Vent", degres(actuel.vent) + " " + (unites.vent || "km/h")));
+    // Les RAFALES ne sont montrées que si elles dépassent le vent moyen — sinon
+    // elles répètent la ligne précédente.
+    if (actuel.rafales > actuel.vent + 0.5) {
+      details.appendChild(ligne("Rafales", degres(actuel.rafales) + " " + (unites.vent || "km/h")));
+    }
+    details.appendChild(ligne("Précipitations", degres(actuel.precipitations) + " " + (unites.precipitations || "mm")));
+  }
+
+  /// **LE SOLEIL ET LA LUNE DU JOUR** — la première ligne des jours.
+  ///
+  /// ⚠️ **LA LUNE NE SE LÈVE PAS TOUS LES JOURS** : l'API rend alors `null`, et
+  /// Rust une chaîne vide. On n'affiche que ce qui existe, plutôt qu'un « — » qui
+  /// laisserait croire à une panne.
+  function rendreSoleil(jour) {
+    const zone = document.getElementById("soleil");
+    zone.replaceChildren();
+    if (!jour) return;
+    const bloc = (trace, morceaux) => el("div", { class: "bloc" }, [icone(trace, 20), ...morceaux]);
+
+    const soleil = [];
+    if (jour.lever && jour.coucher) soleil.push(el("span", { class: "quand" }, [jour.lever + " → " + jour.coucher]));
+    if (jour.jourDuree) soleil.push(el("span", { class: "cle" }, [jour.jourDuree]));
+    if (soleil.length) zone.appendChild(bloc("sun-medium", soleil));
+
+    // ⚠️ **LA LUNE NE SE LÈVE PAS TOUS LES JOURS** — l'API rend alors `null`, et
+    // Rust une chaîne vide. On écrit ce qu'on SAIT plutôt qu'un tiret : un « — »
+    // se lit comme une donnée manquante, alors que « coucher 16:28 » est un fait
+    // complet — la lune se couche ce jour-là, elle n'y est simplement pas levée.
+    const lune = [];
+    if (jour.leverLune && jour.coucherLune) {
+      lune.push(el("span", { class: "quand" }, [jour.leverLune + " → " + jour.coucherLune]));
+    } else if (jour.coucherLune) {
+      lune.push(el("span", { class: "quand" }, ["coucher " + jour.coucherLune]));
+    } else if (jour.leverLune) {
+      lune.push(el("span", { class: "quand" }, ["lever " + jour.leverLune]));
+    }
+    if (jour.phaseLune) lune.push(el("span", { class: "cle" }, [jour.phaseLune]));
+    if (lune.length) zone.appendChild(bloc("moon", lune));
+  }
+
+  function rendreHeures(heures) {
+    const zone = document.getElementById("heures");
+    zone.replaceChildren();
+    for (const h of heures) {
+      zone.appendChild(
+        el("div", { class: "heure" }, [
+          el("div", { class: "quand" }, [h.heure]),
+          // ⚠️ **`h.jour`, PAS `true`** : la nuit se voit sur l'icône. Une version
+          // antérieure passait `true` en dur, et la bande montrait un soleil à
+          // 02:00 — constaté sur une capture.
+          icone(famille(h.code, h.jour), 26),
+          el("div", { class: "temp" }, [degres(h.temperature) + "°"]),
+          // La probabilité n'est montrée QUE si elle dit quelque chose : une
+          // colonne de « 0 % » ne renseigne personne.
+          el("div", { class: "pluie" }, [h.probabilite >= 10 ? Math.round(h.probabilite) + " %" : ""]),
+        ])
+      );
+    }
+  }
+
+  function rendreJours(jours) {
+    const zone = document.getElementById("jours");
+    zone.replaceChildren();
+    for (const j of jours) {
+      // La SECONDE ligne : ce qui est du détail, et ce qu'on ne met que s'il y a
+      // quelque chose à dire. Un « 0 mm » sur sept jours ne renseigne personne.
+      const details = [];
+      if (j.lever && j.coucher) details.push(el("span", {}, [j.lever + " → " + j.coucher]));
+      if (j.jourDuree) details.push(el("span", {}, [j.jourDuree]));
+      if (j.uvMax) details.push(el("span", {}, ["UV " + degres(j.uvMax)]));
+      if (j.pluie > 0) details.push(el("span", {}, [degres(j.pluie) + " mm"]));
+      if (j.rafalesMax) details.push(el("span", {}, ["rafales " + degres(j.rafalesMax)]));
+
+      const ligne = el("div", { class: "jour" }, [
+        el("span", { class: "nom" }, [j.jour]),
+        icone(famille(j.code, true), 24),
+        el("span", { class: "ciel" }, [j.libelle || ""]),
+        el("span", { class: "temps" }, [
+          el("span", { class: "min" }, [degres(j.min) + "°"]),
+          degres(j.max) + "°",
+        ]),
+      ]);
+      if (details.length) ligne.appendChild(el("div", { class: "details" }, details));
+      zone.appendChild(ligne);
+    }
+  }
+
+  /// Les bandes de l'indice européen (EAQI), telles que l'Agence européenne pour
+  /// l'environnement les publie (révisées en 2024, voir la doc de l'API). L'indice
+  /// global est le PLUS ÉLEVÉ des cinq polluants — il peut donc dépasser 100.
+  const BANDES_AQI = [[20, "Bon"], [40, "Correct"], [60, "Moyen"], [80, "Médiocre"], [100, "Mauvais"]];
+  function bandeAqi(aqi) {
+    for (const [borne, nom] of BANDES_AQI) if (aqi <= borne) return nom;
+    return "Très mauvais";
+  }
+
+  /// **LA QUALITÉ DE L'AIR — ABSENTE, ON N'AFFICHE RIEN.** Elle vient d'un second
+  /// appel, sur un autre hôte : quand il tombe, le panneau reste complet sur tout
+  /// le reste, et ce bloc disparaît simplement.
+  function rendreAir(air) {
+    const zone = document.getElementById("air");
+    zone.replaceChildren();
+    if (!air) return;
+
+    zone.appendChild(el("h2", {}, ["Qualité de l'air"]));
+    if (air.aqi >= 0) {
+      zone.appendChild(el("div", { class: "indice" }, [
+        el("span", { class: "valeur" }, [String(air.aqi)]),
+        el("span", { class: "bande" }, ["Indice européen — " + bandeAqi(air.aqi)]),
+      ]));
+    }
+    const u = air.unites || {};
+    zone.appendChild(el("div", { class: "particules" }, [
+      "PM2,5 " + degres(air.pm2_5) + " " + (u.particules || "μg/m³") +
+        "  ·  PM10 " + degres(air.pm10) + " " + (u.particules || "μg/m³"),
+    ]));
+
+    // ⚠️ **SEULEMENT LES POLLENS NON NULS.** Hors saison les six valent zéro :
+    // une ligne de six zéros n'apprend rien, et dirait même le contraire de la
+    // vérité (elle occuperait l'écran pour ne rien dire).
+    const actifs = (air.pollens || []).filter((p) => p.grains > 0);
+    zone.appendChild(el("div", { class: "pollens" }, [
+      actifs.length
+        ? "Pollens : " + actifs.map((p) => p.nom + " " + degres(p.grains)).join(" · ") + " " + (u.pollens || "grains/m³")
+        : "Aucun pollen en ce moment.",
+    ]));
+  }
+
+  function rendre() {
+    const lieu = state.lieu || null;
+    const b = state.bulletin || null;
+
+    message.textContent = state.erreur || (state.chargement ? "Interrogation…" : "");
+    message.classList.toggle("erreur", !!state.erreur);
+    message.classList.toggle("cache", !state.erreur && !state.chargement);
+
+    // ⚠️ **LE CHAMP N'EST JAMAIS RECONSTRUIT** — on ne pose sa valeur que si elle
+    // DIFFÈRE, et jamais pendant qu'il a le focus : sinon on effacerait la frappe
+    // en cours à chaque poussée d'état (le défaut du champ date).
+    const voulu = lieu ? lieu.ville : "";
+    if (document.activeElement !== champ && champ.value !== voulu) {
+      champ.value = voulu;
+    }
+
+    rendreFavoris(state.favoris || [], state.lieuFavori);
+    rendreCandidats(state.candidats || []);
+    bulletin.classList.toggle("cache", !b);
+    // « Entrez une ville » ne s'affiche que s'il n'y a NI lieu, NI bulletin, NI
+    // recherche en cours.
+    vide.classList.toggle("cache", !!b || !!lieu || !!(state.candidats || []).length || !!state.chargement);
+    corps.classList.toggle("cache", ongletCourant !== "previsions" || (!b && !state.lieu && !(state.candidats || []).length));
+    rendreOnglets();
+
+    // La qualité de l'air se rend MÊME sans bulletin : `state.air` est un champ de
+    // premier niveau, poussé à part, et il vaut `null` quand son appel a échoué.
+    rendreAir(state.air);
+
+    if (b) {
+      rendreActuel(b.actuel, b.unites || {}, lieu);
+      // Le soleil et la lune d'AUJOURD'HUI — c'est le premier jour.
+      rendreSoleil((b.jours || [])[0]);
+      rendreHeures(b.heures || []);
+      rendreJours(b.jours || []);
+    }
+  }
+
+  // ===========================================================================
+  // LES ONGLETS ET LA CARTE — voir `win32::meteo_carte`
+  // ===========================================================================
+  // ⭐ **L'ONGLET VIT ICI, PAS DANS L'ÉTAT** : c'est un geste de lecture. Le panneau
+  // est préchargé puis CACHÉ, jamais détruit — l'onglet tient d'une ouverture à
+  // l'autre tant que l'application tourne.
+  let ongletCourant = "previsions";
+  // Le lieu pour lequel la carte a été demandée : un AUTRE lieu la redemande.
+  let carteDemandeePour = null;
+  let dernierJsonCarte = null;
+  let indexRadar = -1;   // −1 : la plus récente
+  let heureGrille = 0;
+  let minuterie = null;
+
+  const vueCarte = document.getElementById("vue-carte");
+  const curseur = document.getElementById("curseur");
+  const lecture = document.getElementById("lecture");
+
+  function rendreOnglets() {
+    for (const bouton of document.querySelectorAll("#onglets button")) {
+      bouton.setAttribute("aria-selected", String(bouton.dataset.onglet === ongletCourant));
+    }
+    const enCarte = ongletCourant !== "previsions";
+    vueCarte.classList.toggle("cache", !enCarte);
+    if (!enCarte) {
+      arreterLecture();
+      return;
+    }
+    // Un onglet de carte sans lieu n'a rien à montrer : on le DIT.
+    const lieu = state.lieu ? state.lieu.libelle : null;
+    if (lieu && carteDemandeePour !== lieu) {
+      carteDemandeePour = lieu;
+      go("carte");
+    }
+    const json = JSON.stringify(state.carte || null);
+    if (json !== dernierJsonCarte) {
+      dernierJsonCarte = json;
+      construireCarte();
+    }
+    dessiner();
+  }
+
+  for (const bouton of document.querySelectorAll("#onglets button")) {
+    bouton.addEventListener("click", () => {
+      ongletCourant = bouton.dataset.onglet;
+      heureGrille = Math.min(heureGrille, 23);
+      rendreOnglets();
+    });
+  }
+
+  /// La taille d'une tuile À L'ÉCRAN : la plus grande qui fait tenir toute la vue.
+  let taille = 0;
+  let geometrie = null;
+
+  // ---- LE ZOOM DE LA CARTE (molette) ----
+  // ⚠️ **UN ZOOM DE LA PAGE, PAS DES TUILES** : le radar s'arrête au zoom 7 (voir
+  // `win32::meteo_carte::ZOOM`), on agrandit donc les tuiles déjà là. `k` est le
+  // facteur, `fx`/`fy` le décalage en FRACTION de la boîte : il tient quand le
+  // panneau change de taille.
+  const ZOOM_MAX = 6;
+  let zoomCarte = { k: 1, fx: 0, fy: 0 };
+  // La vue pour laquelle le zoom vaut : une autre vue (un autre lieu) le remet à 1.
+  let cleVueZoom = null;
+
+  /// Un point de la boîte (pixels de la vue entière) → à l'écran, zoom compris.
+  function versEcran(x, y) {
+    return [x * zoomCarte.k + zoomCarte.fx * geometrie.largeur, y * zoomCarte.k + zoomCarte.fy * geometrie.hauteur];
+  }
+
+  /// Le décalage borné : la carte couvre toujours toute la boîte.
+  function borne(z) {
+    const k = Math.max(1, Math.min(ZOOM_MAX, z.k));
+    const b = (f) => Math.max(1 - k, Math.min(0, f));
+    return { k, fx: b(z.fx), fy: b(z.fy) };
+  }
+
+  function appliquerZoom() {
+    const plan = document.getElementById("plan");
+    const boite = document.getElementById("boite");
+    if (!geometrie) return;
+    const { k, fx, fy } = zoomCarte;
+    plan.style.transform = `translate(${fx * geometrie.largeur}px, ${fy * geometrie.hauteur}px) scale(${k})`;
+    boite.classList.toggle("zoomee", k > 1);
+    dessiner();
+  }
+
+  /// Zoome d'un facteur autour du point (x, y) de la boîte : ce point ne bouge pas.
+  function zoomerAutour(facteur, x, y) {
+    const { k, fx, fy } = zoomCarte;
+    const k2 = Math.max(1, Math.min(ZOOM_MAX, k * facteur));
+    const ox = fx * geometrie.largeur, oy = fy * geometrie.hauteur;
+    const nx = x - (x - ox) * k2 / k, ny = y - (y - oy) * k2 / k;
+    zoomCarte = borne({ k: k2, fx: nx / geometrie.largeur, fy: ny / geometrie.hauteur });
+    appliquerZoom();
+  }
+
+  (() => {
+    const boite = document.getElementById("boite");
+    boite.addEventListener("wheel", (e) => {
+      if (!geometrie) return;
+      e.preventDefault();
+      const r = boite.getBoundingClientRect();
+      // Le `zoom` CSS du corps : la boîte mesure en pixels de la page, l'événement aussi.
+      const echelle = r.width / geometrie.largeur;
+      zoomerAutour(Math.exp(-e.deltaY * 0.0015), (e.clientX - r.left) / echelle, (e.clientY - r.top) / echelle);
+    }, { passive: false });
+    boite.addEventListener("dblclick", () => {
+      zoomCarte = { k: 1, fx: 0, fy: 0 };
+      appliquerZoom();
+    });
+    let prise = null;
+    boite.addEventListener("pointerdown", (e) => {
+      if (zoomCarte.k <= 1 || e.button !== 0) return;
+      prise = { x: e.clientX, y: e.clientY, fx: zoomCarte.fx, fy: zoomCarte.fy };
+      boite.setPointerCapture(e.pointerId);
+      boite.classList.add("glisse");
+    });
+    boite.addEventListener("pointermove", (e) => {
+      if (!prise) return;
+      const r = boite.getBoundingClientRect();
+      zoomCarte = borne({ k: zoomCarte.k, fx: prise.fx + (e.clientX - prise.x) / r.width, fy: prise.fy + (e.clientY - prise.y) / r.height });
+      appliquerZoom();
+    });
+    const lacher = () => { prise = null; boite.classList.remove("glisse"); };
+    boite.addEventListener("pointerup", lacher);
+    boite.addEventListener("pointercancel", lacher);
+  })();
+
+  /// **(RE)CONSTRUIT LES TUILES** — fond et radar. Appelée quand l'état de la carte
+  /// change ou que le panneau change de taille ; `dessiner` ne fait que repeindre.
+  function construireCarte() {
+    const c = state.carte || {};
+    const v = c.vue;
+    const carte = document.getElementById("carte");
+    const boite = document.getElementById("boite");
+    const tuiles = document.getElementById("tuiles");
+    const radar = document.getElementById("radar");
+    if (!v || !c.fond) {
+      tuiles.replaceChildren();
+      radar.replaceChildren();
+      boite.classList.add("cache");
+      geometrie = null;
+      return;
+    }
+    boite.classList.remove("cache");
+    taille = Math.max(32, Math.floor(Math.min(carte.clientWidth / v.colonnes, carte.clientHeight / v.rangees)));
+    const largeur = taille * v.colonnes, hauteur = taille * v.rangees;
+    boite.style.width = largeur + "px";
+    boite.style.height = hauteur + "px";
+    boite.style.left = Math.floor((carte.clientWidth - largeur) / 2) + "px";
+    boite.style.top = Math.floor((carte.clientHeight - hauteur) / 2) + "px";
+    geometrie = { v, largeur, hauteur };
+    const cle = v.zoom + "/" + v.x0 + "/" + v.y0;
+    if (cle !== cleVueZoom) {
+      cleVueZoom = cle;
+      zoomCarte = { k: 1, fx: 0, fy: 0 };
+    }
+    const plan = document.getElementById("plan");
+    plan.style.width = largeur + "px";
+    plan.style.height = hauteur + "px";
+    plan.style.transform = `translate(${zoomCarte.fx * largeur}px, ${zoomCarte.fy * hauteur}px) scale(${zoomCarte.k})`;
+    boite.classList.toggle("zoomee", zoomCarte.k > 1);
+
+    const poser = (racine, conteneur) => {
+      for (let j = 0; j < v.rangees; j++) {
+        for (let i = 0; i < v.colonnes; i++) {
+          const x = (((v.x0 + i) % v.monde) + v.monde) % v.monde, y = v.y0 + j;
+          const img = document.createElement("img");
+          img.style.left = (i * taille) + "px";
+          img.style.top = (j * taille) + "px";
+          img.style.width = img.style.height = taille + "px";
+          // Une tuile pas encore téléchargée : cachée, pas une icône cassée.
+          img.onerror = () => { img.style.visibility = "hidden"; };
+          img.src = racine + "/" + v.zoom + "/" + x + "/" + y + ".png";
+          conteneur.appendChild(img);
+        }
+      }
+    };
+    tuiles.replaceChildren();
+    poser(c.fond, tuiles);
+    // Les images du radar : TOUTES posées, une seule visible — l'animation ne
+    // recharge rien.
+    radar.replaceChildren();
+    for (const image of c.radar || []) {
+      const calque = document.createElement("div");
+      calque.className = "calque-radar";
+      poser(image.dossier, calque);
+      radar.appendChild(calque);
+    }
+    const dessin = document.getElementById("dessin");
+    const ratio = window.devicePixelRatio || 1;
+    dessin.width = Math.round(largeur * ratio);
+    dessin.height = Math.round(hauteur * ratio);
+    dessin.style.width = largeur + "px";
+    dessin.style.height = hauteur + "px";
+  }
+
+  /// Latitude, longitude → pixel dans la boîte (Web Mercator, comme les tuiles).
+  function pixel(lat, lon) {
+    const v = geometrie.v;
+    const phi = Math.max(-85.0511, Math.min(85.0511, lat)) * Math.PI / 180;
+    const x = (lon + 180) / 360 * v.monde;
+    const y = (1 - Math.log(Math.tan(phi) + 1 / Math.cos(phi)) / Math.PI) / 2 * v.monde;
+    return versEcran((x - v.x0) * taille, (y - v.y0) * taille);
+  }
+
+  /// Une échelle de couleurs : `[valeur, [r, g, b, a]]` croissants, interpolés.
+  function couleur(echelle, valeur) {
+    if (valeur <= echelle[0][0]) return echelle[0][1];
+    for (let i = 1; i < echelle.length; i++) {
+      const [v1, c1] = echelle[i];
+      if (valeur <= v1) {
+        const [v0, c0] = echelle[i - 1];
+        const k = (valeur - v0) / (v1 - v0);
+        return c0.map((x, n) => x + (c1[n] - x) * k);
+      }
+    }
+    return echelle[echelle.length - 1][1];
+  }
+
+  // Les échelles — une par onglet de grille. Alpha 0 en bas : « rien » ne teinte pas
+  // la carte.
+  const ECHELLE_VENT = [[0, [80, 140, 255, 0]], [10, [80, 170, 255, 110]], [25, [60, 200, 120, 140]],
+                        [45, [250, 210, 40, 160]], [65, [250, 120, 30, 175]], [90, [220, 30, 60, 190]]];
+  const ECHELLE_NEIGE = [[0, [200, 220, 255, 0]], [0.05, [190, 215, 255, 120]], [0.5, [140, 170, 255, 160]],
+                         [1.5, [110, 90, 230, 185]], [4, [200, 80, 220, 200]]];
+  // Le risque d'orage, de 0 à 3 (voir `risqueOrage`).
+  const ECHELLE_ORAGE = [[0, [250, 220, 60, 0]], [0.6, [250, 220, 60, 110]], [1.5, [250, 140, 30, 160]],
+                         [2.4, [230, 40, 40, 185]], [3, [200, 40, 200, 200]]];
+
+  /// **LE RISQUE D'ORAGE, DE 0 À 3.** L'énergie orageuse (`cape`, J/kg) donne le
+  /// fond — 300 faible, 1 000 modéré, 2 500 fort, les seuils d'usage. Un code WMO
+  /// d'orage (95-99) ou un potentiel de foudre positif le porte au moins à « fort ».
+  function risqueOrage(p, h) {
+    const cape = p.cape[h] || 0;
+    let r = cape >= 2500 ? 3 : cape >= 1000 ? 2 + (cape - 1000) / 1500 : cape >= 300 ? 1 + (cape - 300) / 700 : cape / 300;
+    if ((p.code[h] || 0) >= 95 || (p.foudre[h] || 0) > 0) r = Math.max(r, 2.4);
+    return r;
+  }
+
+  /// Le CHAMP d'une grandeur : une image de 14 × 10 pixels (un par point), étirée
+  /// sur la boîte avec le lissage du navigateur — un dégradé continu, pas des cases.
+  function peindreChamp(ctx, g, valeur, echelle) {
+    const colonnes = 14, rangees = g.points.length / colonnes;
+    const petit = document.createElement("canvas");
+    petit.width = colonnes;
+    petit.height = rangees;
+    const pctx = petit.getContext("2d");
+    const image = pctx.createImageData(colonnes, rangees);
+    g.points.forEach((p, n) => {
+      const c = couleur(echelle, valeur(p));
+      image.data.set(c.map(Math.round), n * 4);
+    });
+    pctx.putImageData(image, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    const [gx, gy] = versEcran(0, 0);
+    ctx.drawImage(petit, gx, gy, geometrie.largeur * zoomCarte.k, geometrie.hauteur * zoomCarte.k);
+  }
+
+  function fleche(ctx, x, y, longueur, versDegres) {
+    // La direction météo est celle d'où VIENT le vent : la flèche montre où il VA.
+    const a = (versDegres + 180) * Math.PI / 180;
+    const dx = Math.sin(a) * longueur / 2, dy = -Math.cos(a) * longueur / 2;
+    ctx.beginPath();
+    ctx.moveTo(x - dx, y - dy);
+    ctx.lineTo(x + dx, y + dy);
+    const pointe = Math.max(4, longueur * 0.3), b = Math.atan2(dy, dx);
+    ctx.moveTo(x + dx, y + dy);
+    ctx.lineTo(x + dx - pointe * Math.cos(b - 0.5), y + dy - pointe * Math.sin(b - 0.5));
+    ctx.moveTo(x + dx, y + dy);
+    ctx.lineTo(x + dx - pointe * Math.cos(b + 0.5), y + dy - pointe * Math.sin(b + 0.5));
+    ctx.stroke();
+  }
+
+  function legende(degrade, gauche, droite, note) {
+    const zone = document.getElementById("legende");
+    const enfants = [];
+    if (degrade) {
+      const barre = el("div", { class: "degrade" });
+      barre.style.background = "linear-gradient(to right, " + degrade.join(", ") + ")";
+      enfants.push(el("span", {}, [gauche]), barre, el("span", {}, [droite]));
+    }
+    if (note) enfants.push(el("span", { class: "note" }, [note]));
+    zone.replaceChildren(...enfants);
+  }
+
+  /// **REPEINT** : l'image radar choisie, ou le champ de la grille à l'heure
+  /// choisie, puis le repère du lieu.
+  function dessiner() {
+    const c = state.carte || {};
+    const etat = document.getElementById("etat-carte");
+    const texteEtat = !state.lieu ? "Choisissez une ville pour voir sa carte."
+      : c.erreur ? "Carte incomplète : " + c.erreur
+      : c.chargement ? "Chargement de la carte…" : "";
+    etat.textContent = texteEtat;
+    etat.classList.toggle("cache", !texteEtat);
+    if (!geometrie) {
+      legende(null, "", "", "");
+      return;
+    }
+    const dessin = document.getElementById("dessin");
+    const ctx = dessin.getContext("2d");
+    const ratio = dessin.width / geometrie.largeur;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.clearRect(0, 0, geometrie.largeur, geometrie.hauteur);
+
+    const calques = document.querySelectorAll("#radar .calque-radar");
+    const radar = c.radar || [];
+    const g = c.grille;
+    lecture.classList.toggle("cache", ongletCourant !== "radar");
+
+    if (ongletCourant === "radar") {
+      const n = radar.length;
+      const i = n === 0 ? -1 : (indexRadar < 0 || indexRadar >= n ? n - 1 : indexRadar);
+      calques.forEach((calque, k) => { calque.style.display = k === i ? "" : "none"; });
+      curseur.max = String(Math.max(0, n - 1));
+      curseur.value = String(Math.max(0, i));
+      curseur.disabled = n < 2;
+      if (i >= 0) {
+        const quand = new Date(radar[i].temps * 1000);
+        const ilYa = Math.round((Date.now() - quand.getTime()) / 60000);
+        document.getElementById("quand").textContent =
+          quand.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) + (ilYa > 1 ? "  (il y a " + ilYa + " min)" : "");
+      } else {
+        document.getElementById("quand").textContent = "";
+      }
+      legende(["rgb(150,210,255)", "rgb(40,120,255)", "rgb(250,220,40)", "rgb(240,60,40)", "rgb(200,40,200)"],
+              "faible", "forte", "Observé au radar — la neige a sa propre teinte.");
+    } else {
+      calques.forEach((calque) => { calque.style.display = "none"; });
+      if (g && g.points.length) {
+        const n = g.heures.length;
+        heureGrille = Math.min(heureGrille, Math.max(0, n - 1));
+        curseur.max = String(Math.max(0, n - 1));
+        curseur.value = String(heureGrille);
+        curseur.disabled = n < 2;
+        document.getElementById("quand").textContent =
+          (g.heures[heureGrille] || "") + (heureGrille > 0 ? "  (dans " + heureGrille + " h)" : "  (maintenant)");
+        const h = heureGrille;
+        if (ongletCourant === "vent") {
+          peindreChamp(ctx, g, (p) => p.vent[h] || 0, ECHELLE_VENT);
+          ctx.lineWidth = 1.6;
+          ctx.lineCap = "round";
+          const pas = geometrie.largeur * zoomCarte.k / 14;
+          for (const p of g.points) {
+            const [x, y] = pixel(p.lat, p.lon);
+            const v = p.vent[h] || 0;
+            const longueur = pas * (0.35 + 0.45 * Math.min(1, v / 60));
+            ctx.strokeStyle = "rgba(0,0,0,.55)";
+            ctx.lineWidth = 3.2;
+            fleche(ctx, x, y, longueur, p.direction[h] || 0);
+            ctx.strokeStyle = "rgba(255,255,255,.95)";
+            ctx.lineWidth = 1.6;
+            fleche(ctx, x, y, longueur, p.direction[h] || 0);
+          }
+          const max = Math.max(...g.points.map((p) => p.vent[h] || 0));
+          legende(["rgba(80,170,255,.5)", "rgb(60,200,120)", "rgb(250,210,40)", "rgb(250,120,30)", "rgb(220,30,60)"],
+                  "0", "90 km/h", "Vent moyen à 10 m — jusqu'à " + Math.round(max) + " km/h sur la carte.");
+        } else if (ongletCourant === "neige") {
+          peindreChamp(ctx, g, (p) => p.neige[h] || 0, ECHELLE_NEIGE);
+          const total = g.points.reduce((s, p) => s + p.neige.reduce((a, b) => a + (b || 0), 0), 0);
+          legende(["rgba(190,215,255,.6)", "rgb(140,170,255)", "rgb(110,90,230)", "rgb(200,80,220)"],
+                  "0", "4 cm/h", total > 0 ? "Chutes de neige prévues, par heure." : "Aucune chute de neige prévue sur 24 h.");
+        } else if (ongletCourant === "orage") {
+          peindreChamp(ctx, g, (p) => risqueOrage(p, h), ECHELLE_ORAGE);
+          ctx.font = Math.round(geometrie.largeur / 40) + "px 'Segoe UI Symbol'";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          let orages = 0;
+          for (const p of g.points) {
+            if ((p.code[h] || 0) >= 95 || (p.foudre[h] || 0) > 0) {
+              const [x, y] = pixel(p.lat, p.lon);
+              ctx.fillStyle = "rgba(0,0,0,.6)";
+              ctx.fillText("⚡", x + 1, y + 1);
+              ctx.fillStyle = "rgb(255,235,60)";
+              ctx.fillText("⚡", x, y);
+              orages++;
+            }
+          }
+          legende(["rgba(250,220,60,.5)", "rgb(250,140,30)", "rgb(230,40,40)", "rgb(200,40,200)"],
+                  "faible", "extrême", orages ? "⚡ : orage prévu à cette heure." : "Risque d'après l'énergie orageuse (CAPE).");
+        }
+      } else {
+        curseur.max = "0";
+        curseur.disabled = true;
+        document.getElementById("quand").textContent = "";
+        legende(null, "", "", c.chargement ? "" : "Prévisions de la carte indisponibles.");
+      }
+    }
+
+    // LE REPÈRE DU LIEU — un point cerclé, là où est la ville du panneau.
+    const [cx, cy] = geometrie.v.centre;
+    const [x, y] = versEcran((cx - geometrie.v.x0) * taille, (cy - geometrie.v.y0) * taille);
+    ctx.beginPath();
+    ctx.arc(x, y, 6, 0, 2 * Math.PI);
+    ctx.fillStyle = "rgba(230, 40, 60, .95)";
+    ctx.fill();
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = "#fff";
+    ctx.stroke();
+  }
+
+  curseur.addEventListener("input", () => {
+    arreterLecture();
+    if (ongletCourant === "radar") indexRadar = Number(curseur.value);
+    else heureGrille = Number(curseur.value);
+    dessiner();
+  });
+
+  function arreterLecture() {
+    if (minuterie) clearInterval(minuterie);
+    minuterie = null;
+    lecture.innerHTML = '<span class="ico ico-play-fill"></span>';
+  }
+  lecture.addEventListener("click", () => {
+    if (minuterie) {
+      arreterLecture();
+      return;
+    }
+    lecture.innerHTML = '<span class="ico ico-pause-fill"></span>';
+    minuterie = setInterval(() => {
+      const n = ((state.carte || {}).radar || []).length;
+      if (n < 2) return;
+      const i = indexRadar < 0 ? n - 1 : indexRadar;
+      indexRadar = (i + 1) % n;
+      dessiner();
+    }, 600);
+  });
+
+  // Le panneau change de taille : les tuiles suivent.
+  new ResizeObserver(() => {
+    if (ongletCourant !== "previsions") {
+      construireCarte();
+      dessiner();
+    }
+  }).observe(document.getElementById("carte"));
+
+  // ⚠️ **LA GARDE DE DÉDUPLICATION EST ICI AUSSI OBLIGATOIRE** : `replaceChildren()`
+  // détruirait les boutons SOUS LE CURSEUR, et un clic n'est émis que si l'appui et
+  // le relâchement tombent sur le MÊME nœud (même raison que `sound.html`).
+  window.setState = function (next) {
+    const json = JSON.stringify(next);
+    if (json === dernierJson) return;
+    dernierJson = json;
+    state = next;
+    document.documentElement.style.setProperty("--text-scale", next.contentScale || 1);
+    rendre();
+  };
+
+  // La saisie.
+  function chercher() {
+    go("chercher", champ.value);
+  }
+  document.getElementById("chercher").addEventListener("click", chercher);
+  champ.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      chercher();
+    }
+  });
+  document.getElementById("rafraichir").addEventListener("click", () => go("rafraichir"));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") go("close");
+  });
+
+  go("ready");
+</script>
+</body>
+</html>

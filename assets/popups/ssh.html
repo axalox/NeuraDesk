@@ -1,0 +1,1742 @@
+<!DOCTYPE html>
+<!--
+  SERVEURS SSH (voir `win32::cef_ssh`, qui porte la liste des actions,
+  `win32::ssh` le client, `win32::ssh_serveurs` les serveurs enregistrés, et
+  `docs/plans/ssh-sftp.md`). Modèle : Submarine — un onglet par connexion.
+
+  ÉTAT REÇU (window.setState) :
+    { serveurs: [{ id, nom, libelle, hote, port, utilisateur, methode: "motdepasse" | "cle",
+                   cle, secretDefini }],
+      contentScale, policeTerminal }
+  `policeTerminal` : la police réglée dans Réglages → Style, qui PRECÈDE la pile
+  par défaut de `terminal_theme.js`. LE MÊME RÉGLAGE que `terminal.html` — les
+  sessions SSH sont des terminaux, elles aussi.
+  ⛔ Le secret n'arrive JAMAIS ici — seulement `secretDefini`. Un secret saisi
+  part par le canal POST (`ssh/secret/<onglet>`, `ssh/fiche`), jamais dans une
+  URL.
+
+  APPELS DE RUST (window.ssh.*) : sortie(onglet, base64), etat(onglet, nom),
+  erreur(onglet, message), cleInconnue(onglet, algorithme, empreinte),
+  sftp(onglet, réponse), ficheEnregistree(id, erreur), cleChoisie(chemin),
+  coller(onglet, texte).
+
+  ⚠️ **LES ONGLETS VIVENT ICI** : la page numérote les connexions. Masquer le
+  panneau ne recharge pas la page — les terminaux survivent, et Rust continue
+  d'y verser la sortie.
+
+  ⚠️ **LES FRAPPES** partent par `fetch` (canal POST), **UN SEUL ENVOI EN VOL** :
+  deux envois simultanés pourraient arriver dans le désordre. Ce qui arrive
+  pendant un envoi est regroupé dans le suivant.
+
+  RÉPONSES SFTP (window.ssh.sftp(onglet, r)) — une seule clé présente parmi :
+    r.chemin + r.entrees [{ nom, dossier, lien, taille, modifie, droits }]  listage
+    r.fait (message) + r.erreurs [lignes]  une opération est finie → on relit
+    r.progres { nom, fait, total }         un transfert avance
+    r.erreur (message)
+
+  ⚠️ **LE TERMINAL N'EST PAS GROSSI PAR `zoom`** (xterm mesure ses cellules en
+  pixels réels, un `zoom` fausserait la souris) : la taille de police suit
+  `contentScale` à la place.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<script src="menu_contextuel.js"></script>
+<link rel="stylesheet" href="xterm.css">
+<script src="xterm.js"></script>
+<script src="xterm-addon-fit.js"></script>
+<script src="terminal_theme.js"></script>
+<link rel="stylesheet" href="volet_commandes.css">
+<script src="volet_commandes.js"></script>
+<script src="sphere_source.js"></script>
+<script src="sphere_vue.js"></script>
+<!-- Les graisses embarquées : une feuille pour les DEUX pages qui peignent du
+     texte en xterm.js (voir `fonts/polices.css`). Le réglage « Police des
+     terminaux » des Réglages gouverne cette page comme `terminal.html`. -->
+<link rel="stylesheet" href="fonts/polices.css">
+<style>
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .zoome { zoom: var(--text-scale); }
+  button {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 5px 10px;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  button.principal { background: rgb(var(--popup-accent-solid-rgb)); }
+  button.discret { background: none; opacity: calc(.75 * max(1, var(--popup-alpha, 1))); }
+  button.discret:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.08 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  .cache { display: none !important; }
+  input {
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.06 * var(--popup-fond-alpha, 1)));
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.18 * var(--popup-fond-alpha, 1)));
+    border-radius: var(--nd-rayon-controle);
+    color: inherit;
+    font: inherit;
+    padding: 5px 8px;
+    box-sizing: border-box;
+    width: 100%;
+  }
+  input:focus { outline: none; border-color: rgb(var(--popup-accent-solid-rgb)); }
+
+  /* ---- LA BARRE D'ONGLETS ---- */
+  #haut { display: flex; align-items: center; gap: 4px; padding: 8px 10px 0; flex: 0 0 auto; }
+  #onglets { display: flex; gap: 2px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .onglet {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 6px 6px 10px;
+    border-radius: var(--nd-rayon-controle) var(--nd-rayon-controle) 0 0;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.05 * var(--popup-fond-alpha, 1)));
+    white-space: nowrap; cursor: pointer; flex: 0 0 auto; max-width: 220px;
+  }
+  .onglet:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.10 * var(--popup-fond-alpha, 1))); }
+  .onglet.actif { background: rgba(var(--popup-accent-rgb), calc(0.35 * var(--popup-fond-alpha, 1))); }
+  .onglet .titre { overflow: hidden; text-overflow: ellipsis; }
+  .onglet .compte { font-size: 11px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+  .onglet .fermer { background: none; padding: 0 5px; opacity: calc(.6 * max(1, var(--popup-alpha, 1))); font-size: 12px; }
+  .onglet .fermer:hover { opacity: 1; background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1))); }
+  .point { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.35 * var(--popup-fond-alpha, 1))); }
+  .point.connexion, .point.authentification { background: rgb(240, 190, 80); }
+  .point.ouvert { background: rgb(90, 200, 120); }
+  .point.ferme { background: rgb(230, 100, 90); }
+  #fermer-panneau { background: none; font-size: 16px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+
+  #corps {
+    flex: 1 1 auto; min-height: 0; position: relative;
+    border-top: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+  }
+  .vue { position: absolute; inset: 0; display: flex; flex-direction: column; }
+
+  /* ---- LA SCISSION, LE ZOOM, LES NOMS ----
+     DEMANDES EXPLICITES (2026-10-03) : « les mêmes possibilités [que le panneau
+     Terminal] pour le dash ssh ainsi que la possibilité de scinder », puis,
+     sur le Terminal, « choisir moi-même si je scinde », « les boutons pour
+     scinder dans la barre supérieure de chaque terminal » et « un choix sur ce
+     que je souhaite ajouter ». Un onglet scindé est un ARBRE : chaque `.split`
+     range ses connexions côte à côte (`colonnes`) ou empilées (`rangees`), à
+     parts égales ; celle qui reçoit le clavier est encadrée. */
+  #corps > .split { position: absolute; inset: 4px; }
+  .split { display: flex; gap: 4px; min-width: 0; min-height: 0; flex: 1 1 0; }
+  .split.colonnes { flex-direction: row; }
+  .split.rangees { flex-direction: column; }
+  .split > .vue.session {
+    position: relative; inset: auto; flex: 1 1 0; min-width: 0; min-height: 0;
+    border-radius: 4px; outline: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+  }
+  .split > .vue.session.actif { outline: 2px solid rgba(var(--popup-accent-rgb), calc(.9 * var(--popup-fond-alpha, 1))); }
+  .etat-session .scission { background: none; padding: 2px 6px; opacity: calc(.75 * max(1, var(--popup-alpha, 1))); }
+  .etat-session .scission:hover { opacity: 1; }
+  /* Le choix de la connexion à ajouter — des BOUTONS, jamais de `<select>`. */
+  .choix-scission {
+    position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 2px;
+    padding: 6px; border-radius: 6px; min-width: 200px; max-height: 60vh; overflow-y: auto;
+    background: rgb(var(--popup-bg-rgb, 32, 32, 36));
+    outline: 1px solid rgba(var(--popup-accent-rgb), calc(.7 * var(--popup-fond-alpha, 1)));
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+  }
+  .choix-scission .entete { font-size: 11px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); padding: 0 4px 4px; }
+  .choix-scission button { text-align: left; }
+  .choix-scission .adresse { font-size: 11px; opacity: calc(.6 * max(1, var(--popup-alpha, 1))); margin-left: 8px; }
+  .nom-session { font-weight: 600; cursor: text; white-space: nowrap; max-width: 40%; overflow: hidden; text-overflow: ellipsis; }
+  .nom-session .zoom { font-weight: 400; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); margin-left: 6px; }
+  .nom-champ {
+    font: inherit; font-size: 12px; width: 160px; color: inherit;
+    background: rgba(0, 0, 0, .35); border: 1px solid rgba(var(--popup-accent-rgb), calc(.8 * var(--popup-fond-alpha, 1)));
+    border-radius: 3px; padding: 0 3px; outline: none;
+  }
+
+  /* ---- L'ACCUEIL : LES SERVEURS ---- */
+  #accueil { overflow-y: auto; padding: 12px 16px 16px; display: block; }
+  h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  h2 { margin: 16px 0 8px; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; opacity: calc(.65 * max(1, var(--popup-alpha, 1))); }
+  .ligne { display: flex; align-items: center; gap: 8px; }
+  .pousse { flex: 1 1 auto; }
+  #liste { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+  .serveur {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-accent-rgb), calc(0.14 * var(--popup-fond-alpha, 1)));
+  }
+  .serveur .texte { flex: 1 1 auto; min-width: 0; cursor: pointer; }
+  .serveur .nom { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .serveur .adresse { font-size: 12px; opacity: calc(.65 * max(1, var(--popup-alpha, 1))); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vide { opacity: calc(.55 * max(1, var(--popup-alpha, 1))); font-style: italic; }
+
+  #formulaire { max-width: 520px; }
+  #formulaire .champ { margin-bottom: 10px; }
+  #formulaire label { display: block; font-size: 12px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); margin-bottom: 3px; }
+  .deux { display: grid; grid-template-columns: 1fr 110px; gap: 10px; }
+  .choix button.actif { background: rgb(var(--popup-accent-solid-rgb)); }
+  .erreur { color: rgb(255, 130, 120); min-height: 18px; font-size: 13px; }
+  .aide { font-size: 12px; opacity: calc(.55 * max(1, var(--popup-alpha, 1))); }
+
+  /* ---- UNE SESSION ---- */
+  .etat-session {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 10px; font-size: 12px; flex: 0 0 auto;
+  }
+  .etat-session .message { flex: 1 1 auto; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .etat-session .message.erreur { opacity: 1; }
+  .etat-session button { padding: 2px 8px; font-size: 12px; }
+  /* ⚠️ xterm.css peint `.xterm-viewport` en NOIR (#000) : sans cette règle, le
+     fond du thème ne se voit que dans la marge. */
+  .terminal-hote .xterm, .terminal-hote .xterm-viewport, .terminal-hote .xterm-screen,
+  .terminal-hote .xterm-scrollable-element { background-color: transparent !important; }
+  /* La surface du thème, pas un voile noir — voir `terminal.html`. */
+  .terminal-hote {
+    flex: 1 1 auto; min-height: 0; padding: 4px 0 4px 8px;
+    background-color: rgba(var(--popup-tint-rgb, 32, 32, 36), calc(.92 * var(--popup-fond-alpha, 1)));
+    /* La texture des terminaux — voir terminal.html. */
+    background-image: var(--texture-terminaux, none);
+    background-size: var(--texture-terminaux-taille, auto);
+    background-attachment: fixed;
+  }
+  .dialogue-fond {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, .45);
+  }
+  .dialogue {
+    max-width: 480px; margin: 16px; padding: 16px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgb(var(--popup-bg-rgb, 32, 32, 36));
+    box-shadow: 0 8px 30px rgba(0, 0, 0, .5);
+  }
+  .dialogue h3 { margin: 0 0 8px; font-size: 15px; }
+  .dialogue p { margin: 0 0 10px; font-size: 13px; opacity: calc(.85 * max(1, var(--popup-alpha, 1))); }
+  .empreinte { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; word-break: break-all; opacity: 1 !important; }
+  .dialogue .ligne { justify-content: flex-end; margin-top: 12px; }
+  .bascule button { padding: 2px 10px; }
+  .bascule button.actif { background: rgb(var(--popup-accent-solid-rgb)); }
+
+  /* ---- LA VUE FICHIERS ---- */
+  .fichiers { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: row; }
+  .fichiers .volet { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .fichiers .volet.local { flex: 0 0 45%; }
+  .fichiers .volet.distant { flex: 1 1 0; }
+  .fichiers .hote-table { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  .fichiers .titre-volet { font-size: 12px; font-weight: 600; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); margin-right: 2px; }
+  .fichiers .separation {
+    flex: 0 0 34px; display: flex; align-items: center; justify-content: center; cursor: col-resize;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.05 * var(--popup-fond-alpha, 1)));
+    border-left: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    border-right: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+  }
+  .fichiers .separation:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.09 * var(--popup-fond-alpha, 1))); }
+  .fichiers .transferts { display: flex; flex-direction: column; gap: 10px; }
+  .fichiers .transferts button { padding: 4px 7px; cursor: pointer; }
+  .fichiers .transferts button:disabled { opacity: calc(.35 * max(1, var(--popup-alpha, 1))); cursor: default; }
+  body.glisse, body.glisse * { cursor: col-resize !important; user-select: none; }
+  .fichiers .outils { display: flex; align-items: center; gap: 4px; padding: 6px 10px; flex: 0 0 auto; flex-wrap: wrap; }
+  .fichiers .outils button { padding: 3px 8px; font-size: 13px; }
+  .fichiers .outils button:disabled { opacity: calc(.35 * max(1, var(--popup-alpha, 1))); cursor: default; }
+  .fichiers .chemin { flex: 1 1 200px; font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; }
+  .fichiers .filtre { flex: 0 1 150px; font-size: 12px; }
+  .fichiers .statut { padding: 2px 10px 6px; font-size: 12px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); min-height: 16px; flex: 0 0 auto;
+                      white-space: pre-wrap; max-height: 5.5em; overflow-y: auto; }
+  .fichiers .statut.erreur { opacity: 1; }
+  .fichiers .table { flex: 1 1 auto; min-height: 0; overflow-y: auto; outline: none; background: rgba(0, 0, 0, .18); }
+  .fichiers .rangee {
+    display: grid; grid-template-columns: minmax(0, 1fr) 70px 110px 80px;
+    gap: 8px; padding: 3px 10px; font-size: 13px; cursor: default; user-select: none;
+  }
+  .fichiers .local .rangee { grid-template-columns: minmax(0, 1fr) 70px 110px; }
+  .fichiers .rangee > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fichiers .rangee .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .fichiers .rangee .droits { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; opacity: calc(.75 * max(1, var(--popup-alpha, 1))); }
+  .fichiers .rangee:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.06 * var(--popup-fond-alpha, 1))); }
+  .fichiers .rangee.choisie { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  .fichiers .entete { position: sticky; top: 0; font-size: 12px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); cursor: pointer;
+                      background: rgb(var(--popup-bg-rgb, 32, 32, 36)); }
+  .fichiers .entete:hover { background: rgb(var(--popup-bg-rgb, 32, 32, 36)); }
+  .fichiers .dossier-nom { font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="haut" class="zoome">
+  <div id="onglets"></div>
+  <button id="fermer-panneau" class="discret" onclick="go('close')" title="Fermer le panneau (les connexions restent ouvertes)"><span class="ico ico-x"></span></button>
+</div>
+
+<div id="milieu">
+<div id="corps">
+  <section id="accueil" class="vue zoome">
+    <div class="ligne">
+      <h1 class="pousse">Serveurs SSH</h1>
+      <button id="ajouter" class="principal">+ Ajouter un serveur</button>
+    </div>
+    <div id="liste-bloc">
+      <h2>Enregistrés</h2>
+      <div id="liste"></div>
+      <div class="aide" style="margin-top: 10px">Un clic sur un serveur ouvre une connexion dans un nouvel onglet.</div>
+    </div>
+
+    <div id="formulaire" class="cache">
+      <h2 id="formulaire-titre">Nouveau serveur</h2>
+      <div class="champ"><label for="f-nom">Nom (facultatif)</label><input id="f-nom" type="text" spellcheck="false" placeholder="ex. NAS maison"></div>
+      <div class="champ deux">
+        <div><label for="f-hote">Adresse</label><input id="f-hote" type="text" spellcheck="false" placeholder="192.168.1.10 ou serveur.exemple.fr"></div>
+        <div><label for="f-port">Port</label><input id="f-port" type="text" inputmode="numeric" placeholder="22"></div>
+      </div>
+      <div class="champ"><label for="f-utilisateur">Identifiant</label><input id="f-utilisateur" type="text" spellcheck="false" placeholder="root"></div>
+      <div class="champ">
+        <label>Authentification</label>
+        <div class="ligne choix">
+          <button id="f-methode-motdepasse" type="button">Mot de passe</button>
+          <button id="f-methode-cle" type="button">Clé privée</button>
+        </div>
+      </div>
+      <div class="champ" id="f-bloc-cle">
+        <label for="f-cle">Fichier de la clé privée</label>
+        <div class="ligne"><input id="f-cle" type="text" spellcheck="false" placeholder="C:\Users\…\.ssh\id_ed25519"><button id="f-parcourir" type="button">Parcourir…</button></div>
+      </div>
+      <div class="champ">
+        <label for="f-secret" id="f-secret-libelle">Mot de passe</label>
+        <input id="f-secret" type="password" autocomplete="off">
+        <div class="aide" id="f-secret-aide"></div>
+      </div>
+      <div class="erreur" id="f-erreur"></div>
+      <div class="ligne">
+        <button id="f-supprimer" class="discret">Supprimer ce serveur</button>
+        <span class="pousse"></span>
+        <button id="f-annuler">Annuler</button>
+        <button id="f-enregistrer" class="principal">Enregistrer</button>
+      </div>
+    </div>
+  </section>
+</div>
+</div>
+
+<script>
+  // `el` et `go` — MÊMES HELPERS que les autres pages du dépôt (voir
+  // `calculatrice.html`) : tout `on…` passe par `addEventListener`.
+  function el(tag, attrs, children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (key === "class") node.className = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value);
+    }
+    for (const child of children || []) {
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+    return node;
+  }
+
+  // Deux `location.href` d'une même tâche se télescopent (voir la mémoire
+  // « panneau ou menu ») : un redimensionnement et une connexion peuvent partir
+  // ensemble. Chaque action part donc dans sa propre tâche.
+  const actions = [];
+  let actionsPrevues = false;
+  function go(...segments) {
+    actions.push("neuradesk://ssh/" + segments.map((s) => encodeURIComponent(String(s))).join("/"));
+    if (!actionsPrevues) viderActions();
+  }
+  function viderActions() {
+    const suivante = actions.shift();
+    if (!suivante) { actionsPrevues = false; return; }
+    actionsPrevues = true;
+    location.href = suivante;
+    setTimeout(viderActions, 0);
+  }
+
+  const CANAL = "http://neuradesk-data.invalid/";
+  const encodeur = new TextEncoder();
+  // Corps en `Uint8Array`, jamais en `Blob` (voir `win32::cef_data`), et SANS
+  // en-tête `Content-Type` : la requête reste « simple », pas de pré-vol.
+  function poster(route, texte) {
+    return fetch(CANAL + route, { method: "POST", body: encodeur.encode(texte) });
+  }
+
+  let state = { serveurs: [], contentScale: 1, policeTerminal: "" };
+  const $ = (id) => document.getElementById(id);
+
+  // =========================================================================
+  // LES ONGLETS
+  // =========================================================================
+
+  // numéro → { id, serveur, libelle, etat, message, erreur, term, fit, vue, … }
+  const sessions = new Map();
+  // Les terminaux suivent le thème (voir `terminal_theme.js`).
+  suivreLeThemeDesTerminaux(() => [...sessions.values()].map((s) => s.term).filter(Boolean));
+  let prochainOnglet = 1;
+  let actif = 0; // 0 = l'accueil
+
+  function taillePolice(s) {
+    return Math.round(13 * (state.contentScale || 1) * (s ? s.zoom : 1));
+  }
+
+  // **LES ONGLETS SONT DES GROUPES** — le modèle du panneau Terminal.
+  // « Ouvrir » un serveur crée un onglet SEUL ; ⇆ / ⇅ sur la barre d'une
+  // connexion scindent CETTE connexion, après le choix du serveur à ajouter ;
+  // ⇱ la sort dans son propre onglet. numéro → { id, racine, focus } ;
+  // `racine` : une feuille `{ feuille: numéro }` ou une scission
+  // `{ sens: "colonnes" | "rangees", enfants }` ; `focus` : la connexion de
+  // l'onglet qui avait la main en dernier.
+  const groupes = new Map();
+  let prochainGroupe = 1;
+
+  function groupeDe(id) {
+    const s = sessions.get(id);
+    return s ? groupes.get(s.groupe) : undefined;
+  }
+
+  function feuilles(n) {
+    return n.feuille ? [n.feuille] : n.enfants.flatMap(feuilles);
+  }
+
+  // `nouveau` à côté de `cible`. Dans une scission du MÊME sens, il s'y range
+  // juste après elle ; sinon la feuille devient une scission à deux.
+  function inserer(n, cible, nouveau, sens) {
+    if (n.feuille) return n.feuille === cible ? { sens, enfants: [n, { feuille: nouveau }] } : n;
+    const i = n.enfants.findIndex((e) => e.feuille === cible);
+    if (i >= 0 && n.sens === sens) {
+      return { sens, enfants: [...n.enfants.slice(0, i + 1), { feuille: nouveau }, ...n.enfants.slice(i + 1)] };
+    }
+    return { sens: n.sens, enfants: n.enfants.map((e) => inserer(e, cible, nouveau, sens)) };
+  }
+
+  // L'arbre sans `cible` (null s'il ne reste rien) ; une scission réduite à un
+  // enfant s'efface devant lui, un enfant du même sens se fond dans son parent.
+  function retirer(n, cible) {
+    if (n.feuille) return n.feuille === cible ? null : n;
+    const enfants = n.enfants
+      .map((e) => retirer(e, cible))
+      .filter(Boolean)
+      .flatMap((e) => (e.sens === n.sens ? e.enfants : [e]));
+    if (!enfants.length) return null;
+    return enfants.length === 1 ? enfants[0] : { sens: n.sens, enfants };
+  }
+
+  // **QUI EST MONTRÉ, ET OÙ.** L'accueil seul quand il est choisi ; sinon
+  // l'arbre de l'onglet actif, et lui seul. Les autres connexions restent dans
+  // `#corps`, cachées. Chaque terminal garde SA taille, transmise à son serveur
+  // par `onResize`.
+  function disposer() {
+    const corps = $("corps");
+    const g = actif !== 0 ? groupeDe(actif) : undefined;
+    const construire = (n) => n.feuille
+      ? sessions.get(n.feuille).vue
+      : el("div", { class: "split " + n.sens }, n.enfants.map(construire));
+    const arbre = g ? construire(g.racine) : null;
+    const autres = [...sessions.values()].filter((x) => !g || x.groupe !== g.id).map((x) => x.vue);
+    corps.replaceChildren($("accueil"), ...(arbre ? [arbre] : []), ...autres);
+    $("accueil").classList.toggle("cache", actif !== 0);
+    marquerActif();
+    for (const x of sessions.values()) {
+      const gx = groupes.get(x.groupe);
+      x.boutonDetacher.classList.toggle("cache", !gx || !!gx.racine.feuille);
+    }
+    requestAnimationFrame(() => { for (const x of sessions.values()) ajuster(x); });
+    // Sphère ouverte : les connexions remises dans `#corps` retournent dans leurs cartes.
+    if (window.sphereVue) sphereVue.resynchroniser();
+  }
+
+  function marquerActif() {
+    const g = actif !== 0 ? groupeDe(actif) : undefined;
+    for (const x of sessions.values()) {
+      x.vue.classList.toggle("cache", !g || x.groupe !== g.id);
+      x.vue.classList.toggle("actif", !!g && !g.racine.feuille && x.id === actif);
+    }
+  }
+
+  // **LE CHOIX** : quel serveur ouvrir à côté de / sous `id` — tous les
+  // serveurs enregistrés, celui de la connexion scindée en tête. Échap ou un
+  // clic ailleurs : rien n'est scindé.
+  let choixOuvert = null;
+  function fermerChoix() {
+    if (!choixOuvert) return;
+    choixOuvert.remove();
+    choixOuvert = null;
+    document.removeEventListener("mousedown", clicHorsChoix, true);
+  }
+  function clicHorsChoix(e) {
+    if (choixOuvert && !choixOuvert.contains(e.target)) fermerChoix();
+  }
+  function proposer(id, sens) {
+    const s = sessions.get(id);
+    if (!s) return;
+    fermerChoix();
+    const serveurs = [...state.serveurs].sort((a, b) => (b.id === s.serveur) - (a.id === s.serveur));
+    const boite = el("div", { class: "choix-scission zoome" }, [
+      el("div", { class: "entete" }, [sens === "colonnes" ? "Ouvrir à côté :" : "Ouvrir en dessous :"]),
+      ...serveurs.map((serveur) => el("button", {
+        title: `${serveur.utilisateur}@${serveur.hote}`,
+        onclick: () => { fermerChoix(); scinder(id, sens, serveur); },
+      }, [serveur.libelle, el("span", { class: "adresse" }, [serveur.hote])])),
+    ]);
+    if (!serveurs.length) boite.appendChild(el("div", { class: "vide" }, ["Aucun serveur enregistré."]));
+    boite.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      fermerChoix();
+      focaliser(s);
+    });
+    document.body.appendChild(boite);
+    choixOuvert = boite;
+    document.addEventListener("mousedown", clicHorsChoix, true);
+    const ancre = (sens === "colonnes" ? s.boutonCote : s.boutonBas).getBoundingClientRect();
+    const r = boite.getBoundingClientRect();
+    boite.style.left = Math.max(4, Math.min(ancre.left, window.innerWidth - r.width - 4)) + "px";
+    boite.style.top = Math.max(4, Math.min(ancre.bottom + 2, window.innerHeight - r.height - 4)) + "px";
+    const premier = boite.querySelector("button");
+    if (premier) premier.focus();
+  }
+
+  // **SCINDER** `id` : `serveur` s'ouvre à côté (« colonnes ») ou en dessous
+  // (« rangees »), dans le MÊME onglet.
+  function scinder(id, sens, serveur) {
+    const s = sessions.get(id);
+    if (!s || !serveur) return;
+    ouvrirOnglet(serveur, { groupe: s.groupe, cible: id, sens });
+  }
+
+  // ⇱ : la connexion quitte son onglet scindé pour un onglet à elle.
+  function detacher(id) {
+    const s = sessions.get(id);
+    const g = groupeDe(id);
+    if (!s || !g || g.racine.feuille) return;
+    g.racine = retirer(g.racine, id);
+    if (g.focus === id) g.focus = feuilles(g.racine).pop();
+    s.groupe = prochainGroupe++;
+    groupes.set(s.groupe, { id: s.groupe, racine: { feuille: id }, focus: id });
+    activer(id);
+  }
+
+  function fermerGroupe(gid) {
+    const g = groupes.get(gid);
+    if (g) for (const id of feuilles(g.racine)) fermerOnglet(id);
+  }
+
+  // **LE ZOOM DE CHAQUE CONNEXION** — Ctrl + roulette, Ctrl+0 pour 100 %.
+  const ZOOM_MIN = 0.5, ZOOM_MAX = 3, ZOOM_PAS = 1.1;
+  function zoomer(s, facteur) {
+    const avant = s.zoom;
+    s.zoom = facteur === null ? 1 : Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s.zoom * facteur));
+    if (s.zoom === avant) return;
+    s.term.options.fontSize = taillePolice(s);
+    ajuster(s);
+    etiqueter(s);
+  }
+
+  // **LE NOM DE CHAQUE CONNEXION** — affiché en tête de sa barre d'état (donc
+  // dans chaque case de la mosaïque) et dans son onglet. Double-clic sur l'un
+  // ou l'autre pour le saisir ; Entrée valide, Échap annule, vide efface. Il
+  // vit le temps de la connexion, comme dans le panneau Terminal.
+  function etiqueter(s) {
+    if (s.edition) return;
+    const zoom = Math.round(s.zoom * 100);
+    s.etiquette.replaceChildren(s.nom || s.libelle);
+    if (zoom !== 100) s.etiquette.appendChild(el("span", { class: "zoom" }, [zoom + " %"]));
+    s.etiquette.title = (s.nom || s.libelle) + "\nDouble-clic : renommer · Ctrl + roulette : zoom · Ctrl+0 : 100 %";
+  }
+
+  function renommer(id) {
+    const s = sessions.get(id);
+    if (!s || s.edition) return;
+    s.edition = true;
+    const champ = el("input", { class: "nom-champ", type: "text", maxlength: "60", placeholder: s.libelle, value: s.nom || "" });
+    const finir = (valeur) => {
+      if (!s.edition) return;
+      s.edition = false;
+      if (valeur !== null) s.nom = valeur.trim().slice(0, 60);
+      etiqueter(s);
+      renderOnglets();
+      focaliser(s);
+    };
+    champ.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") finir(champ.value);
+      else if (e.key === "Escape") finir(null);
+    });
+    champ.addEventListener("blur", () => finir(champ.value));
+    for (const type of ["click", "dblclick", "mousedown", "auxclick"]) champ.addEventListener(type, (e) => e.stopPropagation());
+    s.etiquette.replaceChildren(champ);
+    requestAnimationFrame(() => { champ.focus(); champ.select(); });
+  }
+
+  function renderOnglets() {
+    const barre = $("onglets");
+    barre.replaceChildren(el("div", {
+      class: "onglet" + (actif === 0 ? " actif" : ""),
+      title: "Serveurs enregistrés",
+      onclick: () => activer(0),
+    }, [el("span", { class: "titre" }, ["Serveurs"])]));
+    // Un onglet par GROUPE ; il porte le nom et l'état de la connexion du
+    // groupe qui a la main (celle qu'un double-clic renomme).
+    for (const g of groupes.values()) {
+      const membres = feuilles(g.racine);
+      const s = sessions.get(membres.includes(actif) ? actif : g.focus) || sessions.get(membres[0]);
+      if (!s) continue;
+      const n = membres.length;
+      const contenu = [
+        el("span", { class: "point " + s.etat }),
+        el("span", { class: "titre" }, [s.nom || s.libelle]),
+      ];
+      if (n > 1) contenu.push(el("span", { class: "compte", title: n + " connexions dans cet onglet" }, ["⊞ " + n]));
+      contenu.push(el("button", {
+        class: "fermer",
+        title: n > 1 ? "Fermer cet onglet et ses " + n + " connexions" : "Fermer cette connexion",
+        onclick: (e) => { e.stopPropagation(); fermerGroupe(g.id); },
+      }, ["✕"]));
+      barre.appendChild(el("div", {
+        class: "onglet" + (membres.includes(actif) ? " actif" : ""),
+        title: `${s.nom ? s.nom + "\n" : ""}${s.utilisateur}@${s.adresse}:${s.port}\nDouble-clic : renommer`,
+        onclick: () => activer(s.id),
+        ondblclick: (e) => { if (e.button === 0) renommer(s.id); },
+        onauxclick: (e) => { if (e.button === 1) fermerGroupe(g.id); },
+      }, contenu));
+    }
+    voletCommandes.cible();
+    if (window.sphereSource) sphereSource.rafraichir();
+  }
+
+  function activer(id) {
+    actif = sessions.has(id) ? id : 0;
+    if (actif) groupeDe(actif).focus = actif;
+    disposer();
+    renderOnglets();
+    const s = sessions.get(actif);
+    if (s) {
+      // La vue vient d'apparaître : ses dimensions ne sont connues que maintenant.
+      requestAnimationFrame(() => { ajuster(s); focaliser(s); });
+    }
+  }
+
+  function ajuster(s) {
+    if (s.vue.classList.contains("cache") || s.mode !== "terminal") return;
+    // Dans la sphère, une connexion garde SA taille (elle y est seulement réduite).
+    if (window.sphereVue && sphereVue.ouverte()) return;
+    try { s.fit.fit(); } catch (_) { /* vue de taille nulle */ }
+  }
+
+  const LIBELLES_ETAT = {
+    connexion: "Connexion…",
+    authentification: "Authentification…",
+    ouvert: "Connecté",
+    ferme: "Déconnecté",
+  };
+
+  function renderEtat(s) {
+    s.point.className = "point " + s.etat;
+    s.message.textContent = s.erreur || LIBELLES_ETAT[s.etat] || "";
+    s.message.className = "message" + (s.erreur ? " erreur" : "");
+    s.reconnecter.classList.toggle("cache", s.etat !== "ferme");
+    renderOnglets();
+    renderOutils(s);
+  }
+
+  // `dans` : une SCISSION — `{ groupe, cible, sens }`, la connexion se range à
+  // côté de `cible` ; null : un onglet à elle.
+  function ouvrirOnglet(serveur, dans = null) {
+    const id = prochainOnglet++;
+    let groupe = dans && groupes.get(dans.groupe);
+    if (groupe) {
+      groupe.racine = inserer(groupe.racine, dans.cible, id, dans.sens);
+    } else {
+      groupe = { id: prochainGroupe++, racine: { feuille: id }, focus: id };
+      groupes.set(groupe.id, groupe);
+    }
+    const outil = (titre, glyphe, action) => el("button", {
+      class: "scission", title: titre,
+      onclick: (e) => { e.stopPropagation(); action(); },
+    }, [glyphe]);
+    const boutonCote = outil("Scinder : une connexion à côté de celle-ci (Ctrl+Maj+D)", "⇆", () => proposer(id, "colonnes"));
+    const boutonBas = outil("Scinder : une connexion sous celle-ci (Ctrl+Maj+E)", "⇅", () => proposer(id, "rangees"));
+    const boutonDetacher = outil("Sortir cette connexion dans son propre onglet", "⇱", () => detacher(id));
+    const boutonFermer = outil("Fermer cette connexion", "✕", () => fermerOnglet(id));
+    const vue = el("section", { class: "vue session cache" });
+    const etiquette = el("span", { class: "nom-session" });
+    const point = el("span", { class: "point connexion" });
+    const message = el("span", { class: "message" });
+    const reconnecter = el("button", { class: "cache", onclick: () => connecter(sessions.get(id)) }, ["Reconnecter"]);
+    const hote = el("div", { class: "terminal-hote" });
+    const boutonTerminal = el("button", { class: "actif", onclick: () => basculer(sessions.get(id), "terminal") }, ["Terminal"]);
+    const boutonFichiers = el("button", { onclick: () => basculer(sessions.get(id), "fichiers") }, ["Fichiers"]);
+    const f = creerVueFichiers(id);
+    vue.append(
+      el("div", { class: "etat-session zoome" }, [
+        etiquette, point, message, reconnecter,
+        el("div", { class: "ligne bascule" }, [boutonTerminal, boutonFichiers]),
+        boutonCote, boutonBas, boutonDetacher, boutonFermer,
+      ]),
+      hote,
+      f.racine,
+    );
+    $("corps").appendChild(vue);
+
+    const term = new Terminal({
+      fontFamily: pileDesPolicesDesTerminaux(state.policeTerminal),
+      fontSize: taillePolice(),
+      cursorBlink: true,
+      scrollback: 5000,
+      allowProposedApi: false,
+      theme: themeDesTerminaux(),
+      allowTransparency: true,
+    });
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(hote);
+
+    const s = {
+      id, serveur: serveur.id, libelle: serveur.libelle,
+      hote: serveur.hote, port: serveur.port, utilisateur: serveur.utilisateur,
+      etat: "connexion", erreur: "", term, fit, vue, point, message, reconnecter,
+      hote, mode: "terminal", boutonTerminal, boutonFichiers, f, l: f.local,
+      adresse: serveur.hote, zoom: 1, nom: "", etiquette, edition: false,
+      groupe: groupe.id, boutonCote, boutonBas, boutonDetacher,
+    };
+    sessions.set(id, s);
+    etiqueter(s);
+    etiquette.addEventListener("dblclick", (e) => { e.stopPropagation(); renommer(id); });
+    // Dans un onglet scindé, un clic dans une case en fait la connexion
+    // ACTIVE, sans refaire l'arbre.
+    vue.addEventListener("mousedown", () => {
+      if (actif === id) return;
+      actif = id;
+      groupe.focus = id;
+      marquerActif();
+      renderOnglets();
+    });
+    // Ctrl + roulette : en capture et non passif, pour passer AVANT xterm.
+    hote.addEventListener("wheel", (e) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+      zoomer(s, e.deltaY < 0 ? ZOOM_PAS : 1 / ZOOM_PAS);
+    }, { capture: true, passive: false });
+
+    term.onData((texte) => envoyerFrappes(id, encodeur.encode(texte)));
+    term.onBinary((texte) => envoyerFrappes(id, Uint8Array.from(texte, (c) => c.charCodeAt(0) & 0xff)));
+    term.onResize(({ cols, rows }) => {
+      if (s.etat === "ouvert") go("redimensionner", id, cols, rows);
+    });
+    // Copier : Ctrl+C AVEC une sélection copie (sans sélection, c'est ^C pour
+    // le serveur) ; Ctrl+Maj+C copie toujours. Coller : Ctrl+V, Ctrl+Maj+V ou le
+    // menu du clic droit.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown" || !e.ctrlKey || e.altKey) return true;
+      const touche = e.key.toLowerCase();
+      if (touche === "c" && (e.shiftKey || term.hasSelection())) {
+        copier(term.getSelection());
+        e.preventDefault();
+        return false;
+      }
+      if (touche === "v") {
+        go("coller", id);
+        e.preventDefault();
+        return false;
+      }
+      const raccourci = { d: () => proposer(id, "colonnes"), e: () => proposer(id, "rangees") }[touche];
+      if (e.shiftKey && raccourci) { raccourci(); e.preventDefault(); return false; }
+      if (touche === "0" && !e.shiftKey) { zoomer(s, null); e.preventDefault(); return false; }
+      return true;
+    });
+    hote.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      menuDuTerminal(e, s);
+    });
+
+    activer(id);
+    connecter(s);
+  }
+
+  // ---- LE CLIC DROIT DU TERMINAL (`menu_contextuel.js`) ----
+  // DEMANDE (2026-10-24) : « sélectionner du texte, le copier et le coller à la
+  // souris depuis le clic droit ». Avant, le clic droit copiait la sélection ou
+  // collait, SANS menu : on ne savait pas lequel des deux allait se produire.
+  // La sélection se fait au glisser ; dans un programme qui prend la souris
+  // (tmux, htop, mc…), Maj+glisser force la sélection d'xterm.
+  function menuDuTerminal(e, s) {
+    const { term } = s;
+    const choisi = term.hasSelection();
+    menuContextuel.ouvrir(e, [
+      { texte: "Copier", raccourci: "Ctrl+C", actif: choisi, action: () => { copier(term.getSelection()); term.focus(); } },
+      { texte: "Coller", raccourci: "Ctrl+V", action: () => { go("coller", s.id); term.focus(); } },
+      "-",
+      { texte: "Tout sélectionner", action: () => { term.selectAll(); term.focus(); } },
+      { texte: "Effacer la sélection", actif: choisi, action: () => { term.clearSelection(); term.focus(); } },
+    ]);
+  }
+
+  function copier(texte) {
+    if (!texte) return;
+    poster("ssh/copie", texte).then(() => go("copier"), () => {});
+  }
+
+  function connecter(s) {
+    if (!s) return;
+    const serveur = state.serveurs.find((x) => x.id === s.serveur);
+    if (!serveur) {
+      s.erreur = "Ce serveur n'existe plus.";
+      s.etat = "ferme";
+      renderEtat(s);
+      return;
+    }
+    if (serveur.methode === "motdepasse" && !serveur.secretDefini) {
+      demanderSecret(s, serveur);
+      return;
+    }
+    lancer(s);
+  }
+
+  function lancer(s) {
+    s.erreur = "";
+    s.etat = "connexion";
+    renderEtat(s);
+    ajuster(s);
+    go("connecter", s.serveur, s.id, s.term.cols, s.term.rows);
+  }
+
+  function fermerOnglet(id) {
+    const s = sessions.get(id);
+    if (!s) return;
+    go("fermer", id);
+    s.term.dispose();
+    s.vue.remove();
+    sessions.delete(id);
+    // La main passe au VOISIN de lecture (celui d'avant, sinon celui d'après).
+    const g = groupes.get(s.groupe);
+    const ordre = feuilles(g.racine);
+    const rang = ordre.indexOf(id);
+    const voisin = ordre[rang - 1] || ordre[rang + 1];
+    g.racine = retirer(g.racine, id);
+    if (!g.racine) groupes.delete(g.id);
+    else if (g.focus === id) g.focus = voisin;
+    if (actif === id) {
+      const restants = [...sessions.keys()];
+      activer(g.racine ? g.focus : restants.length ? restants[restants.length - 1] : 0);
+    } else {
+      renderOnglets();
+      disposer();
+    }
+  }
+
+  // ---- Les dialogues d'une session ----
+  function dialogue(s, contenu) {
+    const fond = el("div", { class: "dialogue-fond zoome" }, [el("div", { class: "dialogue" }, contenu)]);
+    s.vue.appendChild(fond);
+    return fond;
+  }
+
+  function demanderSecret(s, serveur) {
+    const champ = el("input", { type: "password", autocomplete: "off" });
+    let fond;
+    const valider = () => {
+      const secret = champ.value;
+      fond.remove();
+      // Le secret AVANT l'action : `cef_ssh` le prend à la connexion.
+      poster("ssh/secret/" + s.id, secret).then(() => lancer(s), () => {
+        s.erreur = "Le mot de passe n'a pas pu être transmis.";
+        s.etat = "ferme";
+        renderEtat(s);
+      });
+    };
+    const annuler = () => {
+      fond.remove();
+      s.etat = "ferme";
+      s.erreur = "Connexion annulée.";
+      renderEtat(s);
+    };
+    champ.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); valider(); }
+      else if (e.key === "Escape") { e.preventDefault(); annuler(); }
+    });
+    fond = dialogue(s, [
+      el("h3", {}, ["Mot de passe"]),
+      el("p", {}, [`${serveur.utilisateur}@${serveur.hote}`]),
+      champ,
+      el("p", { class: "aide", style: "margin-top: 6px" }, ["Utilisé pour cette connexion seulement. Pour l'enregistrer, modifiez le serveur."]),
+      el("div", { class: "ligne" }, [
+        el("button", { onclick: annuler }, ["Annuler"]),
+        el("button", { class: "principal", onclick: valider }, ["Se connecter"]),
+      ]),
+    ]);
+    s.etat = "authentification";
+    renderEtat(s);
+    setTimeout(() => champ.focus(), 0);
+  }
+
+  function demanderConfiance(s, algorithme, empreinte) {
+    let fond;
+    const repondre = (oui) => {
+      fond.remove();
+      go("cle", s.id, oui ? "oui" : "non");
+      s.term.focus();
+    };
+    fond = dialogue(s, [
+      el("h3", {}, ["Serveur inconnu"]),
+      el("p", {}, [`Première connexion à ${s.hote}:${s.port}. Vérifiez que cette empreinte est bien celle du serveur avant de lui faire confiance :`]),
+      el("p", { class: "empreinte" }, [`${algorithme}  ${empreinte}`]),
+      el("div", { class: "ligne" }, [
+        el("button", { onclick: () => repondre(false) }, ["Refuser"]),
+        el("button", { class: "principal", onclick: () => repondre(true) }, ["Faire confiance"]),
+      ]),
+    ]);
+  }
+
+  // ---- Les frappes : un seul envoi en vol ----
+  const frappes = []; // [onglet, Uint8Array]
+  let frappeEnVol = false;
+  function envoyerFrappes(id, octets) {
+    const s = sessions.get(id);
+    if (!s || s.etat !== "ouvert" || !octets.length) return;
+    frappes.push([id, octets]);
+    pomperFrappes();
+  }
+  async function pomperFrappes() {
+    if (frappeEnVol || !frappes.length) return;
+    frappeEnVol = true;
+    const id = frappes[0][0];
+    const morceaux = [];
+    while (frappes.length && frappes[0][0] === id) morceaux.push(frappes.shift()[1]);
+    const corps = new Uint8Array(morceaux.reduce((n, m) => n + m.length, 0));
+    let i = 0;
+    for (const m of morceaux) { corps.set(m, i); i += m.length; }
+    try {
+      await fetch(CANAL + "ssh/ecrire/" + id, { method: "POST", body: corps });
+    } catch (_) { /* onglet fermé entre-temps : les frappes n'ont plus de destinataire */ }
+    frappeEnVol = false;
+    pomperFrappes();
+  }
+
+  function depuisBase64(b64) {
+    const brut = atob(b64);
+    const octets = new Uint8Array(brut.length);
+    for (let i = 0; i < brut.length; i++) octets[i] = brut.charCodeAt(i);
+    return octets;
+  }
+
+  // ---- Ce que Rust appelle ----
+  window.ssh = {
+    sortie(onglet, b64) {
+      const s = sessions.get(onglet);
+      if (s) s.term.write(depuisBase64(b64));
+    },
+    etat(onglet, nom) {
+      const s = sessions.get(onglet);
+      if (!s) return;
+      s.etat = nom;
+      // Une question restée sans réponse (délai écoulé côté Rust) n'a plus d'objet.
+      if (nom === "ferme") s.vue.querySelectorAll(".dialogue-fond").forEach((d) => d.remove());
+      if (nom === "ouvert") {
+        s.erreur = "";
+        // La taille a pu changer pendant la connexion.
+        go("redimensionner", s.id, s.term.cols, s.term.rows);
+        // Une reconnexion alors que la vue Fichiers est affichée : la relire.
+        if (s.mode === "fichiers") lister(s, s.f.chemin);
+      }
+      renderEtat(s);
+    },
+    erreur(onglet, message) {
+      const s = sessions.get(onglet);
+      if (!s) return;
+      s.erreur = message;
+      s.term.write("\r\n\x1b[31m" + message + "\x1b[0m\r\n");
+      renderEtat(s);
+    },
+    cleInconnue(onglet, algorithme, empreinte) {
+      const s = sessions.get(onglet);
+      if (s) demanderConfiance(s, algorithme, empreinte);
+      else go("cle", onglet, "non");
+    },
+    sftp(onglet, r) {
+      const s = sessions.get(onglet);
+      if (s) recevoirFichiers(s, r);
+    },
+    local(onglet, r) {
+      const s = sessions.get(onglet);
+      if (s) recevoirLocal(s, r);
+    },
+    ficheEnregistree(id, erreur) {
+      if (erreur) { $("f-erreur").textContent = erreur; return; }
+      fermerFormulaire();
+    },
+    cleChoisie(chemin) {
+      $("f-cle").value = chemin;
+    },
+    coller(onglet, texte) {
+      const s = sessions.get(onglet);
+      if (s && texte) s.term.paste(texte);
+    },
+    // Le panneau Terminal a basculé ici : la sphère s'ouvre sur CETTE connexion
+    // (voir `win32::cef_sphere`).
+    sphereOuvrir(onglet) {
+      sphereVue.ouvrir(sessions.has(onglet) ? onglet : actif);
+    },
+    // Les vignettes des terminaux locaux, relayées par Rust.
+    sphereAutres(liste) {
+      sphereVue.autres(liste);
+    },
+  };
+
+  // Dans un onglet scindé, TOUTES les connexions visibles suivent (`ajuster`
+  // saute les cachées et la vue Fichiers).
+  new ResizeObserver(() => {
+    for (const s of sessions.values()) ajuster(s);
+  }).observe($("corps"));
+
+  // =========================================================================
+  // LA VUE FICHIERS (SFTP) — une par onglet
+  // =========================================================================
+
+  function focaliser(s) {
+    if (s.mode === "terminal") s.term.focus();
+    else s.f.table.focus();
+  }
+
+  function basculer(s, mode) {
+    if (!s || s.mode === mode) return;
+    s.mode = mode;
+    s.hote.classList.toggle("cache", mode !== "terminal");
+    s.f.racine.classList.toggle("cache", mode !== "fichiers");
+    s.boutonTerminal.classList.toggle("actif", mode === "terminal");
+    s.boutonFichiers.classList.toggle("actif", mode === "fichiers");
+    // Première visite : le dossier personnel. « . » et PAS "" : un segment vide
+    // en fin d'URL est retiré par `cef_app::on_before_browse` (`trim_end_matches('/')`),
+    // et l'action arrivait amputée de son chemin — donc inconnue, en silence.
+    if (mode === "fichiers" && !s.f.charge) lister(s, ".");
+    if (mode === "fichiers" && !s.l.charge) listerLocal(s, "~");
+    if (mode === "fichiers") appliquerPartage(s.f);
+    requestAnimationFrame(() => { ajuster(s); focaliser(s); });
+  }
+
+  // La part du volet gauche, commune à tous les onglets.
+  let partage = 0.45;
+
+  // Un volet de fichiers : « ce PC » à gauche, le serveur à droite. `rendre`
+  // redessine le volet de l'onglet `id`.
+  function creerVolet(id, classe, rendre) {
+    const v = {
+      chemin: "", parent: null, entrees: [], choisis: new Set(), ancre: null, charge: false,
+      tri: "nom", inverse: false,
+      rendre: () => { const s = sessions.get(id); if (s) rendre(s); },
+      // ⛔ Une sélection NE RECONSTRUIT PAS la table : le 2ᵉ clic d'un
+      // double-clic tomberait sur une rangée neuve, et Chromium ne voit pas de
+      // double-clic entre deux éléments différents (les dossiers ne s'ouvraient pas).
+      majChoix: () => {
+        for (const r of v.table.children) if (r.nomEntree !== undefined) r.classList.toggle("choisie", v.choisis.has(r.nomEntree));
+        const s = sessions.get(id);
+        if (s) renderOutils(s);
+      },
+    };
+    v.cheminChamp = el("input", { class: "chemin", type: "text", spellcheck: "false", title: "Entrée pour y aller" });
+    v.filtre = el("input", { class: "filtre", type: "text", spellcheck: "false", placeholder: "Filtrer…" });
+    v.filtre.addEventListener("input", v.rendre);
+    v.statut = el("div", { class: "statut" });
+    v.table = el("div", { class: "table", tabindex: "0" });
+    v.outils = el("div", { class: "outils zoome" });
+    v.racine = el("div", { class: "volet " + classe }, [
+      v.outils,
+      el("div", { class: "zoome" }, [v.statut]),
+      el("div", { class: "zoome hote-table" }, [v.table]),
+    ]);
+    return v;
+  }
+
+  function creerVueFichiers(id) {
+    const avec = (action) => () => { const s = sessions.get(id); if (s) action(s); };
+    const bouton = (texte, titre, action) => el("button", { title: titre, onclick: avec(action) }, [texte]);
+    const surEntree = (champ, action) => champ.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const s = sessions.get(id);
+      if (s) action(s, champ.value.trim());
+    });
+
+    // ---- à gauche : ce PC ----
+    const l = creerVolet(id, "local", renderLocal);
+    l.boutons = {
+      parent: bouton("↑", "Dossier parent (Retour arrière)", (s) => { if (s.l.parent) listerLocal(s, s.l.parent); }),
+      relire: bouton("⟳", "Relire", (s) => listerLocal(s, s.l.chemin)),
+    };
+    surEntree(l.cheminChamp, listerLocal);
+    l.table.addEventListener("keydown", (e) => { const s = sessions.get(id); if (s) toucheLocal(s, e); });
+    l.outils.append(el("span", { class: "titre-volet" }, ["Ce PC"]), l.boutons.parent, l.boutons.relire, l.cheminChamp, l.filtre);
+
+    // ---- à droite : le serveur ----
+    const f = creerVolet(id, "distant", renderFichiers);
+    f.local = l;
+    f.boutons = {
+      parent: bouton("↑", "Dossier parent (Retour arrière)", (s) => lister(s, parentDe(s.f.chemin))),
+      relire: bouton("⟳", "Relire", (s) => lister(s, s.f.chemin)),
+      dossier: bouton("+ Dossier", "Nouveau dossier", demanderNouveauDossier),
+      renommer: bouton("Renommer", "Renommer (F2)", demanderRenommage),
+      droits: bouton("Droits", "Modifier les droits (chmod)", demanderDroits),
+      supprimer: bouton("Supprimer", "Supprimer la sélection (Suppr)", demanderSuppression),
+      // Dans la séparation.
+      envoyer: bouton("→", "Envoyer la sélection de gauche dans le dossier du serveur", televerser),
+      recevoir: bouton("←", "Recevoir la sélection du serveur dans le dossier de gauche", telecharger),
+    };
+    surEntree(f.cheminChamp, lister);
+    f.table.addEventListener("keydown", (e) => { const s = sessions.get(id); if (s) toucheFichiers(s, e); });
+    f.outils.append(
+      el("span", { class: "titre-volet" }, ["Serveur"]), f.boutons.parent, f.boutons.relire, f.cheminChamp, f.filtre,
+      f.boutons.dossier, f.boutons.renommer, f.boutons.droits, f.boutons.supprimer,
+    );
+
+    // ---- la séparation : les transferts, et on la glisse pour redimensionner ----
+    const separation = el("div", { class: "separation", title: "Glisser pour redimensionner" }, [
+      el("div", { class: "transferts zoome" }, [f.boutons.envoyer, f.boutons.recevoir]),
+    ]);
+    separation.addEventListener("mousedown", (e) => { if (e.button === 0 && !e.target.closest("button")) glisserSeparation(e, f); });
+
+    // ---- le clic droit (`menu_contextuel.js`) ----
+    // Comme l'Explorateur : une rangée hors de la sélection devient LA
+    // sélection ; un clic droit dans le vide ouvre le menu du dossier.
+    const brancherMenu = (v, elements) => v.table.addEventListener("contextmenu", (ev) => {
+      const s = sessions.get(id);
+      if (!s) return;
+      ev.preventDefault();
+      const rangee = ev.target.closest(".rangee");
+      const nom = rangee ? rangee.nomEntree : undefined;
+      if (nom !== undefined && !v.choisis.has(nom)) { v.choisis = new Set([nom]); v.ancre = nom; v.majChoix(); }
+      v.table.focus();
+      menuContextuel.ouvrir(ev, elements(s, nom !== undefined ? choisis(v) : []));
+    });
+    brancherMenu(f, (s, liste) => {
+      const ouvert = s.etat === "ouvert" && s.f.charge;
+      const un = liste.length === 1 ? liste[0] : null;
+      if (liste.length) return [
+        { texte: "Ouvrir", raccourci: "Entrée", actif: !!un && (un.dossier || un.lien), action: () => ouvrir(s, un) },
+        { texte: "Recevoir dans le dossier de gauche", raccourci: "←", actif: ouvert && dossierLocalOuvert(s), action: () => telecharger(s) },
+        "-",
+        { texte: "Renommer", raccourci: "F2", actif: ouvert && !!un, action: () => demanderRenommage(s) },
+        { texte: "Droits…", actif: ouvert && !!un, action: () => demanderDroits(s) },
+        { texte: "Supprimer", raccourci: "Suppr", actif: ouvert, action: () => demanderSuppression(s) },
+        "-",
+        { texte: "Copier le chemin", action: () => copier(liste.map((e) => joindre(s.f.chemin, e.nom)).join("\n")) },
+      ];
+      return [
+        { texte: "Nouveau dossier", actif: ouvert, action: () => demanderNouveauDossier(s) },
+        { texte: "Actualiser", raccourci: "F5", actif: s.etat === "ouvert", action: () => lister(s, s.f.chemin) },
+        { texte: "Dossier parent", raccourci: "Retour arrière", actif: ouvert && s.f.chemin !== "/", action: () => lister(s, parentDe(s.f.chemin)) },
+        "-",
+        { texte: "Tout sélectionner", raccourci: "Ctrl+A", actif: s.f.entrees.length > 0, action: () => toutChoisir(s.f) },
+        { texte: "Copier le chemin du dossier", actif: s.f.charge, action: () => copier(s.f.chemin) },
+      ];
+    });
+    brancherMenu(l, (s, liste) => {
+      const serveur = s.etat === "ouvert" && s.f.charge;
+      const un = liste.length === 1 ? liste[0] : null;
+      if (liste.length) return [
+        { texte: "Ouvrir", raccourci: "Entrée", actif: !!un && un.dossier, action: () => ouvrirLocal(s, un) },
+        { texte: "Envoyer sur le serveur", raccourci: "→", actif: serveur && dossierLocalOuvert(s), action: () => televerser(s) },
+        "-",
+        { texte: "Copier le chemin", action: () => copier(liste.map((e) => e.chemin).join("\n")) },
+      ];
+      return [
+        { texte: "Actualiser", raccourci: "F5", action: () => listerLocal(s, s.l.chemin) },
+        { texte: "Dossier parent", raccourci: "Retour arrière", actif: !!s.l.parent, action: () => listerLocal(s, s.l.parent) },
+        "-",
+        { texte: "Tout sélectionner", raccourci: "Ctrl+A", actif: s.l.entrees.length > 0, action: () => toutChoisir(s.l) },
+        { texte: "Copier le chemin du dossier", actif: dossierLocalOuvert(s), action: () => copier(s.l.chemin) },
+      ];
+    });
+    f.racine = el("div", { class: "fichiers cache" }, [l.racine, separation, f.racine]);
+    appliquerPartage(f);
+    return f;
+  }
+
+  function appliquerPartage(f) {
+    f.local.racine.style.flexBasis = (partage * 100).toFixed(1) + "%";
+  }
+
+  function glisserSeparation(e, f) {
+    e.preventDefault();
+    const bouge = (ev) => {
+      const r = f.racine.getBoundingClientRect();
+      if (r.width <= 0) return;
+      partage = Math.min(0.8, Math.max(0.2, (ev.clientX - r.left) / r.width));
+      appliquerPartage(f);
+    };
+    const lache = () => {
+      window.removeEventListener("mousemove", bouge);
+      window.removeEventListener("mouseup", lache);
+      document.body.classList.remove("glisse");
+    };
+    window.addEventListener("mousemove", bouge);
+    window.addEventListener("mouseup", lache);
+    document.body.classList.add("glisse");
+  }
+
+  function joindre(dossier, nom) {
+    return dossier.endsWith("/") ? dossier + nom : dossier + "/" + nom;
+  }
+
+  function parentDe(chemin) {
+    const net = chemin.replace(/\/+$/, "");
+    const i = net.lastIndexOf("/");
+    return i <= 0 ? "/" : net.slice(0, i);
+  }
+
+  function lister(s, chemin) {
+    if (s.etat !== "ouvert") return;
+    statut(s, "Lecture…");
+    go("lister", s.id, chemin);
+  }
+
+  // « * » : Ce PC (dossiers usuels et lecteurs) ; « ~ » : le dossier personnel.
+  function listerLocal(s, chemin) {
+    if (!chemin || chemin === "Ce PC") chemin = "*";
+    statutVolet(s.l, "Lecture…");
+    go("lister-local", s.id, chemin);
+  }
+
+  function statutVolet(v, texte, erreur) {
+    v.statut.textContent = texte || "";
+    v.statut.classList.toggle("erreur", !!erreur);
+  }
+
+  function statut(s, texte, erreur) {
+    statutVolet(s.f, texte, erreur);
+  }
+
+  function taille(octets) {
+    if (octets < 1024) return octets + " o";
+    const unites = ["Ko", "Mo", "Go", "To"];
+    let v = octets / 1024, i = 0;
+    while (v >= 1024 && i < unites.length - 1) { v /= 1024; i++; }
+    return v.toLocaleString("fr-FR", { maximumFractionDigits: v < 10 ? 1 : 0 }) + " " + unites[i];
+  }
+
+  function date(secondes) {
+    if (!secondes) return "";
+    return new Date(secondes * 1000).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
+  }
+
+  function droitsTexte(e) {
+    const lettres = "rwxrwxrwx";
+    let texte = e.lien ? "l" : e.dossier ? "d" : "-";
+    for (let i = 0; i < 9; i++) texte += e.droits & (1 << (8 - i)) ? lettres[i] : "-";
+    return texte;
+  }
+
+  function visibles(v) {
+    const filtre = v.filtre.value.trim().toLowerCase();
+    const liste = v.entrees.filter((e) => !filtre || e.nom.toLowerCase().includes(filtre));
+    // Ce PC garde l'ordre de Rust : dossiers usuels, puis lecteurs.
+    if (v.chemin === "*") return liste;
+    const cle = { nom: (e) => e.nom.toLowerCase(), taille: (e) => e.taille, modifie: (e) => e.modifie }[v.tri];
+    const sens = v.inverse ? -1 : 1;
+    // Les dossiers restent en tête quel que soit le tri.
+    return liste.sort((a, b) => (b.dossier - a.dossier) || (cle(a) < cle(b) ? -sens : cle(a) > cle(b) ? sens : 0));
+  }
+
+  function choisis(v) {
+    return v.entrees.filter((e) => v.choisis.has(e.nom));
+  }
+
+  // Un vrai dossier est ouvert à gauche (pas « Ce PC ») : on peut y recevoir,
+  // et en envoyer.
+  function dossierLocalOuvert(s) {
+    return s.l.charge && s.l.chemin !== "*";
+  }
+
+  function renderOutils(s) {
+    const b = s.f.boutons;
+    const ouvert = s.etat === "ouvert" && s.f.charge;
+    const n = s.f.choisis.size;
+    b.parent.disabled = !ouvert || s.f.chemin === "/";
+    b.relire.disabled = s.etat !== "ouvert";
+    b.dossier.disabled = !ouvert;
+    b.supprimer.disabled = !ouvert || n === 0;
+    b.renommer.disabled = b.droits.disabled = !ouvert || n !== 1;
+    b.recevoir.disabled = !ouvert || n === 0 || !dossierLocalOuvert(s);
+    b.envoyer.disabled = !ouvert || s.l.choisis.size === 0 || !dossierLocalOuvert(s);
+    s.l.boutons.parent.disabled = !s.l.parent;
+  }
+
+  function trier(v, colonne) {
+    if (v.tri === colonne) v.inverse = !v.inverse;
+    else { v.tri = colonne; v.inverse = false; }
+    v.rendre();
+  }
+
+  const nomAffiche = (e) => (e.dossier ? "📁 " : "") + e.nom + (e.lien ? "  ↪" : "");
+  const classeNom = (e) => (e.dossier ? "dossier-nom" : "");
+  const tailleAffichee = (e) => (e.dossier ? "" : taille(e.taille));
+
+  // `colonnes` : [titre, clé de tri (ou null), classe (ou fonction de l'entrée), contenu(entrée)].
+  function renderTable(v, colonnes, ouvrirEntree) {
+    const fleche = (c) => (v.tri === c ? (v.inverse ? " ▾" : " ▴") : "");
+    const classe = (c, e) => (typeof c === "function" ? c(e) : c);
+    const entete = el("div", { class: "rangee entete" }, colonnes.map(([titre, tri, c]) =>
+      el("span", tri ? { class: classe(c, {}), onclick: () => trier(v, tri) } : { class: classe(c, {}) }, [titre + (tri ? fleche(tri) : "")])));
+    const rangees = visibles(v).map((e, index, liste) => {
+      const rangee = el("div", {
+        class: "rangee" + (v.choisis.has(e.nom) ? " choisie" : ""),
+        title: e.nom,
+        onclick: (ev) => choisir(v, e, liste, ev),
+        ondblclick: () => ouvrirEntree(e),
+      }, colonnes.map(([, , c, contenu]) => el("span", { class: classe(c, e) }, [contenu(e)])));
+      rangee.nomEntree = e.nom;
+      return rangee;
+    });
+    if (!rangees.length && v.charge) {
+      rangees.push(el("div", { class: "rangee vide" }, [el("span", {}, [v.entrees.length ? "Aucun élément ne correspond au filtre." : "Dossier vide."])]));
+    }
+    v.table.replaceChildren(entete, ...rangees);
+  }
+
+  function renderFichiers(s) {
+    renderTable(s.f, [
+      ["Nom", "nom", classeNom, nomAffiche],
+      ["Taille", "taille", "num", tailleAffichee],
+      ["Modifié", "modifie", "", (e) => date(e.modifie)],
+      ["Droits", null, "droits", droitsTexte],
+    ], (e) => ouvrir(s, e));
+    renderOutils(s);
+  }
+
+  function renderLocal(s) {
+    renderTable(s.l, [
+      ["Nom", "nom", classeNom, nomAffiche],
+      ["Taille", "taille", "num", tailleAffichee],
+      ["Modifié", "modifie", "", (e) => date(e.modifie)],
+    ], (e) => ouvrirLocal(s, e));
+    renderOutils(s);
+  }
+
+  // Clic : un seul ; Ctrl : ajouter/retirer ; Maj : une plage depuis l'ancre.
+  function choisir(v, e, liste, ev) {
+    if (ev.shiftKey && v.ancre !== null) {
+      const a = liste.findIndex((x) => x.nom === v.ancre);
+      const b = liste.indexOf(e);
+      if (a >= 0) {
+        if (!ev.ctrlKey) v.choisis.clear();
+        for (let i = Math.min(a, b); i <= Math.max(a, b); i++) v.choisis.add(liste[i].nom);
+        v.majChoix();
+        return;
+      }
+    }
+    if (ev.ctrlKey) {
+      if (v.choisis.has(e.nom)) v.choisis.delete(e.nom); else v.choisis.add(e.nom);
+    } else {
+      v.choisis.clear();
+      v.choisis.add(e.nom);
+    }
+    v.ancre = e.nom;
+    v.majChoix();
+  }
+
+  // Double-clic : un dossier (ou un lien, qui en est peut-être un) s'ouvre ;
+  // un fichier passe dans l'autre volet.
+  function ouvrir(s, e) {
+    if (e.dossier || e.lien) lister(s, joindre(s.f.chemin, e.nom));
+    else { s.f.choisis = new Set([e.nom]); telecharger(s); }
+  }
+
+  function ouvrirLocal(s, e) {
+    if (e.dossier) listerLocal(s, e.chemin);
+    else { s.l.choisis = new Set([e.nom]); televerser(s); }
+  }
+
+  function toutChoisir(v) {
+    v.choisis = new Set(visibles(v).map((x) => x.nom));
+    v.rendre();
+  }
+
+  function toucheFichiers(s, e) {
+    const f = s.f;
+    if (e.key === "Backspace") { e.preventDefault(); if (f.chemin !== "/") lister(s, parentDe(f.chemin)); }
+    else if (e.key === "Delete" && f.choisis.size) { e.preventDefault(); demanderSuppression(s); }
+    else if (e.key === "F2" && f.choisis.size === 1) { e.preventDefault(); demanderRenommage(s); }
+    else if (e.key === "F5") { e.preventDefault(); lister(s, f.chemin); }
+    else if (e.key === "Enter" && f.choisis.size === 1) { e.preventDefault(); ouvrir(s, choisis(f)[0]); }
+    else if (e.key === "a" && e.ctrlKey) { e.preventDefault(); toutChoisir(f); }
+  }
+
+  function toucheLocal(s, e) {
+    const l = s.l;
+    if (e.key === "Backspace") { e.preventDefault(); if (l.parent) listerLocal(s, l.parent); }
+    else if (e.key === "F5") { e.preventDefault(); listerLocal(s, l.chemin); }
+    else if (e.key === "Enter" && l.choisis.size === 1) { e.preventDefault(); ouvrirLocal(s, choisis(l)[0]); }
+    else if (e.key === "a" && e.ctrlKey) { e.preventDefault(); toutChoisir(l); }
+  }
+
+  // Une liste reçue : un AUTRE dossier repart d'une sélection vide ; le même
+  // (relu) garde ce qui existe encore.
+  function recevoirListe(v, r, affiche) {
+    const autreDossier = r.chemin !== v.chemin;
+    v.chemin = r.chemin;
+    v.entrees = r.entrees;
+    v.charge = true;
+    v.cheminChamp.value = affiche;
+    if (autreDossier) { v.choisis.clear(); v.ancre = null; v.filtre.value = ""; }
+    else v.choisis = new Set([...v.choisis].filter((nom) => r.entrees.some((e) => e.nom === nom)));
+    // Un message d'opération reste affiché jusqu'au geste suivant.
+    if (v.statut.textContent === "Lecture…") statutVolet(v, "");
+  }
+
+  function recevoirFichiers(s, r) {
+    const f = s.f;
+    if (r.chemin !== undefined) {
+      recevoirListe(f, r, r.chemin);
+      renderFichiers(s);
+    } else if (r.fait !== undefined) {
+      const erreurs = r.erreurs || [];
+      statut(s, erreurs.length ? r.fait + " — " + erreurs.length + " échec(s) :\n" + erreurs.join("\n") : r.fait, erreurs.length > 0);
+      go("lister", s.id, f.chemin);
+      // Un téléchargement a pu remplir le dossier de gauche.
+      if (s.l.charge) go("lister-local", s.id, s.l.chemin);
+    } else if (r.progres) {
+      const p = r.progres;
+      const pour = p.total ? " — " + Math.floor((100 * p.fait) / p.total) + " %" : "";
+      statut(s, `${p.nom} : ${taille(p.fait)}${p.total ? " / " + taille(p.total) : ""}${pour}`);
+    } else if (r.erreur !== undefined) {
+      statut(s, r.erreur, true);
+    }
+  }
+
+  function recevoirLocal(s, r) {
+    if (r.erreur !== undefined) { statutVolet(s.l, r.erreur, true); return; }
+    s.l.parent = r.parent;
+    recevoirListe(s.l, r, r.chemin === "*" ? "Ce PC" : r.chemin);
+    renderLocal(s);
+  }
+
+  // Serveur → le dossier ouvert à gauche.
+  function telecharger(s) {
+    const chemins = choisis(s.f).map((e) => joindre(s.f.chemin, e.nom));
+    if (!chemins.length) return;
+    if (!dossierLocalOuvert(s)) { statut(s, "Ouvrez d'abord, à gauche, le dossier qui recevra les fichiers.", true); return; }
+    statut(s, "Téléchargement…");
+    go("telecharger", s.id, s.l.chemin, ...chemins);
+  }
+
+  // La sélection de gauche → le dossier ouvert sur le serveur.
+  function televerser(s) {
+    const chemins = choisis(s.l).map((e) => e.chemin);
+    if (!chemins.length || !dossierLocalOuvert(s)) return;
+    if (s.etat !== "ouvert" || !s.f.charge) { statutVolet(s.l, "Le serveur n'est pas connecté.", true); return; }
+    statut(s, "Téléversement…");
+    go("televerser", s.id, s.f.chemin, ...chemins);
+  }
+
+  // Un dialogue à un champ : Entrée valide, Échap annule.
+  function demanderTexte(s, titre, texte, valeur, action) {
+    const champ = el("input", { type: "text", spellcheck: "false" });
+    champ.value = valeur;
+    let fond;
+    const fermer = () => { fond.remove(); s.f.table.focus(); };
+    const valider = () => { const v = champ.value.trim(); if (!v) return; fermer(); action(v); };
+    champ.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); valider(); }
+      else if (e.key === "Escape") { e.preventDefault(); fermer(); }
+    });
+    fond = dialogue(s, [
+      el("h3", {}, [titre]),
+      texte ? el("p", {}, [texte]) : el("span"),
+      champ,
+      el("div", { class: "ligne" }, [
+        el("button", { onclick: fermer }, ["Annuler"]),
+        el("button", { class: "principal", onclick: valider }, ["Valider"]),
+      ]),
+    ]);
+    setTimeout(() => {
+      champ.focus();
+      // Renommer : le nom sans son extension est présélectionné.
+      const point = valeur.lastIndexOf(".");
+      champ.setSelectionRange(0, point > 0 ? point : valeur.length);
+    }, 0);
+    return champ;
+  }
+
+  function demanderNouveauDossier(s) {
+    demanderTexte(s, "Nouveau dossier", "Dans " + s.f.chemin, "", (nom) => go("creer-dossier", s.id, s.f.chemin, nom));
+  }
+
+  function demanderRenommage(s) {
+    const [e] = choisis(s.f);
+    if (!e) return;
+    demanderTexte(s, "Renommer", e.nom, e.nom, (nom) => {
+      if (nom !== e.nom) go("renommer", s.id, joindre(s.f.chemin, e.nom), nom);
+    });
+  }
+
+  function demanderDroits(s) {
+    const [e] = choisis(s.f);
+    if (!e) return;
+    const actuel = (e.droits & 0o7777).toString(8).padStart(3, "0");
+    const champ = demanderTexte(s, "Droits de « " + e.nom + " »", "En octal — ex. 644 (fichier), 755 (dossier ou script).", actuel, (texte) => {
+      if (!/^[0-7]{3,4}$/.test(texte)) { statut(s, "Droits invalides : « " + texte + " » (3 ou 4 chiffres de 0 à 7).", true); return; }
+      go("droits", s.id, joindre(s.f.chemin, e.nom), texte);
+    });
+    const apercu = el("p", { class: "empreinte", style: "margin-top: 6px" });
+    const maj = () => {
+      const v = parseInt(champ.value, 8);
+      apercu.textContent = /^[0-7]{3,4}$/.test(champ.value) ? droitsTexte({ ...e, droits: v }) : "—";
+    };
+    champ.addEventListener("input", maj);
+    champ.after(apercu);
+    maj();
+  }
+
+  function demanderSuppression(s) {
+    const liste = choisis(s.f);
+    if (!liste.length) return;
+    const dossiers = liste.filter((e) => e.dossier).length;
+    let fond;
+    const fermer = () => { fond.remove(); s.f.table.focus(); };
+    const confirmer = () => {
+      fermer();
+      statut(s, "Suppression…");
+      go("effacer", s.id, ...liste.map((e) => joindre(s.f.chemin, e.nom)));
+    };
+    const titre = liste.length === 1 ? "Supprimer « " + liste[0].nom + " » ?" : "Supprimer " + liste.length + " éléments ?";
+    const bouton = el("button", { class: "principal", onclick: confirmer }, ["Supprimer"]);
+    fond = dialogue(s, [
+      el("h3", {}, [titre]),
+      el("p", {}, [dossiers ? "Les dossiers sont supprimés AVEC TOUT LEUR CONTENU. " : "", "Rien ne pourra être récupéré."]),
+      el("div", { class: "ligne" }, [el("button", { onclick: fermer }, ["Annuler"]), bouton]),
+    ]);
+    fond.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); fermer(); } });
+    setTimeout(() => bouton.focus(), 0);
+  }
+
+  // =========================================================================
+  // L'ACCUEIL : LES SERVEURS ENREGISTRÉS
+  // =========================================================================
+
+  function renderListe() {
+    const liste = $("liste");
+    liste.replaceChildren();
+    if (!state.serveurs.length) {
+      liste.appendChild(el("div", { class: "vide" }, ["Aucun serveur enregistré."]));
+      return;
+    }
+    for (const serveur of state.serveurs) {
+      const port = serveur.port === 22 ? "" : ":" + serveur.port;
+      liste.appendChild(el("div", { class: "serveur" }, [
+        el("div", { class: "texte", title: "Se connecter", onclick: () => ouvrirOnglet(serveur) }, [
+          el("div", { class: "nom" }, [serveur.libelle]),
+          el("div", { class: "adresse" }, [`${serveur.utilisateur}@${serveur.hote}${port}`]),
+        ]),
+        el("button", { class: "discret", title: "Modifier", onclick: () => ouvrirFormulaire(serveur) }, [el("span", { class: "ico ico-pencil-simple" })]),
+        el("button", { class: "principal", onclick: () => ouvrirOnglet(serveur) }, ["Connecter"]),
+      ]));
+    }
+  }
+
+  // ---- Le formulaire ----
+  let fiche = null; // { id, methode, secretDefini }
+
+  function renderMethode() {
+    const cle = fiche.methode === "cle";
+    $("f-methode-motdepasse").classList.toggle("actif", !cle);
+    $("f-methode-cle").classList.toggle("actif", cle);
+    $("f-bloc-cle").classList.toggle("cache", !cle);
+    $("f-secret-libelle").textContent = cle ? "Phrase de passe de la clé (si elle en a une)" : "Mot de passe";
+    const modif = fiche.id !== 0 && fiche.secretDefini;
+    $("f-secret").placeholder = modif ? "•••••• (enregistré — laisser vide pour le garder)" : "";
+    $("f-secret-aide").textContent = cle
+      ? "Chiffré pour votre session Windows."
+      : "Facultatif : laissé vide, il sera demandé à chaque connexion. Chiffré pour votre session Windows.";
+  }
+
+  function ouvrirFormulaire(serveur) {
+    fiche = serveur
+      ? { id: serveur.id, methode: serveur.methode, secretDefini: serveur.secretDefini }
+      : { id: 0, methode: "motdepasse", secretDefini: false };
+    $("formulaire-titre").textContent = serveur ? "Modifier « " + serveur.libelle + " »" : "Nouveau serveur";
+    $("f-nom").value = serveur ? serveur.nom : "";
+    $("f-hote").value = serveur ? serveur.hote : "";
+    $("f-port").value = serveur && serveur.port !== 22 ? String(serveur.port) : "";
+    $("f-utilisateur").value = serveur ? serveur.utilisateur : "";
+    $("f-cle").value = serveur ? serveur.cle : "";
+    $("f-secret").value = "";
+    $("f-erreur").textContent = "";
+    $("f-supprimer").classList.toggle("cache", !serveur);
+    $("formulaire").classList.remove("cache");
+    $("liste-bloc").classList.add("cache");
+    $("ajouter").classList.add("cache");
+    renderMethode();
+    $(serveur ? "f-nom" : "f-hote").focus();
+  }
+
+  function fermerFormulaire() {
+    fiche = null;
+    $("f-secret").value = "";
+    $("formulaire").classList.add("cache");
+    $("liste-bloc").classList.remove("cache");
+    $("ajouter").classList.remove("cache");
+  }
+
+  function enregistrerFiche() {
+    const secret = $("f-secret").value;
+    const donnees = {
+      id: fiche.id,
+      nom: $("f-nom").value,
+      hote: $("f-hote").value,
+      port: $("f-port").value.trim() || null,
+      utilisateur: $("f-utilisateur").value,
+      methode: fiche.methode,
+      cle: $("f-cle").value,
+      // Vide en modification = garder l'enregistré (`null`) ; vide à la
+      // création = pas de secret.
+      secret: secret ? secret : (fiche.id !== 0 ? null : ""),
+    };
+    $("f-erreur").textContent = "";
+    poster("ssh/fiche", JSON.stringify(donnees)).then(() => go("enregistrer"), () => {
+      $("f-erreur").textContent = "Le formulaire n'a pas pu être transmis.";
+    });
+  }
+
+  $("ajouter").addEventListener("click", () => ouvrirFormulaire(null));
+  $("f-annuler").addEventListener("click", fermerFormulaire);
+  $("f-enregistrer").addEventListener("click", enregistrerFiche);
+  $("f-parcourir").addEventListener("click", () => go("choisir-cle"));
+  $("f-methode-motdepasse").addEventListener("click", () => { fiche.methode = "motdepasse"; renderMethode(); });
+  $("f-methode-cle").addEventListener("click", () => { fiche.methode = "cle"; renderMethode(); });
+  $("f-supprimer").addEventListener("click", () => {
+    const bouton = $("f-supprimer");
+    // Deux clics : un serveur supprimé ne se récupère pas.
+    if (bouton.dataset.confirmer !== "1") {
+      bouton.dataset.confirmer = "1";
+      bouton.textContent = "Confirmer la suppression";
+      setTimeout(() => { bouton.dataset.confirmer = ""; bouton.textContent = "Supprimer ce serveur"; }, 3000);
+      return;
+    }
+    bouton.dataset.confirmer = "";
+    bouton.textContent = "Supprimer ce serveur";
+    go("supprimer", fiche.id);
+    fermerFormulaire();
+  });
+  $("formulaire").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.target.tagName === "INPUT") { e.preventDefault(); enregistrerFiche(); }
+    else if (e.key === "Escape") { e.preventDefault(); fermerFormulaire(); }
+  });
+
+  // =========================================================================
+
+  let dernierJson = null;
+  window.setState = function (next) {
+    const json = JSON.stringify(next);
+    if (json === dernierJson) return;
+    dernierJson = json;
+    const echelleAvant = state.contentScale;
+    const policeAvant = state.policeTerminal;
+    state = next;
+    document.documentElement.style.setProperty("--text-scale", state.contentScale || 1);
+    // Le raccourci de la vue sphère (voir `win32::cef_sphere::raccourci`).
+    if (window.sphereSource) sphereSource.raccourci(state.raccourci);
+    if (window.sphereVue) sphereVue.vitesseZoom(state.sphereZoom);
+    // Les réglages propres à la sphère (zoom par défaut, recadrage
+    // automatique, fondu), poussés avec le même état.
+    if (window.sphereVue) sphereVue.reglages(state);
+    if (state.contentScale !== echelleAvant) {
+      for (const s of sessions.values()) { s.term.options.fontSize = taillePolice(s); ajuster(s); }
+    }
+    // LA POLICE DES TERMINAUX, la même que `terminal.html` (Réglages → Style,
+    // voir `ui::style::police_des_terminaux`) : une session ouverte la suit sans
+    // être reconnectée — xterm relit la pile et redessine ses cellules. ⛔ Ne pas
+    // reconnecter pour changer de police : ça jetterait le shell de l'utilisateur.
+    if (state.policeTerminal !== policeAvant) {
+      const pile = pileDesPolicesDesTerminaux(state.policeTerminal);
+      for (const s of sessions.values()) { s.term.options.fontFamily = pile; ajuster(s); }
+    }
+    // Un onglet garde son libellé ; seul le serveur supprimé perd la
+    // reconnexion (voir `connecter`).
+    renderListe();
+    voletCommandes.liste(state.commandes);
+  };
+
+  // Le volet des commandes enregistrées (voir `volet_commandes.js`) : le texte
+  // part comme un COLLAGE dans la connexion active, puis Entrée si demandé.
+  voletCommandes.installer({
+    route: "ssh/commandes",
+    go, poster,
+    avant: $("fermer-panneau"),
+    milieu: $("milieu"),
+    cible: () => {
+      const s = sessions.get(actif);
+      return s ? s.nom || s.libelle : null;
+    },
+    envoyer: (texte, executer) => {
+      const s = sessions.get(actif);
+      if (!s || s.etat !== "ouvert") return false;
+      if (s.mode !== "terminal") basculer(s, "terminal");
+      // Un saut de ligne final vaudrait Entrée : « écrire seulement » ne
+      // doit rien exécuter.
+      s.term.paste(texte.replace(/[\r\n]+$/, ""));
+      if (executer) envoyerFrappes(s.id, encodeur.encode("\r"));
+      focaliser(s);
+      return true;
+    },
+  });
+
+  // LA VUE SPHÈRE (voir `sphere_source.js` et `sphere_vue.js`) : les VRAIES
+  // connexions, posées sur une sphère ; les terminaux locaux en aperçu.
+  const decrireSessions = () => [...sessions.values()].map((s) => {
+    const fichiers = s.mode === "fichiers";
+    const lignes = s.term ? sphereSource.derniersLignes(s.term) : [];
+    const entrees = (s.f && s.f.entrees) || [];
+    return {
+      source: "ssh", onglet: s.id, titre: s.nom || s.libelle, etat: s.etat, mode: s.mode,
+      hote: s.utilisateur + "@" + s.adresse + ":" + s.port, actif: s.id === actif,
+      dossier: fichiers ? (s.f && s.f.chemin) || "" : sphereSource.dossierDuPrompt(lignes),
+      lignes: fichiers ? [] : lignes,
+      entrees: fichiers ? entrees.slice(0, 14).map((e) => ({ nom: e.nom, dossier: !!e.dossier })) : [],
+    };
+  });
+  sphereSource.installer({
+    source: "ssh",
+    go, poster,
+    barre: $("haut"),
+    avant: $("fermer-panneau"),
+    actif: () => actif,
+    texte: () => {
+      const s = sessions.get(actif);
+      if (!s) return "SFTP · serveurs";
+      return (s.mode === "fichiers" ? "SFTP · " : "SSH · ") + (s.nom || s.adresse);
+    },
+    termSous: (cible) => {
+      const hote = cible.closest(".terminal-hote");
+      for (const s of sessions.values()) if (s.hote === hote) return s.term;
+      return null;
+    },
+    decrire: decrireSessions,
+  });
+  sphereVue.installer({
+    source: "ssh",
+    go,
+    haut: $("haut"),
+    milieu: $("milieu"),
+    affichage: "flex",
+    taille: () => {
+      const r = $("corps").getBoundingClientRect();
+      return { w: Math.max(200, r.width), h: Math.max(120, r.height) };
+    },
+    vivantes: () => [...sessions.values()].map((s) => ({ onglet: s.id, element: s.vue })),
+    decrire: decrireSessions,
+    actif: () => actif,
+    focaliser: (onglet) => {
+      const s = sessions.get(onglet);
+      if (s) focaliser(s);
+    },
+    sortir: (onglet) => activer(sessions.has(onglet) ? onglet : 0),
+    basculer: (onglet) => go("sphere-autre", onglet),
+  });
+
+  renderListe();
+  renderOnglets();
+  go("ready");
+</script>
+</body>
+</html>

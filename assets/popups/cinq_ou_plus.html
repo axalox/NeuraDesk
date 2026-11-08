@@ -1,0 +1,400 @@
+<!doctype html>
+<!--
+  win32::cef_cinq_ou_plus — un fork web du jeu GNOME « Cinq ou plus » (Five or More /
+  glines), en applet de la zone Intégrés.
+
+  DEMANDE (2026-11-07) : « dans Intégrés avoir des applets pour un fork de gnome
+  2048 et un fork de five-or-more ».
+
+  ⚠️ **LA FACTURE DE `maths.html`** — bande de titre qui DÉPLACE la fenêtre,
+  punaise, croix, les MÊMES trois verbes de fenêtre (`deplacer`, `epingler`,
+  `fermer`). Le jeu vit ENTIÈREMENT ici : grille 9×9, sept couleurs, on choisit une
+  bille puis une case vide ATTEIGNABLE (chemin libre), trois billes apparaissent,
+  et aligner cinq billes ou plus (lignes, colonnes, diagonales) les efface. Le
+  meilleur score tient dans `localStorage`.
+
+  ⛔ **AUCUN `menu.js`** : c'est une FENÊTRE. ⚠️ **AUCUN `background`** sur
+  `<html>`/`<body>` : le fond est le bureau flouté que Rust dessine dessous.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: var(--nd-police);
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    user-select: none;
+  }
+  #barre {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    cursor: default;
+  }
+  #titre {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .bouton {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+  }
+  .bouton:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  .bouton[aria-pressed="true"] {
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1)));
+    opacity: 1;
+  }
+  #tete {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px 4px 12px;
+  }
+  .score {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 66px;
+    padding: 4px 10px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.12 * var(--popup-fond-alpha, 1)));
+  }
+  .score .etiq { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
+  .score .val { font-size: 18px; font-weight: 700; line-height: 1.3; }
+  #apercu {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 8px;
+  }
+  #apercu .etiq { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
+  #apercu .billes { display: flex; gap: 6px; }
+  #apercu .mini { width: 16px; height: 16px; border-radius: 50%; }
+  #nouvelle {
+    all: unset;
+    margin-left: auto;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.40 * var(--popup-fond-alpha, 1)));
+  }
+  #nouvelle:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.60 * var(--popup-fond-alpha, 1))); }
+  #scene {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    position: relative;
+  }
+  #plateau {
+    display: grid;
+    grid-template-columns: repeat(9, 1fr);
+    grid-template-rows: repeat(9, 1fr);
+    gap: 2px;
+    width: min(100%, calc(100vh - 150px));
+    aspect-ratio: 1 / 1;
+    padding: 4px;
+    box-sizing: border-box;
+    border-radius: var(--nd-rayon-grand, 12px);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.14 * var(--popup-fond-alpha, 1)));
+  }
+  .cell {
+    position: relative;
+    border-radius: 4px;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.08 * var(--popup-fond-alpha, 1)));
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .cell:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); }
+  .cell.choisie { box-shadow: inset 0 0 0 2px rgba(var(--popup-accent-rgb, 255, 255, 255), 0.9); }
+  .bille {
+    width: 80%;
+    height: 80%;
+    border-radius: 50%;
+    background: radial-gradient(circle at 32% 30%, rgba(255,255,255,.75), var(--c) 62%, rgba(0,0,0,.35));
+    box-shadow: 0 1px 2px rgba(0,0,0,.4);
+  }
+  .cell.choisie .bille { animation: sautille .5s ease infinite; }
+  @keyframes sautille { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-10%); } }
+  .bille.apparait { animation: pop .18s ease; }
+  @keyframes pop { from { transform: scale(0); } to { transform: scale(1); } }
+  #fin {
+    position: absolute;
+    inset: 12px;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    border-radius: var(--nd-rayon-grand, 12px);
+    background: rgba(var(--popup-fond-rgb, 20, 20, 20), calc(0.72 * var(--popup-fond-alpha, 1)));
+    z-index: 2;
+  }
+  #fin.vu { display: flex; }
+  #fin .mot { font-size: 26px; font-weight: 800; }
+  #fin button {
+    all: unset;
+    padding: 10px 18px;
+    font-size: 14px;
+    font-weight: 700;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.55 * var(--popup-fond-alpha, 1)));
+  }
+  #aide {
+    flex: 0 0 auto;
+    text-align: center;
+    font-size: 11px;
+    opacity: .6;
+    padding: 0 12px 10px 12px;
+  }
+</style>
+</head>
+<body>
+  <div id="barre">
+    <span id="titre">Cinq ou plus</span>
+    <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
+    <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="tete">
+    <div class="score"><span class="etiq">Score</span><span class="val" id="score">0</span></div>
+    <div class="score"><span class="etiq">Record</span><span class="val" id="record">0</span></div>
+    <div id="apercu"><span class="etiq">À venir</span><span class="billes" id="apercu-billes"></span></div>
+    <button id="nouvelle">Nouvelle partie</button>
+  </div>
+  <div id="scene">
+    <div id="plateau"></div>
+    <div id="fin"><span class="mot" id="fin-mot"></span><button id="rejouer">Rejouer</button></div>
+  </div>
+  <div id="aide">Choisissez une bille, puis une case libre atteignable. Alignez-en cinq.</div>
+<script>
+  "use strict";
+  const N = 9;
+  const NB_COULEURS = 7;
+  const NB_NOUVELLES = 3;
+  const MIN_LIGNE = 5;
+  const CLE_RECORD = "neuradesk-cinq-record";
+  const COULEURS = ["#e2443b", "#2ecc71", "#3b82f6", "#f4d03f", "#c471ed", "#1ab7c4", "#e78c3a"];
+
+  function go(action) { location.href = "neuradesk://cinq_ou_plus/" + action; }
+  document.getElementById("barre").addEventListener("mousedown", function (e) {
+    if (e.target.closest("button")) return;
+    go("deplacer");
+  });
+  document.getElementById("epingle").addEventListener("click", function () { go("epingler"); });
+  document.getElementById("fermer").addEventListener("click", function () { go("fermer"); });
+
+  const plateau = document.getElementById("plateau");
+  let cellules = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    const d = document.createElement("div");
+    d.className = "cell";
+    d.dataset.r = r;
+    d.dataset.c = c;
+    d.addEventListener("click", function () { cliquer(r, c); });
+    plateau.appendChild(d);
+    cellules.push(d);
+  }
+  const cel = (r, c) => cellules[r * N + c];
+
+  let grille, score, record, suivantes, choisie, fini;
+
+  function neuf() {
+    grille = Array.from({ length: N }, () => Array(N).fill(0));
+    score = 0;
+    choisie = null;
+    fini = false;
+    suivantes = tirer_couleurs();
+    semer(NB_NOUVELLES, false);
+    suivantes = tirer_couleurs();
+    document.getElementById("fin").classList.remove("vu");
+    dessiner();
+  }
+
+  function tirer_couleurs() {
+    const t = [];
+    for (let i = 0; i < NB_NOUVELLES; i++) t.push(1 + Math.floor(Math.random() * NB_COULEURS));
+    return t;
+  }
+  function vides() {
+    const v = [];
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) if (grille[r][c] === 0) v.push([r, c]);
+    return v;
+  }
+
+  // Pose `combien` billes aux couleurs `suivantes` ; `anime` marque les nouvelles.
+  // Rend la liste des cases semées.
+  function semer(combien, anime) {
+    const posees = [];
+    for (let i = 0; i < combien; i++) {
+      const v = vides();
+      if (!v.length) break;
+      const [r, c] = v[Math.floor(Math.random() * v.length)];
+      grille[r][c] = suivantes[i] || (1 + Math.floor(Math.random() * NB_COULEURS));
+      posees.push([r, c]);
+    }
+    return posees;
+  }
+
+  // Un chemin existe-t-il entre deux cases, par cases VIDES (4 voisins) ?
+  function atteignable(sr, sc, dr, dc) {
+    if (grille[dr][dc] !== 0) return false;
+    const vu = Array.from({ length: N }, () => Array(N).fill(false));
+    const file = [[sr, sc]];
+    vu[sr][sc] = true;
+    while (file.length) {
+      const [r, c] = file.shift();
+      if (r === dr && c === dc) return true;
+      for (const [nr, nc] of [[r - 1, c], [r + 1, c], [r, c - 1], [r, c + 1]]) {
+        if (nr < 0 || nr >= N || nc < 0 || nc >= N) continue;
+        if (vu[nr][nc] || grille[nr][nc] !== 0) continue;
+        vu[nr][nc] = true;
+        file.push([nr, nc]);
+      }
+    }
+    return false;
+  }
+
+  // Les cases à effacer : toute suite d'au moins MIN_LIGNE billes de même couleur,
+  // dans les quatre directions. Rend un Set de "r,c".
+  function lignes_a_effacer() {
+    const DIRS = [[0, 1], [1, 0], [1, 1], [1, -1]];
+    const aeffacer = new Set();
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+      const couleur = grille[r][c];
+      if (!couleur) continue;
+      for (const [dr, dc] of DIRS) {
+        const pr = r - dr, pc = c - dc;
+        // Ne commencer qu'au DÉBUT d'une suite (le voisin amont diffère).
+        if (pr >= 0 && pr < N && pc >= 0 && pc < N && grille[pr][pc] === couleur) continue;
+        const suite = [];
+        let i = 0;
+        while (true) {
+          const nr = r + dr * i, nc = c + dc * i;
+          if (nr < 0 || nr >= N || nc < 0 || nc >= N || grille[nr][nc] !== couleur) break;
+          suite.push([nr, nc]);
+          i++;
+        }
+        if (suite.length >= MIN_LIGNE) for (const [er, ec] of suite) aeffacer.add(er + "," + ec);
+      }
+    }
+    return aeffacer;
+  }
+
+  function effacer(set) {
+    for (const clef of set) {
+      const [r, c] = clef.split(",").map(Number);
+      grille[r][c] = 0;
+    }
+    score += set.size;
+    if (score > record) { record = score; try { localStorage.setItem(CLE_RECORD, String(record)); } catch (e) {} }
+  }
+
+  function cliquer(r, c) {
+    if (fini) return;
+    if (grille[r][c] !== 0) {
+      choisie = [r, c];
+      dessiner();
+      return;
+    }
+    if (!choisie) return;
+    const [sr, sc] = choisie;
+    if (!atteignable(sr, sc, r, c)) return;
+    grille[r][c] = grille[sr][sc];
+    grille[sr][sc] = 0;
+    choisie = null;
+    // Une ligne formée par le déplacement s'efface, et AUCUNE bille n'apparaît.
+    let set = lignes_a_effacer();
+    if (set.size) {
+      effacer(set);
+    } else {
+      const posees = semer(NB_NOUVELLES, true);
+      suivantes = tirer_couleurs();
+      set = lignes_a_effacer();
+      if (set.size) effacer(set);
+      marquer = posees;
+    }
+    if (!vides().length) fini = true;
+    dessiner();
+    if (fini) terminer();
+  }
+
+  let marquer = [];
+
+  function dessiner() {
+    document.getElementById("score").textContent = score;
+    document.getElementById("record").textContent = record;
+    const apercu = document.getElementById("apercu-billes");
+    apercu.replaceChildren();
+    for (const couleur of suivantes) {
+      const m = document.createElement("span");
+      m.className = "mini";
+      m.style.background = COULEURS[couleur - 1];
+      apercu.appendChild(m);
+    }
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+      const d = cel(r, c);
+      d.classList.toggle("choisie", !!choisie && choisie[0] === r && choisie[1] === c);
+      d.replaceChildren();
+      const couleur = grille[r][c];
+      if (couleur) {
+        const b = document.createElement("div");
+        b.className = "bille";
+        if (marquer.some((p) => p[0] === r && p[1] === c)) b.classList.add("apparait");
+        b.style.setProperty("--c", COULEURS[couleur - 1]);
+        d.appendChild(b);
+      }
+    }
+    marquer = [];
+  }
+
+  function terminer() {
+    document.getElementById("fin-mot").textContent = "Plateau plein — " + score + " points";
+    document.getElementById("fin").classList.add("vu");
+    fini = true;
+  }
+
+  document.getElementById("nouvelle").addEventListener("click", neuf);
+  document.getElementById("rejouer").addEventListener("click", neuf);
+
+  window.setState = function (state) {
+    const epingle = document.getElementById("epingle");
+    epingle.setAttribute("aria-pressed", String(!!state.epingle));
+    epingle.innerHTML = state.epingle ? '<span class="ico ico-push-pin-fill"></span>' : '<span class="ico ico-push-pin"></span>';
+    epingle.title = state.epingle ? "Ne plus rester au premier plan" : "Rester au premier plan";
+  };
+
+  try { record = parseInt(localStorage.getItem(CLE_RECORD), 10) || 0; } catch (e) { record = 0; }
+  neuf();
+</script>
+</body>
+</html>

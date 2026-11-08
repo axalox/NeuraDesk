@@ -1,0 +1,672 @@
+<!doctype html>
+<!--
+  win32::cef_enregistrer — la fenêtre de l'applet « Enregistrer ».
+
+  DEMANDES (2026-10-31) : « l'écran ou une zone sélectionnée de l'écran ou la
+  webcam avec ou sans le son », « n'enregistrer que du son », « l'incrustation
+  de la webcam dans un coin ».
+  DEMANDE (2026-11-01) : « ce n'est pas assez visuel et ça paraît désordonné ».
+  D'où : la source en QUATRE TUILES à icône, chaque groupe dans une CARTE, les
+  options binaires en INTERRUPTEURS, les choix exclusifs en CONTRÔLES
+  SEGMENTÉS, et le bouton d'enregistrement dans un PIED toujours visible.
+
+  Une FENÊTRE de la famille de `maths.html` : bande de titre qui DÉPLACE la
+  fenêtre, punaise, croix. ⛔ AUCUN `<select>` (une page CEF hors écran ne sait
+  pas ouvrir sa liste) : tous les choix sont des BOUTONS.
+
+  ⚠️ TOUS LES ARGUMENTS VOYAGENT PERCENT-ENCODÉS (voir `go`), et Rust décode la
+  valeur de `regler`. ⚠️ L'ÉTAT VIENT DE RUST (`window.setState`) : la page ne
+  garde rien qu'elle n'ait reçu.
+  ⛔ Les tests Rust LISENT ce fichier : chaque verbe de `go` et chaque clé de
+  `regler` y est écrit en toutes lettres, guillemet ouvrant compris (voir
+  `verbes_de_la_page`) — et un commentaire qui en imite la forme compte aussi.
+
+  ⚠️ AUCUN `background` sur `<html>`/`<body>` : le fond est le BUREAU FLOUTÉ que
+  Rust dessine SOUS la page.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  /* ⛔ Des opacités FIXES partout dans cette page : `--popup-fond-alpha` vaut ~0
+     dans une fenêtre, et un `calc(x * var(--popup-fond-alpha))` y efface le
+     fond — survol et choix retenu compris. */
+  :root {
+    --fg: var(--popup-fg-rgb, 255, 255, 255);
+    --ac: var(--popup-accent-rgb, 255, 255, 255);
+    /* ⚠️ MESURÉ (2026-11-01, bande d'échantillons dans la capture du harnais,
+       fond à 45) : la composition de la fenêtre ÉCRASE les blancs faibles —
+       blanc 0,1 → −2, 0,2 → +7, 0,3 → +13, 0,4 → +20, 0,5 → +42 — alors que
+       le noir assombrit franchement (0,3 → −6, 0,4 → −13). D'où des cartes EN
+       CREUX (noir) et des contrôles clairs à 0,30 au moins, cernés d'un liseré. */
+    --carte: rgba(0, 0, 0, 0.22);
+    --trait: rgba(var(--fg), 0.20);
+    --ctrl: rgba(var(--fg), 0.30);
+    --ctrl-survol: rgba(var(--fg), 0.42);
+    --ctrl-lisere: inset 0 0 0 1px rgba(var(--fg), 0.22);
+    /* Le choix RETENU : le fond d'accent ET un liseré clair — l'accent seul peut
+       être sombre (mesuré : quasi invisible sur un thème à accent foncé). */
+    --retenu: rgba(var(--ac), 0.55);
+    --retenu-lisere: inset 0 0 0 1.5px rgba(var(--fg), 0.70);
+    --rouge: 230, 60, 55;
+  }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: var(--nd-police);
+    font-size: 13px;
+    /* ⛔ La couleur de texte vient du thème — sans elle, NOIR. */
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    user-select: none;
+  }
+  button { font: inherit; color: inherit; }
+
+  /* ── Bande de titre ─────────────────────────────────────────────────── */
+  #barre {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px 6px 12px;
+    cursor: default;
+  }
+  #titre { flex: 1; display: flex; align-items: center; gap: 8px; font-weight: 600; white-space: nowrap; overflow: hidden; }
+  #titre .ico { width: 16px; height: 16px; opacity: .8; }
+  .bouton {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    cursor: pointer;
+    background: var(--ctrl);
+    box-shadow: var(--ctrl-lisere);
+  }
+  .bouton:hover { background: var(--ctrl-survol); }
+  .bouton[aria-pressed="true"] { background: var(--retenu); box-shadow: var(--retenu-lisere); }
+
+  /* ── Corps : des cartes ─────────────────────────────────────────────── */
+  #corps { flex: 1; min-height: 0; overflow: auto; padding: 4px 12px 10px 12px; }
+  .carte {
+    background: var(--carte);
+    border-radius: var(--nd-rayon-grand);
+    padding: 10px 12px;
+    margin: 0 0 10px 0;
+  }
+  .entete {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    opacity: .6;
+    margin: 0 0 8px 0;
+  }
+  .note { font-size: 12px; opacity: .65; margin: 6px 0 0 0; }
+  .erreur { color: rgb(255, 120, 110); opacity: 1; }
+
+  /* Les quatre sources : des tuiles, l'icône AU-DESSUS du nom. */
+  #tuiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .tuile {
+    all: unset;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 4px 8px 4px;
+    border-radius: var(--nd-rayon-surface);
+    background: var(--ctrl);
+    box-shadow: var(--ctrl-lisere);
+    cursor: pointer;
+    text-align: center;
+    font-size: 12px;
+  }
+  .tuile .ico { width: 26px; height: 26px; opacity: .75; }
+  .tuile:hover { background: var(--ctrl-survol); }
+  .tuile[aria-pressed="true"] { background: var(--retenu); box-shadow: var(--retenu-lisere); font-weight: 600; }
+  .tuile[aria-pressed="true"] .ico { opacity: 1; }
+  .detail { margin: 10px 0 0 0; padding: 10px 0 0 0; border-top: 1px solid var(--trait); }
+
+  /* Une liste d'options exclusives : une ligne par choix, une pastille ronde. */
+  .liste { display: flex; flex-direction: column; gap: 2px; }
+  .ligne {
+    all: unset;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 6px 8px;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+  }
+  .ligne:hover { background: var(--ctrl); }
+  .ligne .nom { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ligne .ico { width: 16px; height: 16px; opacity: .7; }
+  .pastille {
+    flex: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    box-sizing: border-box;
+    box-shadow: inset 0 0 0 1.5px rgba(var(--fg), 0.45);
+  }
+  .ligne[aria-pressed="true"] { background: var(--ctrl); }
+  .ligne[aria-pressed="true"] .pastille { box-shadow: inset 0 0 0 4px rgba(var(--fg), 0.95); }
+
+  /* Une option binaire : toute la ligne se clique, l'interrupteur à droite. */
+  .option {
+    all: unset;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 6px 2px;
+    cursor: pointer;
+  }
+  .option + .option, .option + .sous, .sous + .option { border-top: 1px solid var(--trait); }
+  .option > .ico { width: 20px; height: 20px; opacity: .8; }
+  .option .textes { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .option .aide { font-size: 11.5px; opacity: .6; }
+  .interrupteur {
+    flex: none;
+    position: relative;
+    width: 32px;
+    height: 18px;
+    border-radius: 9px;
+    background: rgba(0, 0, 0, 0.35);
+    box-shadow: inset 0 0 0 1px rgba(var(--fg), 0.30);
+  }
+  .interrupteur::after {
+    content: "";
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: rgba(var(--fg), 0.85);
+    transition: left .12s;
+  }
+  .option[aria-pressed="true"] .interrupteur { background: var(--retenu); box-shadow: var(--retenu-lisere); }
+  .option[aria-pressed="true"] .interrupteur::after { left: 17px; background: rgb(255, 255, 255); }
+  .sous { padding: 2px 0 8px 30px; }
+
+  /* Un choix parmi quelques valeurs : un contrôle segmenté. */
+  .reglage { display: flex; align-items: center; gap: 10px; padding: 6px 2px; }
+  .reglage + .reglage, .option + .reglage, .reglage + .option { border-top: 1px solid var(--trait); }
+  .reglage .libelle { flex: 1; }
+  .segments { display: flex; padding: 2px; gap: 2px; border-radius: var(--nd-rayon-controle); background: rgba(0, 0, 0, 0.25); box-shadow: var(--ctrl-lisere); }
+  .segment {
+    all: unset;
+    padding: 3px 10px;
+    border-radius: calc(var(--nd-rayon-controle) - 2px);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .segment:hover { background: var(--ctrl-survol); }
+  .segment[aria-pressed="true"] { background: var(--retenu); box-shadow: var(--retenu-lisere); font-weight: 600; }
+
+  .action {
+    all: unset;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: var(--nd-rayon-controle);
+    background: var(--ctrl);
+    box-shadow: var(--ctrl-lisere);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .action:hover { background: var(--ctrl-survol); }
+  .action .ico { width: 15px; height: 15px; }
+
+  /* La zone choisie : ses dimensions en grand, sa position en petit. */
+  #zone-info { display: flex; align-items: center; gap: 10px; }
+  #zone-info > .ico { width: 22px; height: 22px; opacity: .75; }
+  #zone-info .textes { flex: 1; display: flex; flex-direction: column; }
+  #zone-info .taille { font-size: 15px; font-weight: 600; }
+  #zone-info .position { font-size: 11.5px; opacity: .6; }
+
+  /* L'incrustation : un petit écran dont on clique le coin. */
+  #incrustation { display: flex; align-items: center; gap: 14px; margin: 8px 0 0 0; }
+  #mini-ecran {
+    position: relative;
+    flex: none;
+    width: 128px;
+    height: 72px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(0, 0, 0, 0.30);
+    box-shadow: inset 0 0 0 1px rgba(var(--fg), 0.35);
+  }
+  .coin {
+    all: unset;
+    position: absolute;
+    box-sizing: border-box;
+    border-radius: 4px;
+    cursor: pointer;
+    background: var(--ctrl);
+    box-shadow: var(--ctrl-lisere);
+  }
+  .coin:hover { background: var(--ctrl-survol); }
+  .coin[aria-pressed="true"] { background: var(--retenu); box-shadow: var(--retenu-lisere); }
+  #incrustation .colonne { display: flex; flex-direction: column; gap: 6px; }
+
+  /* Le dossier : une ligne, le chemin tronqué au milieu de l'espace libre. */
+  #dossier { display: flex; align-items: center; gap: 8px; }
+  #dossier > .ico { width: 20px; height: 20px; opacity: .75; }
+  #dossier-chemin { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ── Pied : l'enregistrement, toujours visible ─────────────────────── */
+  #pied {
+    flex: 0 0 auto;
+    padding: 10px 12px 12px 12px;
+    border-top: 1px solid var(--trait);
+  }
+  #lancer {
+    all: unset;
+    box-sizing: border-box;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 10px 18px;
+    font-size: 14px;
+    font-weight: 600;
+    border-radius: var(--nd-rayon-grand);
+    background: rgba(var(--rouge), 0.80);
+    color: rgb(255, 255, 255);
+    cursor: pointer;
+  }
+  #lancer:hover { background: rgba(var(--rouge), 0.95); }
+  #lancer.arreter { background: rgba(var(--fg), 0.18); color: inherit; box-shadow: inset 0 0 0 1.5px rgba(var(--rouge), 0.9); }
+  #lancer.arreter:hover { background: rgba(var(--fg), 0.26); }
+  #lancer[disabled] { opacity: .45; cursor: default; }
+  .rond { width: 12px; height: 12px; border-radius: 50%; background: rgb(255, 255, 255); }
+  .carre { width: 11px; height: 11px; border-radius: 2px; background: rgb(var(--rouge)); }
+  #statut { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 0; margin: 0; font-size: 12px; text-align: center; }
+  #statut:not(:empty) { margin: 8px 0 0 0; }
+  #statut .fichier { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .8; }
+  .rec { color: rgb(255, 95, 85); font-weight: 600; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .voyant { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: rgb(255, 70, 60); margin-right: 6px; animation: clignote 1s steps(2, start) infinite; }
+  @keyframes clignote { to { visibility: hidden; } }
+  #interface-gardee { text-align: center; }
+</style>
+</head>
+<body>
+  <div id="barre">
+    <span id="titre"><span class="ico ico-video-camera"></span>Enregistrer</span>
+    <button id="actualiser" class="bouton" title="Actualiser les périphériques (webcams, micros, écrans)"><span class="ico ico-arrows-clockwise"></span></button>
+    <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
+    <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="corps"></div>
+  <div id="pied"></div>
+<script>
+  // Chaque segment est percent-encodé : un nom de webcam porte des espaces,
+  // un identifiant de micro des accolades et des barres obliques.
+  function go(...segments) {
+    location.href = "neuradesk://enregistrer/" + segments.map(encodeURIComponent).join("/");
+  }
+  function regler(cle, valeur) {
+    go("regler", cle, String(valeur));
+  }
+
+  document.getElementById("barre").addEventListener("mousedown", function (e) {
+    if (e.target.closest("button")) return;
+    go("deplacer");
+  });
+  document.getElementById("actualiser").addEventListener("click", function () { go("actualiser"); });
+  document.getElementById("epingle").addEventListener("click", function () { go("epingler"); });
+  document.getElementById("fermer").addEventListener("click", function () { go("fermer"); });
+
+  // ── Briques ───────────────────────────────────────────────────────────
+  function el(tag, classe, texte) {
+    const e = document.createElement(tag);
+    if (classe) e.className = classe;
+    if (texte !== undefined) e.textContent = texte;
+    return e;
+  }
+  function icone(nom) { return el("span", "ico ico-" + nom); }
+  function presser(b, presse) { b.setAttribute("aria-pressed", String(Boolean(presse))); return b; }
+  function carte(titre) {
+    const c = el("div", "carte");
+    c.appendChild(el("div", "entete", titre));
+    return c;
+  }
+  // Une ligne d'une liste exclusive : pastille, icône facultative, nom.
+  function ligne(texte, presse, action, nomIcone) {
+    const b = presser(el("button", "ligne"), presse);
+    b.appendChild(el("span", "pastille"));
+    if (nomIcone) b.appendChild(icone(nomIcone));
+    b.appendChild(el("span", "nom", texte));
+    b.title = texte;
+    b.onclick = action;
+    return b;
+  }
+  function liste(lignes) {
+    const l = el("div", "liste");
+    lignes.forEach(function (x) { l.appendChild(x); });
+    return l;
+  }
+  // Une option binaire : icône, libellé (+ aide), interrupteur.
+  function option(nomIcone, texte, aide, presse, action) {
+    const b = presser(el("button", "option"), presse);
+    if (nomIcone) b.appendChild(icone(nomIcone));
+    const t = el("span", "textes");
+    t.appendChild(el("span", "", texte));
+    if (aide) t.appendChild(el("span", "aide", aide));
+    b.appendChild(t);
+    b.appendChild(el("span", "interrupteur"));
+    b.onclick = action;
+    return b;
+  }
+  // Un réglage : libellé à gauche, contrôle segmenté à droite.
+  function reglage(libelle, valeurs) {
+    const r = el("div", "reglage");
+    r.appendChild(el("span", "libelle", libelle));
+    const s = el("div", "segments");
+    valeurs.forEach(function ([texte, presse, action, titre]) {
+      const b = presser(el("button", "segment", texte), presse);
+      if (titre) b.title = titre;
+      b.onclick = action;
+      s.appendChild(b);
+    });
+    r.appendChild(s);
+    return r;
+  }
+  function action(nomIcone, texte, faire, titre) {
+    const b = el("button", "action");
+    if (nomIcone) b.appendChild(icone(nomIcone));
+    if (texte) b.appendChild(document.createTextNode(texte));
+    if (titre) b.title = titre;
+    b.onclick = faire;
+    return b;
+  }
+  function duree(s) {
+    const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, sec = s % 60;
+    const deux = function (n) { return String(n).padStart(2, "0"); };
+    return (h > 0 ? h + ":" : "") + deux(m) + ":" + deux(sec);
+  }
+
+  // ── Que filmer ────────────────────────────────────────────────────────
+  const SOURCES = [
+    ["ecran", "Écran", "monitor"],
+    ["zone", "Zone", "selection"],
+    ["webcam", "Webcam", "webcam"],
+    ["son", "Son seul", "microphone"],
+  ];
+
+  function carteSource(c, state) {
+    const s = carte("Que filmer");
+    const tuiles = el("div");
+    tuiles.id = "tuiles";
+    SOURCES.forEach(function ([nom, libelle, nomIcone]) {
+      const t = presser(el("button", "tuile"), c.source === nom);
+      t.appendChild(icone(nomIcone));
+      t.appendChild(el("span", "", libelle));
+      t.onclick = function () { regler("source", nom); };
+      tuiles.appendChild(t);
+    });
+    s.appendChild(tuiles);
+    const detail = detailSource(c, state);
+    if (detail) {
+      const d = el("div", "detail");
+      d.appendChild(detail);
+      s.appendChild(d);
+    }
+    return s;
+  }
+
+  // Ce que la source choisie demande de préciser — dans la MÊME carte.
+  function detailSource(c, state) {
+    if (c.source === "ecran") {
+      const ecrans = state.ecrans || [];
+      if (ecrans.length < 2) return null;
+      // L'écran choisi : son nom, sinon le principal.
+      const choisi = ecrans.some(function (e) { return e.nom === c.ecran; }) ? c.ecran
+        : (ecrans.find(function (e) { return e.principal; }) || ecrans[0] || {}).nom;
+      return liste(ecrans.map(function (e) {
+        return ligne(e.libelle, e.nom === choisi, function () { regler("ecran", e.nom); }, "monitor");
+      }));
+    }
+    if (c.source === "zone") {
+      const z = c.zone;
+      const info = el("div");
+      info.id = "zone-info";
+      info.appendChild(icone("selection"));
+      const t = el("span", "textes");
+      t.appendChild(el("span", "taille", z ? (z[2] + " × " + z[3]) : "Aucune zone"));
+      t.appendChild(el("span", "position", z ? ("à (" + z[0] + ", " + z[1] + ")") : "Choisissez la partie de l'écran à filmer."));
+      info.appendChild(t);
+      info.appendChild(action("pencil-simple", z ? "Changer…" : "Choisir…", function () { go("zone"); }, "Choisir la zone à filmer"));
+      return info;
+    }
+    if (c.source === "webcam") return listeWebcams(c, state);
+    if (c.source === "son") {
+      return reglage("Format", [["m4a", "M4A"], ["mp3", "MP3"], ["wav", "WAV"]].map(function ([nom, libelle]) {
+        return [libelle, c.format_son === nom, function () { regler("format_son", nom); }];
+      }));
+    }
+    return null;
+  }
+
+  function listeWebcams(c, state) {
+    const l = state.liste || {};
+    if (l.etat === "en-cours") return el("p", "note", "Recherche des webcams…");
+    const webcams = l.webcams || [];
+    if (webcams.length === 0) return el("p", "note", "Aucune webcam trouvée.");
+    const choisie = webcams.some(function (w) { return w.id === c.webcam; }) ? c.webcam : webcams[0].id;
+    return listeRepliable("webcams", webcams.map(function (w) {
+      return { id: w.id, nom: w.nom, retenu: w.id === choisie, choisir: function () { regler("webcam", w.id); } };
+    }), "webcam", "Choisir une autre webcam…");
+  }
+
+  // Une liste exclusive REPLIÉE : seule l'entrée retenue est montrée, un bouton
+  // déplie le reste. Une machine porte facilement dix webcams ou quinze micros
+  // (caméras virtuelles, Voicemeeter, câbles audio) : dépliées en permanence,
+  // elles noyaient la fenêtre.
+  function listeRepliable(cle, entrees, nomIcone, texteDeplier) {
+    const ouverte = Boolean(deplies[cle]);
+    const bloc = el("div");
+    bloc.appendChild(liste(entrees.filter(function (e) { return ouverte || e.retenu; }).map(function (e) {
+      return ligne(e.nom, e.retenu, function () { deplies[cle] = false; e.choisir(); }, nomIcone);
+    })));
+    if (entrees.length > 1) {
+      const plier = action("", ouverte ? "Replier la liste" : texteDeplier, function () {
+        deplies[cle] = !ouverte;
+        window.setState(dernierEtat);
+      });
+      plier.style.marginTop = "4px";
+      bloc.appendChild(plier);
+    }
+    return bloc;
+  }
+
+  // ── Son ───────────────────────────────────────────────────────────────
+  function carteSon(c, state) {
+    const s = carte("Son");
+    s.appendChild(option("speaker-high", "Son du PC", "Ce qu'on entend dans les haut-parleurs", c.son_pc,
+      function () { regler("son_pc", c.son_pc ? 0 : 1); }));
+    s.appendChild(option("microphone", "Micro", c.micro ? "" : "Votre voix", c.micro,
+      function () { regler("micro", c.micro ? 0 : 1); }));
+    if (c.micro) {
+      const micros = (state.liste || {}).micros || [];
+      const connu = micros.some(function (m) { return m.id === c.micro_id; });
+      const entrees = [{ id: "", nom: "Micro par défaut", retenu: !connu, choisir: function () { regler("micro_id", ""); } }];
+      micros.forEach(function (m) {
+        entrees.push({ id: m.id, nom: m.nom, retenu: m.id === c.micro_id, choisir: function () { regler("micro_id", m.id); } });
+      });
+      const sous = el("div", "sous");
+      sous.appendChild(listeRepliable("micros", entrees, "", "Choisir un autre micro…"));
+      s.appendChild(sous);
+    }
+    return s;
+  }
+
+  // ── Image ─────────────────────────────────────────────────────────────
+  function carteImage(c, state) {
+    const s = carte("Image");
+    s.appendChild(reglage("Images par seconde", (state.cadences || []).map(function (n) {
+      return [String(n), c.ips === n, function () { regler("ips", n); }];
+    })));
+    s.appendChild(reglage("Qualité", [["basse", "Basse"], ["normale", "Normale"], ["haute", "Haute"]].map(function ([nom, libelle]) {
+      return [libelle, c.qualite === nom, function () { regler("qualite", nom); }];
+    })));
+    if (c.source !== "webcam") {
+      s.appendChild(option("cursor-click", "Curseur de la souris", "", c.curseur,
+        function () { regler("curseur", c.curseur ? 0 : 1); }));
+    }
+    return s;
+  }
+
+  // ── Webcam dans un coin ───────────────────────────────────────────────
+  const COINS = [["haut-gauche", "Haut gauche"], ["haut-droit", "Haut droit"], ["bas-gauche", "Bas gauche"], ["bas-droit", "Bas droit"]];
+
+  function carteIncrustation(c, state) {
+    const s = carte("Incrustation");
+    s.appendChild(option("webcam", "Webcam dans un coin", "Votre visage par-dessus l'écran", c.incruster,
+      function () { regler("incruster", c.incruster ? 0 : 1); }));
+    if (!c.incruster) return s;
+    const sous = el("div", "sous");
+    sous.appendChild(listeWebcams(c, state));
+    const zone = el("div");
+    zone.id = "incrustation";
+    // Le petit écran : la vignette du coin choisi a la LARGEUR réglée.
+    const ecran = el("div");
+    ecran.id = "mini-ecran";
+    const part = Math.max(10, Math.min(60, c.taille || 25)) / 100;
+    const l = Math.round(128 * part), h = Math.round(l * 9 / 16), marge = 4;
+    COINS.forEach(function ([nom, titre]) {
+      const b = presser(el("button", "coin"), c.coin === nom);
+      b.title = titre;
+      b.style.width = l + "px";
+      b.style.height = h + "px";
+      b.style[nom.startsWith("haut") ? "top" : "bottom"] = marge + "px";
+      b.style[nom.endsWith("gauche") ? "left" : "right"] = marge + "px";
+      b.onclick = function () { regler("coin", nom); };
+      ecran.appendChild(b);
+    });
+    zone.appendChild(ecran);
+    const colonne = el("div", "colonne");
+    colonne.appendChild(el("span", "note", "Cliquez un coin, puis la taille :"));
+    colonne.lastChild.style.margin = "0";
+    const tailles = el("div", "segments");
+    (state.tailles || []).forEach(function (t) {
+      const b = presser(el("button", "segment", t + " %"), c.taille === t);
+      b.title = "Largeur de la vignette";
+      b.onclick = function () { regler("taille", t); };
+      tailles.appendChild(b);
+    });
+    colonne.appendChild(tailles);
+    zone.appendChild(colonne);
+    sous.appendChild(zone);
+    s.appendChild(sous);
+    return s;
+  }
+
+  // ── Dossier ───────────────────────────────────────────────────────────
+  function carteDossier(state) {
+    const s = carte("Dossier");
+    const d = el("div");
+    d.id = "dossier";
+    d.appendChild(icone("folder-open"));
+    const chemin = el("span", "", state.dossier || "");
+    chemin.id = "dossier-chemin";
+    chemin.title = state.dossier || "";
+    d.appendChild(chemin);
+    d.appendChild(action("pencil-simple", "", function () { go("dossier"); }, "Changer de dossier"));
+    d.appendChild(action("arrow-square-out", "", function () { go("ouvrir"); }, "Ouvrir le dossier"));
+    s.appendChild(d);
+    return s;
+  }
+
+  // ── Pied : le bouton et l'état ────────────────────────────────────────
+  function remplirPied(state) {
+    const pied = document.getElementById("pied");
+    pied.replaceChildren();
+    if (!state.gst) return;
+    const etat = state.etat || { nom: "repos" };
+    const tourne = etat.nom === "demarrage" || etat.nom === "en-cours" || etat.nom === "arret";
+    const lancer = el("button");
+    lancer.id = "lancer";
+    if (tourne) lancer.className = "arreter";
+    lancer.appendChild(el("span", tourne ? "carre" : "rond"));
+    lancer.appendChild(document.createTextNode(tourne ? "Arrêter" : "Enregistrer"));
+    lancer.disabled = !state.gst || etat.nom === "arret";
+    lancer.onclick = function () { if (tourne) go("arreter"); else go("demarrer"); };
+    pied.appendChild(lancer);
+
+    const statut = el("div");
+    statut.id = "statut";
+    if (etat.nom === "demarrage") statut.textContent = "Démarrage…";
+    if (etat.nom === "en-cours") {
+      const rec = el("span", "rec");
+      rec.appendChild(el("span", "voyant"));
+      rec.appendChild(document.createTextNode("REC " + duree(etat.secondes || 0)));
+      statut.appendChild(rec);
+    }
+    if (etat.nom === "arret") statut.textContent = "Finalisation du fichier…";
+    if (etat.nom === "fini") {
+      statut.appendChild(el("span", "fichier", "Enregistré : " + etat.fichier));
+      // Une vidéo s'ouvre dans le lecteur de « Afficher » du dash dossier ;
+      // un son seul, dans l'Explorateur (voir `lire`, côté Rust).
+      statut.appendChild(action("play-fill", "Montrer", function () { go("lire"); }));
+    }
+    if (etat.nom === "erreur") { statut.className = "erreur"; statut.textContent = etat.message || "Erreur."; }
+    pied.appendChild(statut);
+    // Ouverte au clic DROIT de l'applet : la dire, puisque rien d'autre ne la
+    // distingue d'une ouverture au clic gauche.
+    if (state.garderInterface) {
+      const note = el("p", "note", "Interface gardée : NeuraDesk reste visible pendant le choix de la zone et dans la vidéo.");
+      note.id = "interface-gardee";
+      pied.appendChild(note);
+    }
+  }
+
+  // L'état de la PAGE seule (rien à persister) : les listes dépliées, et le
+  // dernier état reçu pour se redessiner sans attendre Rust.
+  const deplies = {};
+  let dernierEtat = {};
+
+  window.setState = function (state) {
+    dernierEtat = state;
+    const epingle = document.getElementById("epingle");
+    epingle.setAttribute("aria-pressed", String(Boolean(state.epingle)));
+    epingle.innerHTML = state.epingle ? '<span class="ico ico-push-pin-fill"></span>' : '<span class="ico ico-push-pin"></span>';
+    epingle.title = state.epingle ? "Ne plus rester au premier plan" : "Rester au premier plan";
+
+    const corps = document.getElementById("corps");
+    const defilement = corps.scrollTop;
+    // ⛔ VIDER avant de reconstruire : `appendChild` AJOUTE.
+    corps.replaceChildren();
+    remplirPied(state);
+    if (!state.gst) {
+      const s = carte("GStreamer est nécessaire");
+      s.appendChild(el("p", "note", "L'enregistrement passe par GStreamer, qui n'est pas installé. Installez-le (winget install gstreamerproject.gstreamer), puis rouvrez cette fenêtre."));
+      corps.appendChild(s);
+      return;
+    }
+    const c = state.choix || {};
+    corps.appendChild(carteSource(c, state));
+    corps.appendChild(carteSon(c, state));
+    if (c.source !== "son") corps.appendChild(carteImage(c, state));
+    if (c.source === "ecran" || c.source === "zone") corps.appendChild(carteIncrustation(c, state));
+    const l = state.liste || {};
+    if (l.etat === "echec") corps.appendChild(el("p", "note erreur", "Périphériques illisibles : " + (l.message || "")));
+    corps.appendChild(carteDossier(state));
+    corps.scrollTop = defilement;
+  };
+</script>
+</body>
+</html>

@@ -1,0 +1,298 @@
+[package]
+name = "neuradesk"
+version = "0.1.0"
+edition = "2021"
+description = "NeuraDesk - a Unity-launcher-style dock overlay for Windows 11, built in Rust + Direct3D 11"
+authors = ["Axala"]
+# GPLv3 — voir `LICENSE`, et `THIRD-PARTY-NOTICES.md` pour les composants tiers.
+# `-or-later` : c'est la forme recommandée par la FSF, et la seule qui reste
+# compatible avec libVLC (LGPL-2.1+, modules en GPL-2.0+) embarqué dans le paquet portable.
+license = "GPL-3.0-or-later"
+repository = "https://github.com/axalox/NeuraDesk"
+
+[[bin]]
+name = "neuradesk"
+path = "src/main.rs"
+
+# Le relais des onglets ADMINISTRATEUR du panneau Terminal — seul élevé par
+# l'UAC, NeuraDesk ne l'est jamais (voir `src/relais_admin.rs`). ⚠️ À livrer
+# À CÔTÉ de `neuradesk.exe` : c'est là que `win32::pty` le cherche.
+[[bin]]
+name = "neuradesk-admin"
+path = "src/relais_admin.rs"
+
+[dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_HiDpi",
+    # La vraie cible d'un raccourci MSI « annoncé » (voir `win32::apps::cible_msi`).
+    "Win32_System_ApplicationInstallationAndServicing",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Controls",
+    "Win32_UI_Controls_Dialogs",
+    # UI Automation — MESURÉ : la barre des tâches de Windows 11 25H2 (build
+    # 26200) est réécrite en XAML, il n'y a PLUS de `ToolbarWindow32` sous
+    # `TrayNotifyWnd` (voir `win32::tray_probe`). La voie classique
+    # (`TB_GETBUTTON` + `TRAYDATA`) ne s'applique donc plus, et UIA devient le
+    # seul moyen d'énumérer la zone de notification — l'arbre d'une interface
+    # XAML est toujours exposé par UIA.
+    "Win32_UI_Accessibility",
+    "Win32_UI_Shell",
+    # `Shell::Common::ITEMIDLIST` + `SHParseDisplayName` — résolution SYNCHRONE
+    # d'un chemin « shell: » en PIDL, utilisée par `win32::taskbar_pins` pour
+    # le nom et l'icône des épingles UWP. Absente de "Win32_UI_Shell" seule
+    # (l'import échoue sans elle, `SHParseDisplayName` étant sous
+    # `cfg(feature = "Win32_UI_Shell_Common")`).
+    "Win32_UI_Shell_Common",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Com",
+    "Win32_Globalization",
+    "Win32_Security",
+    # DPAPI (`CryptProtectData`) : les mots de passe de l'applet SSH, chiffrés
+    # pour la session Windows (voir `win32::ssh_serveurs`).
+    "Win32_Security_Cryptography",
+    "Win32_System_Threading",
+    # `ProcessIdToSessionId` : Windows 10 range le bureau virtuel actif sous
+    # `SessionInfo\<session>` (voir `win32::desktops::bureau_actif`).
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Diagnostics_ToolHelp",
+    # `SymFromAddr`, `RtlVirtualUnwind` : la pile du fil principal relevée par
+    # `win32::chien_de_garde` quand la boucle cesse de battre.
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
+    # Job Object "tue à la fermeture" (voir win32::cef_app::contain_child_processes)
+    # : garantit que les sous-process CEF (rendu/GPU/réseau/utilitaire, voir
+    # docs/plans/cef-web-ui-migration.md) meurent avec le process principal
+    # MÊME s'il est arrêté brutalement (crash, Gestionnaire des tâches...),
+    # pas seulement à une sortie propre.
+    "Win32_System_JobObjects",
+    "Win32_System_Power",
+    "Win32_System_Shutdown",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    # Les compteurs de performance (PDH) du moniteur système (voir
+    # `win32::moniteur_systeme`).
+    "Win32_System_Performance",
+    # Le modèle de chaque disque du moniteur système (IOCTL_STORAGE_QUERY_PROPERTY).
+    "Win32_System_Ioctl",
+    "Win32_System_Time",
+    "Win32_System_Console",
+    # `CreatePipe` : les tubes des pseudo-consoles du panneau Terminal
+    # (voir `win32::pty`).
+    "Win32_System_Pipes",
+    "Media_Control",
+    "Devices_Radios",
+    "Foundation_Collections",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    # `mciSendStringW` — LA SEULE LECTURE AUDIO DU DÉPÔT (voir `win32::son`).
+    # ⚠️ La demande porte sur des `.mp3`, or `PlaySoundW` (sous
+    # "Win32_Media_Audio", déjà présent) est **WAV UNIQUEMENT** : il ne les lit
+    # pas. MCI est le seul mécanisme Windows qui lise un MP3 depuis un chemin
+    # sans ajouter de dépendance (rodio, symphonia…).
+    "Win32_Media_Multimedia",
+    "Win32_UI_Shell_PropertiesSystem",
+    # WinHTTP — l'envoi d'une image en ligne depuis l'éditeur (voir
+    # `win32::envoi_image`) : livré avec Windows, il évite une pile HTTP/TLS en
+    # dépendance et suit le proxy du système.
+    "Win32_Networking_WinHttp",
+    # `IcmpSendEcho` — le PING de la surveillance de serveurs (voir
+    # `win32::surveillance`) : un écho ICMP SANS droits d'administrateur, là
+    # où une socket brute les exigerait.
+    "Win32_NetworkManagement_IpHelper",
+    # `MIB_IF_ROW2` (ses champs d'état) — le DÉBIT RÉSEAU de la barre du haut
+    # (voir `win32::debit_reseau`, `GetIfTable2`).
+    "Win32_NetworkManagement_Ndis",
+    # `Icmp6SendEcho2` — le ping IPv6 de l'outil IPv4 / IPv6 (voir
+    # `win32::surveillance::ping_adresse`) : son adresse est un `SOCKADDR_IN6`
+    # et sa signature porte un `PIO_APC_ROUTINE`.
+    "Win32_Networking_WinSock",
+    "Win32_System_IO",
+    # `DnsQuery_W` — l'outil DNS de la surveillance (voir `win32::outils_reseau`) :
+    # CNAME, MX, TXT, NS et PTR, que `ToSocketAddrs` ne sait pas demander.
+    "Win32_NetworkManagement_Dns",
+    # `Appx::GetApplicationUserModelId` — identité de PAQUET d'un processus,
+    # seule source qui connaisse une application du Store (voir
+    # `win32::app_identity`, doc de module : c'est ce qui répare l'épingle
+    # Terminal, dont la fenêtre ne déclare aucune propriété d'identité).
+    "Win32_Storage_Packaging_Appx",
+    # Aperçus VIVANTS du contenu des fenêtres (voir `win32::wgc`) —
+    # Windows.Graphics.Capture donne des frames en textures D3D11 qu'on dessine
+    # nous-mêmes, ce que `DwmRegisterThumbnail` interdit (DWM peint l'aperçu
+    # PAR-DESSUS tout ce que la fenêtre dessine, donc ni coins arrondis ni
+    # surbrillance possibles). Mesuré sur cette machine : `IsSupported`, le
+    # partage de notre périphérique, `CreateFreeThreaded` sur thread STA et
+    # `SetIsBorderRequired(false)` (PAS de bordure jaune) passent tous.
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    # `IGraphicsCaptureItemInterop::CreateForWindow` — viser un HWND PRÉCIS sans
+    # passer par le sélecteur d'écran de Windows. Vit sous
+    # `Win32::System::WinRT::Graphics::Capture`, PAS sous `Graphics::Capture`,
+    # qui ne contient que les classes WinRT.
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_Devices_Properties",
+    "Win32_Storage_FileSystem",
+    # `Environment::ExpandEnvironmentStringsW` — les raccourcis de Windows
+    # stockent leur chemin d'icône AVEC des variables (`%windir%\explorer.exe`),
+    # que `IShellLinkW` rend telles quelles. Voir `win32::apps::Shortcut::icon`.
+    "Win32_System_Environment",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    # `MODIFIERKEYS_FLAGS` de `IDropSource::QueryContinueDrag` : glisser une
+    # capture depuis sa carte d'accès rapide (voir `win32::carte_capture`).
+    "Win32_System_SystemServices",
+    # `IMMDevice::Activate`/`IPropertyStore::GetValue` (voir `win32::audio`)
+    # sont maintenant conditionnées à CES DEUX features depuis `windows`
+    # 0.6x (absentes de la feature "Win32_System_Com" seule, qui suffisait
+    # jusqu'ici) — confirmé dans les bindings générés (`#[cfg(all(feature =
+    # "Win32_System_Com_StructuredStorage", feature = "Win32_System_Variant"))]`).
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    # Moteur SVG de Direct2D, rendu dans un bitmap WIC (voir
+    # `win32::svg_raster`) — les avatars de profils Firefox sont des SVG.
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_Imaging",
+    # Énumération des applications UWP/Store (voir `win32::uwp_apps`) : ces
+    # applications n'ont pas de raccourci `.lnk` classique dans le menu
+    # Démarrer, seule l'API de paquets WinRT les expose.
+    "Management_Deployment",
+    "ApplicationModel",
+    "ApplicationModel_Core",
+    "Storage_Streams",
+    "Foundation",
+    # LES TOASTS (voir `win32::bulle`). ⚠️ Le jeu de fonctionnalités `UI_Notifications`
+    # est le SEUL moyen d'atteindre le centre de notifications Windows 11 sous un
+    # nom d'application : mesuré le 2026-10-04, la voie Win32
+    # (`Shell_NotifyIcon` + `NIF_INFO`, icône masquée comme visible) est acceptée
+    # par le shell et **n'affiche rien**. `Data_Xml_Dom` sert à construire le
+    # document XML que `ToastNotification` exige.
+    "UI_Notifications",
+    "Data_Xml_Dom",
+    # **`Windows.Media.Ocr` — « l'OCR de Windows »** (voir `win32::ocr`), l'un des
+    # deux moteurs de reconnaissance offerts sur une page scannée. Le paquet
+    # `fr-fr` est installé sur cette machine (`C:\Windows\OCR\fr-fr`, mesuré).
+    #
+    # ⚠️ **LES DEUX SONT NÉCESSAIRES.** `Media_Ocr` tire bien `Media`, mais
+    # `OcrEngine::TryCreateFromLanguage` prend un `Windows::Globalization::Language`
+    # — donc `Globalization` aussi. N'activer que `Media_Ocr` donne une erreur de
+    # compilation sur le type de l'argument, pas un échec silencieux : c'est au
+    # moins ça.
+    "Media_Ocr",
+    "Globalization",
+    # ⚠️ **`Graphics_Imaging` EST L'ESPACE DE NOMS WINRT, PAS `Win32_Graphics_Imaging`**
+    # (qui est là depuis longtemps pour WIC et le rastériseur SVG). C'est LUI qui
+    # apporte `BitmapDecoder` et `SoftwareBitmap` — et sans lui, `OcrEngine`
+    # n'expose même pas `RecognizeAsync`, dont la signature prend un
+    # `SoftwareBitmap` : la méthode disparaît avec le type, et l'erreur parle d'une
+    # méthode absente plutôt que d'une feature manquante.
+    "Graphics_Imaging",
+] }
+# "jpeg"/"bmp" en plus de "png" (déjà là pour les icônes/miniatures du
+# presse-papiers) : voir `win32::wallpaper_color` — le fond d'écran configuré
+# par l'utilisateur (`SPI_GETDESKWALLPAPER`) peut être dans n'importe lequel
+# de ces trois formats, pas seulement PNG.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+# Fichier de configuration utilisateur (voir `config::load_pinned_apps`) —
+# analysé via `toml::Table` à la main (pas de macro `Derive`/`serde_derive`
+# supplémentaire), pour rester cohérent avec le reste du projet qui évite
+# les dépendances lourdes.
+toml = "1"
+# Décompression des avatars de profils Firefox, stockés dans son archive
+# `omni.ja` (voir `win32::firefox_profiles`) — déjà tirée par `png`. Sert
+# aussi aux tuiles zlib des fichiers de GIMP (`win32::format_xcf`).
+miniz_oxide = "0.8"
+# Fichiers Photoshop à calques de l'éditeur d'image (`win32::format_psd`).
+ag-psd = "0.3"
+# Dépendance directe requise par la macro `#[windows::core::interface(...)]`
+# (voir `win32::audio::IPolicyConfig`) : le code généré référence le nom de
+# crate `windows_core` littéralement, qui doit donc être résolvable même si
+# on n'utilise autrement que les réexports via `windows::core`. DOIT suivre
+# `windows` ci-dessus (même version exacte, voir sa doc).
+windows-core = "0.62"
+# `IAsyncOperation<T>`/`.join()` (voir `win32::media`/`win32::network`/
+# `win32::uwp_apps`) : depuis `windows` 0.6x, ce type WinRT vit dans SON
+# PROPRE crate `windows-future` plutôt que d'être ré-exporté sous
+# `windows::Foundation` — dépendance directe nécessaire pour l'importer,
+# même si `windows` (ci-dessus) le tire déjà en transitif.
+windows-future = "0.3"
+base64 = "0.23"
+# Manifestes de l'Epic Games Launcher (voir `win32::epic_apps`), du vrai
+# JSON — contrairement à `toml` ci-dessus, pas de format texte maison
+# raisonnable pour du JSON (bien plus de cas de bord : échappement Unicode,
+# nombres, imbrication arbitraire) ; `serde_json::Value` seul, sans
+# `#[derive(Deserialize)]`/macro supplémentaire, pour rester dans le même
+# esprit que le reste du projet (accès direct aux champs voulus, pas de
+# structs miroir de tout le format).
+serde_json = "1"
+# Les QR codes du Presse-papiers (voir `win32::qr`) : la sortie SVG seule.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+# `appcache/appinfo.vdf` de Steam (voir `win32::steam_apps::clienticon_path`)
+# — un format BINAIRE réel (magie `0x07564429`, table de chaînes partagée,
+# vérifié en pratique), contrairement au VDF texte de `libraryfolders.vdf`/
+# `appmanifest_*.acf` qu'un simple parcours ligne par ligne suffit à lire :
+# pas raisonnable de le réimplémenter à la main ici, une bibliothèque dédiée
+# et à jour existe déjà pour ce format précis.
+steam-vdf-parser = "0.1"
+# UI en HTML/CSS (Phase 0 de docs/plans/cef-web-ui-migration.md) : Chromium
+# en rendu hors-écran (OSR), PAS WebView2 — voir la doc du plan pour
+# pourquoi OSR ne reproduit pas la limitation qui a fait abandonner
+# WebView2 (aucune fenêtre propre, texture partagée D3D11 qu'on compose
+# nous-mêmes). `default-features = false` + `resources` (PAS `sandbox`) :
+# le bac à sable Chromium fait planter silencieusement (STATUS_BREAKPOINT
+# natif, aucune trace) sans configuration supplémentaire non faite ici —
+# voir `win32::cef_app::on_before_command_line_processing`, qui injecte
+# `--no-sandbox` à la place. Nécessite CMake + Ninja installés sur la
+# machine de build (compile la couche C++ `libcef_dll_wrapper` localement,
+# voir le plan).
+cef = { version = "151.8.0", default-features = false, features = ["resources"] }
+# Applet SSH / SFTP (voir `docs/plans/ssh-sftp.md`), modèle Submarine : client
+# `russh` + `russh-sftp` sur un runtime `tokio` à part, jamais sur le fil UI.
+# ⚠️ `russh` SANS ses fonctionnalités par défaut : la défaut `aws-lc-rs` exige
+# NASM pour compiler, absent de cette machine — `ring` n'en a pas besoin.
+russh = { version = "0.63", default-features = false, features = ["ring", "flate2", "rsa"] }
+russh-sftp = "3.0"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "fs"] }
+# L'export et l'import de la configuration (voir `sauvegarde_config`) — une
+# archive .zip, que l'Explorateur ouvre sans rien installer. Deflate par
+# `flate2` SEUL, déjà tiré par `png` : le `deflate` par défaut ajouterait zopfli.
+zip = { version = "9.0.1", default-features = false, features = ["deflate-flate2"] }
+# L'import des shaders Shadertoy (voir `gfx::shadertoy`) : GLSL -> HLSL, par le
+# traducteur de wgpu. ⛔ `wgsl-in` n'est PAS utilisé, mais naga 30 ne compile pas
+# `glsl-in` sans lui (`apply_default_interpolation` est derrière `spv-in`/`wgsl-in`).
+naga = { version = "30.0.1", features = ["glsl-in", "wgsl-in", "hlsl-out"] }
+
+# Compile `NeuraDeskIcon/NeuraDesk.rc` (voir `build.rs`) pour donner à
+# `neuradesk.exe` sa propre icône (Explorateur/barre des tâches/Alt-Tab) —
+# jusqu'ici absente, l'exe portait l'icône générique Windows par défaut.
+[build-dependencies]
+embed-resource = "3.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+panic = "abort"
+strip = true
+# ⭐ LES TABLES DE LIGNES, POUR LE CHIEN DE GARDE (mesure du 2026-10-29).
+# Sans elles le PDB ne porte que les symboles PUBLICS : `win32::chien_de_garde`
+# relève alors `main+0x1d3263`, un décalage de 1,9 Mo dans `main`, qui ne nomme
+# aucune fonction. On a dû retrouver `app_identity::collect_window` à la main,
+# par lecture du code. Avec les tables, la même pile donne `(src\…\app_identity.rs:).
+# Le poids va dans le PDB, pas dans l'exe ; le PDB ne part pas dans l'archive.
+debug = "line-tables-only"
+
+[profile.dev]
+opt-level = 1

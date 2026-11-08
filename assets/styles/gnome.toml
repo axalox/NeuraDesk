@@ -1,0 +1,33 @@
+# Style « GNOME » — DEMANDE EXPLICITE (2026-10-12) : « un style gnome comme sur
+# linux ».
+#
+# L'aspect libadwaita de GNOME : des coins FRANCHEMENT arrondis (6 px sur les
+# boutons, 12 px sur les cartes, les listes encadrées et les fenêtres), presque
+# pas de contour (libadwaita sépare les surfaces par leur teinte, pas par un
+# trait), la police Adwaita Sans de GNOME 48 — Segoe UI prend le relais si elle
+# n'est pas installée — et l'élément actif d'une liste en aplat arrondi, comme
+# la barre latérale de Nautilus. Les couleurs vont avec la famille « Adwaita »
+# de Réglages › Thèmes — les deux axes restent indépendants.
+
+nom = "GNOME"
+
+[formes]
+rayon_petit = 4
+rayon_controle = 6
+rayon_surface = 12
+rayon_grand = 12
+rayon_icone = 12
+
+[traits]
+bordure_alpha = 0.05
+
+[texte]
+# ⛔ « Adwaita Sans Text », PAS « Adwaita Sans » : la police a un axe de taille
+# optique, et Windows range ses instances sous ce nom-là. Sous « Adwaita Sans »,
+# la page retombait sur Segoe UI — texte identique au pixel près, MESURÉ
+# (2026-10-12). Inter, qui a le même axe, garde son nom : ce n'est pas l'axe
+# seul, c'est la table STAT de cette police.
+police = "Adwaita Sans Text"
+
+[structure]
+indicateur = "point"

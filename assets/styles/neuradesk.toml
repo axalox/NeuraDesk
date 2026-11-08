@@ -1,0 +1,45 @@
+# Style « NeuraDesk » — l'aspect d'origine de l'application.
+#
+# Un style ne contient que des VALEURS : Rust les valide une à une puis écrit
+# lui-même les variables CSS `--nd-*` (voir `src/ui/style.rs`). Une clé absente
+# garde la valeur de ce fichier-ci, qui sert de base à tous les autres styles.
+
+nom = "NeuraDesk"
+
+[formes]
+# Rayons des coins, en pixels (0 à 32).
+rayon_petit = 3      # pastilles, poignées, petites cases
+rayon_controle = 6   # boutons, champs de saisie, éléments de liste
+rayon_surface = 8    # listes, zones de contenu, onglets
+rayon_grand = 10     # fenêtres internes, cartes, sections de Réglages
+rayon_icone = 14     # icônes du dock (dessinées par Rust)
+
+[traits]
+# Opacité du contour fin des surfaces (0 = aucun contour, 1 = opaque).
+bordure_alpha = 0.0
+
+[relief]
+# RELIEF (0 = aucun, 1 = au maximum). C'est l'axe du style « Rétro » — et il est
+# à ZÉRO ici, comme dans « WinUI ». C'est ce qui garantit que ces deux styles ne
+# bougent pas d'un pixel quand on en ajoute un troisième.
+#
+# ⚠️ Ces trois valeurs S'AJOUTENT au matériau de flou, elles ne le remplacent pas :
+# le shader porte déjà un bandeau lumineux et un liseré de biseau (voir
+# « Verre liquide » et « Frutiger Aero » dans `gfx::material`).
+#
+# `degrade` : bandeau lumineux sur le bord de la barre collé à l'écran.
+# `liserel` : liseré clair sur le bord INTÉRIEUR de la barre.
+# `ombre`   : ombre portée des DASHS seulement — une barre ne peut pas en avoir,
+#             sa fenêtre est découpée exactement à son rectangle (et c'est aussi
+#             sa zone de clic).
+degrade = 0.0
+liserel = 0.0
+ombre = 0.0
+
+[texte]
+# Nom d'une police installée : lettres, chiffres, espaces et tirets seulement.
+police = "Segoe UI"
+
+[structure]
+# Signal de l'élément actif d'une liste : "point" ou "barre".
+indicateur = "point"

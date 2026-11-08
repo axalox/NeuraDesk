@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<!--
+  LE MINUTEUR — comptes à rebours et alarmes (voir `win32::cef_minuteur`, qui
+  porte la liste complète des actions, et `win32::minuteur`, le modèle).
+
+  ÉTAT REÇU (window.setState) :
+    { maintenantMs, comptes: [{ id, nom, dureeMs, resteMs, finMs, sonne, ephemere }],
+      pomodoro: { phase, nom, seances, seancesAvantLongue, resteMs, finMs, dureeMs, sonne,
+                  travailMin, pauseMin, longueMin, minMinutes, maxMinutes },
+      chrono: { origineMs, accumuleMs, enMarche, tours: [écouléMs] },
+      alarmes: [{ id, nom, heure: "HH:MM", jours, active, son, sonne }],
+      sonComptes, sons: [nom de fichier], quiSonne: [nom], contentScale }
+
+  ⚠️ **LA PAGE DÉCOMPTE ELLE-MÊME** : Rust ne pousse que quand l'état CHANGE. Un
+  compte en cours arrive avec son instant de fin (`finMs`) et l'instant de la
+  poussée (`maintenantMs`) ; `decalage` recale l'horloge de la page sur celle
+  de Rust, et `tic()` repeint les chiffres sans toucher au reste du DOM.
+
+  ⚠️ **LES FORMULAIRES SONT STATIQUES** : seules les LISTES sont reconstruites
+  à chaque état. Un champ reconstruit sous les doigts perd son focus (la leçon
+  de `notes.html` et du calendrier).
+
+  ⚠️ **PAS DE <select>** : il ne s'ouvre jamais dans une page CEF rendue hors
+  écran. Les sons se choisissent par BOUTONS.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<script src="menu_contextuel.js"></script>
+<style>
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    overflow-y: auto;
+    /* Même grossissement que le calendrier : `zoom` seul, jamais multiplié
+       dans une taille (voir l'en-tête de `calendar_applet.html`). */
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    min-height: calc(100vh / var(--text-scale));
+  }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 6px; }
+  h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  h2 { margin: 12px 0 6px; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; opacity: calc(.65 * max(1, var(--popup-alpha, 1))); }
+  section { padding: 0 16px 14px; }
+  button {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 5px 10px;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  button.actif { background: rgb(var(--popup-accent-solid-rgb)); }
+  .close-btn { background: none; font-size: 16px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+  .close-btn:hover { background: none; opacity: 1; }
+  input {
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.08 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.18 * var(--popup-fond-alpha, 1)));
+    border-radius: var(--nd-rayon-controle);
+    padding: 5px 8px;
+    font: inherit;
+  }
+  input[type=number] { width: 52px; }
+  input[type=time] { color-scheme: dark; }
+  .ligne { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .onglets { display: flex; gap: 6px; padding: 0 16px 4px; }
+  .onglets button { flex: 1 1 0; }
+  .cache { display: none !important; }
+
+  /* ---- LE BANDEAU DE SONNERIE ---- */
+  #sonnerie {
+    margin: 0 16px 10px;
+    padding: 10px 12px;
+    border-radius: var(--nd-rayon-surface);
+    background: rgba(var(--popup-accent-rgb), calc(0.45 * var(--popup-fond-alpha, 1)));
+    animation: pulse 1s ease-in-out infinite alternate;
+  }
+  @keyframes pulse { from { opacity: 1; } to { opacity: calc(.75 * max(1, var(--popup-alpha, 1))); } }
+  #sonnerie-noms { font-weight: 600; font-size: 15px; margin-bottom: 8px; }
+
+  /* ---- LES LISTES ---- */
+  .item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    margin-bottom: 4px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-accent-rgb), calc(0.14 * var(--popup-fond-alpha, 1)));
+  }
+  .item.sonne { background: rgba(var(--popup-accent-rgb), calc(0.45 * var(--popup-fond-alpha, 1))); }
+  .item.eteinte { opacity: calc(.5 * max(1, var(--popup-alpha, 1))); }
+  .item .grand { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 86px; }
+  .item .texte { flex: 1 1 auto; min-width: 0; }
+  .item .nom { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .detail { font-size: 12px; opacity: calc(.65 * max(1, var(--popup-alpha, 1))); }
+  .vide { opacity: calc(.55 * max(1, var(--popup-alpha, 1))); font-style: italic; }
+  .jour-btn { min-width: 30px; padding: 5px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Minuteur</h1>
+  <button class="close-btn" onclick="go('close')" title="Fermer"><span class="ico ico-x"></span></button>
+</header>
+
+<div id="sonnerie" class="cache">
+  <div id="sonnerie-noms"></div>
+  <div class="ligne">
+    <button onclick="go('arreter')">Arrêter</button>
+    <button onclick="go('repeter')">Répéter dans 5 min</button>
+  </div>
+</div>
+
+<div class="onglets">
+  <button id="onglet-comptes" class="actif" onclick="montrerOnglet('comptes')">Comptes à rebours</button>
+  <button id="onglet-chrono" onclick="montrerOnglet('chrono')">Chronomètre</button>
+  <button id="onglet-alarmes" onclick="montrerOnglet('alarmes')">Alarmes</button>
+  <button id="onglet-pomodoro" onclick="montrerOnglet('pomodoro')">Pomodoro</button>
+</div>
+
+<section id="page-comptes">
+  <h2>Lancer</h2>
+  <div class="ligne">
+    <button onclick="lancer(60)">1 min</button>
+    <button onclick="lancer(300)">5 min</button>
+    <button onclick="lancer(600)">10 min</button>
+    <button onclick="lancer(900)">15 min</button>
+    <button onclick="lancer(1800)">30 min</button>
+  </div>
+  <div class="ligne">
+    <input id="compte-h" type="number" min="0" max="23" value="0" title="heures"> h
+    <input id="compte-m" type="number" min="0" max="59" value="5" title="minutes"> min
+    <input id="compte-s" type="number" min="0" max="59" value="0" title="secondes"> s
+  </div>
+  <div class="ligne">
+    <input id="compte-nom" type="text" placeholder="Nom (facultatif)" style="flex: 1 1 auto">
+    <button onclick="lancerSaisie()">Lancer</button>
+  </div>
+  <h2>En cours</h2>
+  <div id="liste-comptes"></div>
+  <h2>Son des comptes à rebours</h2>
+  <div id="sons-comptes" class="ligne"></div>
+</section>
+
+<!-- ⭐ LE CHRONOMÈTRE — DEMANDE EXPLICITE (2026-11-06). Compte VERS LE HAUT, ne
+     sonne pas (voir `minuteur::Chronometre`). Le bloc d'état est reconstruit à
+     chaque poussée ; l'affichage des centièmes est animé par `boucleChrono`
+     (requestAnimationFrame) tant qu'il tourne — `marche` étant un instant fixe,
+     Rust ne pousse rien pendant le décompte. -->
+<section id="page-chrono" class="cache">
+  <div id="chrono-etat"></div>
+  <h2 id="chrono-tours-titre" class="cache">Tours</h2>
+  <div id="liste-tours"></div>
+</section>
+
+<section id="page-alarmes" class="cache">
+  <h2 id="alarme-titre">Nouvelle alarme</h2>
+  <div class="ligne">
+    <input id="alarme-heure" type="time" value="07:00">
+    <input id="alarme-nom" type="text" placeholder="Nom (facultatif)" style="flex: 1 1 auto">
+  </div>
+  <div id="alarme-jours" class="ligne"></div>
+  <div class="detail" id="alarme-jours-resume" style="margin-bottom: 8px; opacity: calc(.65 * max(1, var(--popup-alpha, 1))); font-size: 12px"></div>
+  <div id="sons-alarme" class="ligne"></div>
+  <div class="ligne">
+    <button onclick="enregistrerAlarme()">Enregistrer</button>
+    <button id="alarme-annuler" class="cache" onclick="annulerEdition()">Annuler</button>
+  </div>
+  <h2>Alarmes</h2>
+  <div id="liste-alarmes"></div>
+</section>
+
+<!-- ⭐ LE POMODORO — DEMANDE EXPLICITE (2026-10-24). Une phase qui finit sonne
+     comme un compte ; « Arrêter » enchaîne la suivante (voir
+     `minuteur::Pomodoro`). Le bloc du haut est reconstruit à chaque état, les
+     champs de durée NE LE SONT PAS (même règle que les autres formulaires). -->
+<section id="page-pomodoro" class="cache">
+  <div id="pomodoro-etat"></div>
+  <h2>Durées</h2>
+  <div class="ligne">
+    <input id="pomodoro-travail" type="number" title="minutes de travail"> min de travail
+  </div>
+  <div class="ligne">
+    <input id="pomodoro-pause" type="number" title="minutes de pause"> min de pause
+  </div>
+  <div class="ligne">
+    <input id="pomodoro-longue" type="number" title="minutes de longue pause"> min de longue pause, toutes les <span id="pomodoro-avant-longue">4</span> séances
+  </div>
+  <div class="detail" style="opacity: calc(.65 * max(1, var(--popup-alpha, 1))); font-size: 12px">La sonnerie est celle des comptes à rebours. « Arrêter » lance la phase suivante ; « Répéter dans 5 min » prolonge la phase en cours.</div>
+</section>
+
+<script>
+  // `el` et `go` — MÊMES HELPERS que les autres pages du dépôt (voir
+  // `calendar_applet.html`) : tout `on…` passe par `addEventListener`.
+  function el(tag, attrs, children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (key === "class") node.className = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value);
+    }
+    for (const child of children || []) {
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+    return node;
+  }
+
+  // Segments ENCODÉS un par un — un nom contenant « / » ne doit pas changer
+  // l'arité de l'action.
+  function go(...segments) {
+    location.href = "neuradesk://minuteur/" + segments.map(encodeURIComponent).join("/");
+  }
+
+  const JOURS_COURTS = ["L", "M", "M", "J", "V", "S", "D"];
+  const JOURS_LONGS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"];
+  const TOUS_LES_JOURS = 0x7F;
+
+  let state = null;
+  let dernierEtatJson = null;
+  // L'horloge de Rust moins celle de la page — voir l'en-tête.
+  let decalage = 0;
+  // Le brouillon du formulaire d'alarme : `id` null = nouvelle alarme.
+  let brouillon = { id: null, jours: 0, son: null };
+
+  // Même arrondi que `minuteur::format_duree` : à la seconde SUPÉRIEURE.
+  function formatDuree(ms) {
+    const total = Math.ceil(Math.max(0, ms) / 1000);
+    const h = Math.floor(total / 3600), m = Math.floor(total / 60) % 60, s = total % 60;
+    const deux = (n) => String(n).padStart(2, "0");
+    return h > 0 ? `${h}:${deux(m)}:${deux(s)}` : `${m}:${deux(s)}`;
+  }
+
+  // Le chronomètre compte VERS LE HAUT, aux centièmes : « M:SS.cc » (ou avec les
+  // heures). Pas d'arrondi supérieur — c'est un temps écoulé, pas un reste.
+  function formatChrono(ms) {
+    const t = Math.max(0, ms);
+    const deux = (n) => String(n).padStart(2, "0");
+    const cc = Math.floor(t / 10) % 100, s = Math.floor(t / 1000) % 60;
+    const m = Math.floor(t / 60000) % 60, h = Math.floor(t / 3600000);
+    const base = h > 0 ? `${h}:${deux(m)}:${deux(s)}` : `${m}:${deux(s)}`;
+    return `${base}.${deux(cc)}`;
+  }
+
+  function resumeJours(jours) {
+    if (jours === 0) return "Une fois";
+    if (jours === TOUS_LES_JOURS) return "Tous les jours";
+    if (jours === 0x1F) return "Du lundi au vendredi";
+    if (jours === 0x60) return "Le week-end";
+    return JOURS_LONGS.filter((_, i) => jours & (1 << i)).join(", ");
+  }
+
+  function montrerOnglet(nom) {
+    for (const o of ["comptes", "chrono", "alarmes", "pomodoro"]) {
+      document.getElementById("page-" + o).classList.toggle("cache", o !== nom);
+      document.getElementById("onglet-" + o).classList.toggle("actif", o === nom);
+    }
+  }
+
+  // --- COMPTES À REBOURS ---
+  function lancer(secondes) {
+    const nom = document.getElementById("compte-nom").value.trim();
+    // Jamais de segment vide : il serait mangé en route (voir l'en-tête de
+    // `cef_minuteur.rs`).
+    if (nom) go("compte-ajouter", String(secondes), nom);
+    else go("compte-ajouter", String(secondes));
+    document.getElementById("compte-nom").value = "";
+  }
+
+  function lancerSaisie() {
+    const lire = (id) => Math.max(0, parseInt(document.getElementById(id).value, 10) || 0);
+    const secondes = lire("compte-h") * 3600 + lire("compte-m") * 60 + lire("compte-s");
+    if (secondes > 0) lancer(secondes);
+  }
+
+  function resteDe(c) {
+    return c.finMs !== null && c.finMs !== undefined ? c.finMs - (Date.now() + decalage) : c.resteMs;
+  }
+
+  function rendreComptes() {
+    const liste = document.getElementById("liste-comptes");
+    liste.replaceChildren();
+    if (state.comptes.length === 0) {
+      liste.appendChild(el("div", { class: "vide" }, ["Aucun compte à rebours."]));
+    }
+    for (const c of state.comptes) {
+      const enCours = c.finMs !== null && c.finMs !== undefined;
+      const id = String(c.id);
+      const detail = c.sonne ? "Terminé !" : enCours ? "En cours" : c.resteMs < c.dureeMs ? "En pause" : "Prêt";
+      liste.appendChild(el("div", { class: "item" + (c.sonne ? " sonne" : "") }, [
+        el("span", { class: "grand", "data-compte": id }, [formatDuree(resteDe(c))]),
+        el("div", { class: "texte" }, [
+          el("div", { class: "nom" }, [c.nom || "Compte à rebours"]),
+          el("div", { class: "detail" }, [detail + " · " + formatDuree(c.dureeMs)]),
+        ]),
+        enCours
+          ? el("button", { title: "Pause", onclick: () => go("compte-pause", id) }, [el("span", { class: "ico ico-pause-fill" })])
+          : el("button", { title: "Démarrer", onclick: () => go("compte-demarrer", id) }, [el("span", { class: "ico ico-play-fill" })]),
+        el("button", { title: "Réinitialiser", onclick: () => go("compte-reinitialiser", id) }, [el("span", { class: "ico ico-arrow-counter-clockwise" })]),
+        el("button", { title: "Supprimer", onclick: () => go("compte-supprimer", id) }, [el("span", { class: "ico ico-x" })]),
+      ]));
+    }
+  }
+
+  // --- POMODORO ---
+  function rendrePomodoro() {
+    const p = state.pomodoro;
+    if (!p) return;
+    const enCours = p.finMs !== null && p.finMs !== undefined;
+    const detail = p.sonne ? "Terminé !" : enCours ? "En cours" : p.resteMs < p.dureeMs ? "En pause" : "Prêt";
+    const tour = (p.seances % p.seancesAvantLongue) + (p.phase === "travail" ? 1 : 0);
+    const conteneur = document.getElementById("pomodoro-etat");
+    conteneur.replaceChildren(el("div", { class: "item" + (p.sonne ? " sonne" : "") }, [
+      el("span", { class: "grand", id: "pomodoro-reste" }, [formatDuree(resteDe(p))]),
+      el("div", { class: "texte" }, [
+        el("div", { class: "nom" }, [p.nom]),
+        el("div", { class: "detail" }, [detail + " · séance " + Math.max(1, tour) + " sur " + p.seancesAvantLongue + " · " + p.seances + " terminée" + (p.seances > 1 ? "s" : "")]),
+      ]),
+      enCours
+        ? el("button", { title: "Pause", onclick: () => go("pomodoro-pause") }, [el("span", { class: "ico ico-pause-fill" })])
+        : el("button", { title: "Démarrer", onclick: () => go("pomodoro-demarrer") }, [el("span", { class: "ico ico-play-fill" })]),
+      el("button", { title: "Passer à la phase suivante", onclick: () => go("pomodoro-passer") }, [el("span", { class: "ico ico-caret-right" })]),
+      el("button", { title: "Recommencer à la première séance", onclick: () => go("pomodoro-reinitialiser") }, [el("span", { class: "ico ico-arrow-counter-clockwise" })]),
+    ]));
+    document.getElementById("pomodoro-avant-longue").textContent = String(p.seancesAvantLongue);
+    for (const [phase, cle] of [["travail", "travailMin"], ["pause", "pauseMin"], ["longue", "longueMin"]]) {
+      const champ = document.getElementById("pomodoro-" + phase);
+      champ.min = String(p.minMinutes);
+      champ.max = String(p.maxMinutes);
+      if (document.activeElement !== champ) champ.value = String(p[cle]);
+    }
+  }
+  for (const phase of ["travail", "pause", "longue"]) {
+    const champ = document.getElementById("pomodoro-" + phase);
+    champ.addEventListener("change", () => {
+      const minutes = parseInt(champ.value, 10);
+      if (minutes > 0) go("pomodoro-duree", phase, String(minutes));
+    });
+  }
+
+  // --- CHRONOMÈTRE ---
+  function ecouleChrono() {
+    const c = state && state.chrono;
+    if (!c) return 0;
+    return c.origineMs !== null && c.origineMs !== undefined ? (Date.now() + decalage) - c.origineMs : c.accumuleMs;
+  }
+
+  function majAffichageChrono() {
+    if (!state || !state.chrono || !state.chrono.enMarche) return;
+    const aff = document.getElementById("chrono-affichage");
+    if (aff) aff.textContent = formatChrono(ecouleChrono());
+  }
+
+  function rendreChrono() {
+    const c = state.chrono;
+    if (!c) return;
+    const detail = c.enMarche ? "En cours" : c.accumuleMs > 0 ? "En pause" : "Prêt";
+    document.getElementById("chrono-etat").replaceChildren(el("div", { class: "item" }, [
+      el("span", { class: "grand", id: "chrono-affichage", style: "min-width: 150px" }, [formatChrono(ecouleChrono())]),
+      el("div", { class: "texte" }, [el("div", { class: "detail" }, [detail])]),
+      c.enMarche
+        ? el("button", { title: "Pause", onclick: () => go("chrono-pause") }, [el("span", { class: "ico ico-pause-fill" })])
+        : el("button", { title: "Démarrer", onclick: () => go("chrono-demarrer") }, [el("span", { class: "ico ico-play-fill" })]),
+      el("button", { title: "Tour", class: c.enMarche ? "" : "cache", onclick: () => go("chrono-tour") }, ["Tour"]),
+      el("button", { title: "Réinitialiser", onclick: () => go("chrono-reinitialiser") }, [el("span", { class: "ico ico-arrow-counter-clockwise" })]),
+    ]));
+    const liste = document.getElementById("liste-tours");
+    liste.replaceChildren();
+    document.getElementById("chrono-tours-titre").classList.toggle("cache", c.tours.length === 0);
+    // Le dernier tour en tête ; le « détail » est le temps DU tour (écart au
+    // précédent), le grand chiffre son temps cumulé.
+    c.tours.forEach((t, i) => {
+      const ecart = t - (i > 0 ? c.tours[i - 1] : 0);
+      liste.insertBefore(el("div", { class: "item" }, [
+        el("div", { class: "texte" }, [
+          el("div", { class: "nom" }, ["Tour " + (i + 1)]),
+          el("div", { class: "detail" }, ["+" + formatChrono(ecart)]),
+        ]),
+        el("span", { class: "grand", style: "font-size: 18px; min-width: 120px" }, [formatChrono(t)]),
+      ]), liste.firstChild);
+    });
+  }
+
+  // Les centièmes du chronomètre à chaque image tant qu'il tourne (Rust ne
+  // pousse rien pendant le décompte — `marche` est un instant fixe).
+  function boucleChrono() {
+    majAffichageChrono();
+    requestAnimationFrame(boucleChrono);
+  }
+  requestAnimationFrame(boucleChrono);
+
+  // Repeint les chiffres des comptes EN COURS — rien d'autre. Rust fera sonner
+  // le compte à son instant de fin ; la page ne décide rien.
+  function tic() {
+    if (!state) return;
+    for (const c of state.comptes) {
+      if (c.finMs === null || c.finMs === undefined) continue;
+      const span = document.querySelector(`[data-compte="${c.id}"]`);
+      if (span) span.textContent = formatDuree(resteDe(c));
+    }
+    const p = state.pomodoro;
+    const reste = document.getElementById("pomodoro-reste");
+    if (p && reste && p.finMs !== null && p.finMs !== undefined) reste.textContent = formatDuree(resteDe(p));
+    // Repli si `requestAnimationFrame` est ralenti (panneau hors écran).
+    majAffichageChrono();
+  }
+  setInterval(tic, 250);
+
+  // --- LES SONS ---
+  // `choisi` : le nom de fichier, ou null pour le son par défaut.
+  function rendreSons(conteneur, choisi, choisir) {
+    conteneur.replaceChildren();
+    conteneur.appendChild(el("button", { class: choisi ? "" : "actif", onclick: () => choisir(null) }, ["Par défaut"]));
+    for (const nom of state.sons) {
+      conteneur.appendChild(el("button", { class: nom === choisi ? "actif" : "", onclick: () => choisir(nom) }, [nom.replace(/\.[^.]+$/, "")]));
+      conteneur.appendChild(el("button", { title: "Écouter", onclick: () => go("ecouter", nom) }, [el("span", { class: "ico ico-music-note" })]));
+    }
+  }
+
+  // --- ALARMES ---
+  function rendreJoursBrouillon() {
+    const conteneur = document.getElementById("alarme-jours");
+    conteneur.replaceChildren();
+    JOURS_COURTS.forEach((lettre, i) => {
+      conteneur.appendChild(el("button", {
+        class: "jour-btn" + (brouillon.jours & (1 << i) ? " actif" : ""),
+        title: JOURS_LONGS[i],
+        onclick: () => { brouillon.jours ^= 1 << i; rendreJoursBrouillon(); },
+      }, [lettre]));
+    });
+    document.getElementById("alarme-jours-resume").textContent = resumeJours(brouillon.jours);
+  }
+
+  function rendreSonsAlarme() {
+    rendreSons(document.getElementById("sons-alarme"), brouillon.son, (nom) => { brouillon.son = nom; rendreSonsAlarme(); });
+  }
+
+  function enregistrerAlarme() {
+    const heure = document.getElementById("alarme-heure").value;
+    if (!/^\d\d:\d\d$/.test(heure)) return;
+    const nom = document.getElementById("alarme-nom").value.trim();
+    const id = brouillon.id === null ? "nouvelle" : String(brouillon.id);
+    const son = brouillon.son || "defaut";
+    if (nom) go("alarme-enregistrer", id, heure, String(brouillon.jours), son, nom);
+    else go("alarme-enregistrer", id, heure, String(brouillon.jours), son);
+    annulerEdition();
+  }
+
+  function commencerEdition(a) {
+    brouillon = { id: a.id, jours: a.jours, son: a.son || null };
+    document.getElementById("alarme-heure").value = a.heure;
+    document.getElementById("alarme-nom").value = a.nom;
+    document.getElementById("alarme-titre").textContent = "Modifier l'alarme";
+    document.getElementById("alarme-annuler").classList.remove("cache");
+    rendreJoursBrouillon();
+    rendreSonsAlarme();
+  }
+
+  function annulerEdition() {
+    brouillon = { id: null, jours: 0, son: null };
+    document.getElementById("alarme-nom").value = "";
+    document.getElementById("alarme-titre").textContent = "Nouvelle alarme";
+    document.getElementById("alarme-annuler").classList.add("cache");
+    rendreJoursBrouillon();
+    if (state) rendreSonsAlarme();
+  }
+
+  function rendreAlarmes() {
+    const liste = document.getElementById("liste-alarmes");
+    liste.replaceChildren();
+    if (state.alarmes.length === 0) {
+      liste.appendChild(el("div", { class: "vide" }, ["Aucune alarme."]));
+    }
+    for (const a of state.alarmes) {
+      const id = String(a.id);
+      const son = a.son ? " · ♪ " + a.son.replace(/\.[^.]+$/, "") : "";
+      liste.appendChild(el("div", { class: "item" + (a.sonne ? " sonne" : a.active ? "" : " eteinte") }, [
+        el("span", { class: "grand" }, [a.heure]),
+        el("div", { class: "texte" }, [
+          el("div", { class: "nom" }, [a.nom || "Alarme"]),
+          el("div", { class: "detail" }, [resumeJours(a.jours) + son]),
+        ]),
+        el("button", { class: a.active ? "actif" : "", title: a.active ? "Éteindre" : "Allumer", onclick: () => go("alarme-basculer", id) }, [a.active ? "Activée" : "Éteinte"]),
+        el("button", { title: "Modifier", onclick: () => { montrerOnglet("alarmes"); commencerEdition(a); } }, [el("span", { class: "ico ico-pencil-simple" })]),
+        el("button", { title: "Supprimer", onclick: () => go("alarme-supprimer", id) }, [el("span", { class: "ico ico-x" })]),
+      ]));
+    }
+  }
+
+  window.setState = function (next) {
+    const json = JSON.stringify(next);
+    if (json === dernierEtatJson) return;
+    // Une alarme en cours de modification qui a disparu : le brouillon
+    // viserait un identifiant mort.
+    if (brouillon.id !== null && !next.alarmes.some((a) => a.id === brouillon.id)) annulerEdition();
+    state = next;
+    decalage = state.maintenantMs - Date.now();
+    document.documentElement.style.setProperty("--text-scale", state.contentScale || 1);
+
+    const sonnerie = document.getElementById("sonnerie");
+    sonnerie.classList.toggle("cache", state.quiSonne.length === 0);
+    document.getElementById("sonnerie-noms").replaceChildren(el("span", { class: "ico ico-alarm" }), " " + state.quiSonne.join(", "));
+
+    rendreComptes();
+    rendreChrono();
+    rendreAlarmes();
+    rendrePomodoro();
+    rendreSons(document.getElementById("sons-comptes"), state.sonComptes, (nom) => go("son-comptes", nom || "defaut"));
+    rendreSonsAlarme();
+    // Marqué EN DERNIER — voir `calendar_applet.html`, même garde.
+    dernierEtatJson = json;
+  };
+
+  rendreJoursBrouillon();
+  go("ready");
+</script>
+</body>
+</html>

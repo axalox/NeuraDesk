@@ -1,0 +1,747 @@
+<!doctype html>
+<!--
+  win32::cef_clipboard (icône Presse-papiers) — reproduit en CSS le contenu
+  de win32::clipboard_viewer::build_ui : liste de l'historique à gauche
+  (miniature + aperçu), panneau de prévisualisation à droite (Sélectionner/
+  Enregistrer sous/Effacer, texte intégral ou image à sa taille réelle).
+
+  « Sélectionner » DÉPOSE l'entrée dans le presse-papiers Windows et referme
+  la fenêtre, sans envoyer la moindre touche : c'est l'utilisateur qui colle
+  ensuite, avec Ctrl+V, dans l'application qu'il veut (voir
+  win32::cef_clipboard::handle_copy, qui porte le pourquoi). Le mot est
+  employé ici au sens « choisir cette entrée pour la coller ailleurs », même
+  si la page dit déjà « sélectionnée » pour la ligne surlignée — d'où le
+  `title` du bouton, qui lève l'ambiguïté au survol.
+
+  Contrairement aux popups précédents, cette fenêtre REMPLIT la "zone
+  libre" du dock (voir app::dash_rect, comme le Dash) — sa taille change
+  PENDANT qu'elle est ouverte si les curseurs d'épaisseur de barre bougent
+  (voir win32::cef_popup::resize_if_needed, nouveau : aucun autre popup
+  n'avait encore eu besoin de se redimensionner après sa création).
+
+  Miniatures et image pleine résolution transmises en `data:image/
+  png;base64,...` (voir win32::cef_clipboard::push_state/push_full_image) —
+  la miniature arrive dans l'état initial (à l'ouverture ET à chaque
+  nouvelle entrée copiée pendant que la fenêtre est ouverte, voir
+  win32::cef_clipboard::refresh_if_visible), l'image PLEINE RÉSOLUTION est
+  chargée PARESSEUSEMENT (voir `select`, `neuradesk://clipboard/select/
+  <i>`) — seulement quand une entrée est effectivement sélectionnée, jamais
+  les 30 entrées d'un coup (une capture d'écran en pleine résolution peut
+  peser plusieurs Mo).
+
+  PAS de `background` sur `<html>`/`<body>` : transparent par défaut en
+  rendu hors-écran CEF.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<script src="menu_contextuel.js"></script>
+<style>
+  html {
+    /* Réglables en direct par window.setState (voir push_state côté Rust,
+       curseurs "Miniatures"/"Texte" — section "Taille du contenu des
+       dashs" du panneau de réglages) — DEUX variables séparées, réglables
+       indépendamment (DEMANDE EXPLICITE, voir win32::cef_dash, même
+       remarque pour --icon-scale/--label-scale) : --thumb-scale pour .row
+       img, --text-scale pour .row .preview-text/.img-label. Pas de
+       variable "conteneur" combinée ici (contrairement à --tile-scale côté
+       Dash) : .row est un simple flex row (voir la feuille de style),
+       déjà dimensionné automatiquement sur son plus grand enfant — aucun
+       des deux éléments ne peut déborder de l'autre. Ne change QUE la
+       taille du contenu des éléments de la liste, pas la fenêtre
+       elle-même. */
+    --thumb-scale: 1;
+    --text-scale: 1;
+    /* Palette du CONTENU, dérivée de l'accent de CETTE fenêtre — poussée par
+       win32::cef_popup::push_window_palette. Voir la doc de cette fonction pour
+       le pourquoi des DEUX familles, et `dash.html` pour la même déclaration
+       commentée en détail. Les valeurs par défaut sont EXACTEMENT les littéraux
+       remplacés, donc le rendu est identique tant que Rust n'a rien poussé —
+       un `var()` non déclaré rendrait au contraire la déclaration entière
+       invalide (aucun fond, pas un fond légèrement différent). */
+    --popup-fg-rgb: 255, 255, 255;
+    --popup-accent-rgb: 255, 255, 255;
+    --popup-accent-solid-rgb: 255, 255, 255;
+    --popup-on-accent-rgb: 0, 0, 0;
+    /* Multiplicateur de TRANSPARENCE des éléments — un SEUL réglage pour les
+       quatre panneaux (curseur "Opacité des éléments" de la section
+       "Transparence et flou" des Réglages, voir
+       win32::cef_popup::set_popup_alpha). Chaque alpha de ce fichier s'écrit
+       `calc(<valeur> * var(--popup-alpha))`, donc 1 = tel que conçu, et la
+       hiérarchie entre les éléments (un survol plus marqué qu'un repos) est
+       PRÉSERVÉE quel que soit le réglage. */
+    --popup-alpha: 1;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    font-family: var(--nd-police);
+    /* ⛔ LE TEXTE PLEIN SUIT AUSSI LE CURSEUR — BUG RÉEL SIGNALÉ (2026-10-23) :
+       « opacité des éléments n'agit pas sur tous les niveaux de textes ». La
+       couleur de base était un `rgb()` OPAQUE : titres, libellés et contenu
+       restaient à 100 % quand on descendait, seuls les textes déjà atténués
+       bougeaient. Elle porte maintenant `min(1, a)` ; et comme une `opacity`
+       se MULTIPLIE avec la couleur héritée, les textes atténués s'écrivent
+       `calc(k * max(1, a))` : sous 100 %, c'est la couleur qui apporte le
+       facteur (k·a, pas k·a²) ; au-dessus, l'opacité monte seule (min(1, k·a)). */
+    color: rgba(var(--popup-fg-rgb), min(1, var(--popup-alpha)));
+  }
+  .root {
+    display: flex;
+    flex-direction: column;
+    /* ⭐ **TOUTE LA PAGE SUIT LA TAILLE DES TEXTES** (Réglages › Taille des
+       textes, `--page-scale`) — DÉFAUT SIGNALÉ (2026-10-18) : seuls certains
+       textes la suivaient. `100vw`/`100vh` divisés, jamais `100%` (voir
+       `cef_popup::tests_largeur_zoomee`). */
+    zoom: var(--page-scale, 1);
+    width: calc(100vw / var(--page-scale, 1));
+    height: calc(100vh / var(--page-scale, 1));
+    box-sizing: border-box;
+  }
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    flex-shrink: 0;
+  }
+  /* ⭐ **LE CURSEUR « TEXTE » VAUT POUR TOUS LES TEXTES** — DÉFAUT SIGNALÉ
+     (2026-10-18) : « le dash presse-papier n'a pas tous ses textes qui suivent
+     la taille réglée ». Il ne réglait que les lignes de l'historique ; le titre,
+     les boutons et les intitulés le suivent aussi. Les miniatures et l'aperçu
+     d'image gardent leur propre curseur. */
+  .topbar, .list h2, .preview .actions, .preview .meta, .no-selection { zoom: var(--text-scale); }
+  .topbar h1 {
+    font-size: 20px;
+    margin: 0;
+    font-weight: 600;
+  }
+  .close-btn {
+    all: unset;
+    cursor: pointer;
+    padding: 6px 10px;
+    border-radius: var(--nd-rayon-controle);
+    font-size: 16px;
+  }
+  .close-btn:hover {
+    background: rgba(var(--popup-accent-rgb), calc(0.23 * var(--popup-fond-alpha, 1)));
+  }
+  .body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+  .list {
+    /* Largeur INITIALE seulement — voir `#splitter` plus bas, le glisser
+       la remplace par une largeur inline (`list.style.width`) une fois que
+       l'utilisateur a déplacé le séparateur au moins une fois. */
+    width: 500px;
+    flex-shrink: 0;
+    overflow-y: auto;
+    padding: 0 12px 12px;
+    box-sizing: border-box;
+  }
+  .splitter {
+    /* Séparateur glissable entre l'historique et la zone de visualisation
+       (DEMANDE EXPLICITE) — voir le script plus bas pour la logique de
+       glisser-déposer (`mousedown`/`mousemove`/`mouseup` sur `document`,
+       pas seulement sur `.splitter`, pour continuer à suivre la souris même
+       si le curseur sort de la fine bande de 6px pendant le geste).
+       `flex-shrink: 0` : ne doit jamais rétrécir pour laisser de la place
+       à `.list`/`.preview`, contrairement à `.preview` (`flex: 1`).
+       La bande de 6px reste une zone de préhension généreuse, mais SEUL le
+       trait `::before` (2px, centré) porte l'aspect visuel — DEMANDE
+       EXPLICITE après un premier essai à 0.08 jugé "presque invisible" ;
+       même principe que `hr` dans assets/popups/sound.html (trait fin mais
+       net), pas une bande pleine qui alourdirait la mise en page au repos. */
+    width: 6px;
+    flex-shrink: 0;
+    cursor: col-resize;
+    position: relative;
+    background: transparent;
+  }
+  .splitter::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 2px;
+    transform: translateX(-50%);
+    border-radius: 1px;
+    background: rgba(var(--popup-accent-rgb), calc(0.35 * var(--popup-fond-alpha, 1)));
+  }
+  .splitter:hover,
+  .splitter.dragging {
+    background: rgba(var(--popup-accent-rgb), calc(0.18 * var(--popup-fond-alpha, 1)));
+  }
+  .splitter:hover::before,
+  .splitter.dragging::before {
+    background: rgba(var(--popup-accent-rgb), calc(0.65 * var(--popup-fond-alpha, 1)));
+  }
+  .list h2 {
+    font-size: 14px;
+    opacity: calc(0.8 * max(1, var(--popup-alpha)));
+    margin: 4px 0 8px;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    margin-bottom: 6px;
+  }
+  .row:hover {
+    background: rgba(var(--popup-accent-rgb), calc(0.18 * var(--popup-fond-alpha, 1)));
+  }
+  .row.selected {
+    background: rgba(var(--popup-accent-rgb), calc(0.22 * var(--popup-fond-alpha, 1)));
+  }
+  .row img {
+    /* 2× la taille d'origine (84px) — DEMANDE EXPLICITE. La rangée
+       (`.row`) et la liste (`.list`, largeur fixe + overflow-y:auto)
+       s'adaptent en hauteur autour de l'image ; la fenêtre du dash
+       elle-même (voir app::dash_rect) ne change pas de taille. */
+    width: calc(168px * var(--thumb-scale));
+    height: calc(168px * var(--thumb-scale));
+    object-fit: contain;
+    border-radius: var(--nd-rayon-petit);
+    background: rgba(0, 0, 0, calc(0.2 * var(--popup-fond-alpha, 1)));
+    flex-shrink: 0;
+  }
+  .row .preview-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: calc(84px * var(--text-scale));
+    overflow: hidden;
+    font-size: calc(13px * var(--text-scale));
+  }
+  .row .img-label {
+    font-size: calc(13px * var(--text-scale));
+    opacity: calc(0.85 * max(1, var(--popup-alpha)));
+  }
+  .empty {
+    padding: 16px;
+    opacity: calc(0.7 * max(1, var(--popup-alpha)));
+  }
+  .preview {
+    flex: 1;
+    min-width: 0;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+  }
+  .preview .actions {
+    display: flex;
+    /* ⚠️ LES BOUTONS SONT MAINTENANT QUATRE POUR UNE IMAGE (« Reconnaître le
+       texte » s'ajoute aux trois autres) : sans retour à la ligne, ils
+       débordaient de la colonne d'aperçu, qui n'a pas de défilement
+       horizontal. */
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+    flex-shrink: 0;
+  }
+  .preview button.action {
+    all: unset;
+    cursor: pointer;
+    padding: 8px 14px;
+    border-radius: var(--nd-rayon-surface);
+    background: rgba(var(--popup-accent-rgb), calc(0.2 * var(--popup-fond-alpha, 1)));
+  }
+  .preview button.action:hover {
+    background: rgba(var(--popup-accent-rgb), calc(0.22 * var(--popup-fond-alpha, 1)));
+  }
+  .preview .content {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+  .preview textarea {
+    flex: 1;
+    resize: none;
+    background: transparent;
+    color: rgba(var(--popup-fg-rgb), min(1, var(--popup-alpha)));
+    border: none;
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: calc(14px * var(--text-scale));
+    outline: none;
+  }
+  .preview .image-wrap {
+    flex: 1;
+    /* Positionnée : `offsetLeft`/`offsetTop` de l'image s'y mesurent (zoom). */
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .preview .image-wrap img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    /* LE ZOOM À LA MOLETTE (voir `zoomImage`) : agrandie depuis son coin. */
+    transform-origin: 0 0;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+  .preview .image-wrap.zoomee { cursor: grab; }
+  .preview .image-wrap.glisse { cursor: grabbing; }
+  /* ⭐ LE QR CODE d'un texte (voir `win32::qr`) : noir sur blanc, EN DUR. */
+  .preview .qr {
+    align-self: center;
+    margin-top: 10px;
+    width: 220px;
+    height: 220px;
+    flex-shrink: 0;
+  }
+  .preview .qr svg { width: 100%; height: 100%; display: block; }
+  /* ⭐ LE GÉNÉRATEUR DE MOTS DE PASSE */
+  .mdp { display: flex; flex-direction: column; gap: 10px; }
+  .mdp .valeur {
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: calc(18px * var(--text-scale));
+    word-break: break-all;
+    padding: 10px 12px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-fg-rgb), calc(0.08 * var(--popup-fond-alpha, 1)));
+    user-select: all;
+  }
+  .mdp label { display: flex; align-items: center; gap: 8px; }
+  .mdp input[type="range"] { flex: 1; max-width: 260px; accent-color: rgb(var(--popup-accent-solid-rgb)); }
+  .preview .meta {
+    font-size: 12px;
+    opacity: calc(0.7 * max(1, var(--popup-alpha)));
+    margin-top: 6px;
+    flex-shrink: 0;
+  }
+  .no-selection {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: calc(0.6 * max(1, var(--popup-alpha)));
+  }
+</style>
+</head>
+<body>
+  <div class="root">
+    <div class="topbar">
+      <h1>Presse-papiers</h1>
+      <span style="flex: 1"></span>
+      <button class="close-btn" id="bouton-mdp" onclick="basculerMotDePasse()" title="Générer un mot de passe">Mot de passe</button>
+      <button class="close-btn" onclick="go('close')" title="Fermer"><span class="ico ico-x"></span></button>
+    </div>
+    <div class="body">
+      <div class="list" id="list"></div>
+      <div class="splitter" id="splitter"></div>
+      <div class="preview" id="preview"></div>
+    </div>
+  </div>
+  <script>
+    function go(...segments) {
+      location.href = "neuradesk://clipboard/" + segments.map(encodeURIComponent).join("/");
+    }
+
+    function el(tag, attrs, children) {
+      const node = document.createElement(tag);
+      for (const [key, value] of Object.entries(attrs || {})) {
+        if (key === "class") node.className = value;
+        // ⛔ **TOUT `on…` PASSE PAR `addEventListener`.** Ce helper ne traitait que
+        // `onclick`, et renvoyait tout le reste à `setAttribute` — donc
+        // `onchange: (e) => …` devenait une CHAÎNE jamais exécutée. Corrigé ici AVANT
+        // d'en avoir besoin : ce défaut a frappé deux fois le 2026-09-24 (`notes.html`,
+        // puis `settings.html` où il a tué les deux sélecteurs de son des rappels), et
+        // chaque fois parce que le correctif avait été appliqué LÀ OÙ IL S'ÉTAIT
+        // MANIFESTÉ, pas à la classe.
+        else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+        else node.setAttribute(key, value);
+      }
+      for (const child of children || []) {
+        node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+      }
+      return node;
+    }
+
+    // Glisser-déposer du séparateur `.splitter` (voir sa doc CSS) — redimensionne
+    // `.list` en écoutant `mousemove`/`mouseup` sur `document` plutôt que sur le
+    // séparateur lui-même, sinon le glisser s'interrompt dès que le curseur
+    // quitte la bande de 6px (cas fréquent vu la vitesse de la souris). Largeurs
+    // mini des deux côtés pour éviter d'écraser complètement l'un ou l'autre.
+    const MIN_LIST_WIDTH = 260;
+    const MIN_PREVIEW_WIDTH = 260;
+    (function setupSplitter() {
+      const splitter = document.getElementById("splitter");
+      const list = document.getElementById("list");
+      const body = document.querySelector(".body");
+
+      function clampListWidth(width) {
+        const maxWidth = body.getBoundingClientRect().width - splitter.offsetWidth - MIN_PREVIEW_WIDTH;
+        return Math.min(Math.max(width, MIN_LIST_WIDTH), Math.max(maxWidth, MIN_LIST_WIDTH));
+      }
+
+      splitter.addEventListener("mousedown", (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        splitter.classList.add("dragging");
+        // Évite la sélection de texte parasite dans `.list`/`.preview`
+        // pendant le glisser (comportement par défaut du navigateur sinon).
+        document.body.style.userSelect = "none";
+
+        function onMove(moveEvent) {
+          const bodyLeft = body.getBoundingClientRect().left;
+          list.style.width = `${clampListWidth(moveEvent.clientX - bodyLeft)}px`;
+        }
+        function onUp() {
+          splitter.classList.remove("dragging");
+          document.body.style.userSelect = "";
+          document.removeEventListener("mousemove", onMove);
+          document.removeEventListener("mouseup", onUp);
+        }
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+      });
+
+      // Le popup presse-papiers peut se redimensionner PENDANT qu'il est
+      // ouvert (voir la doc d'en-tête, `win32::cef_popup::resize_if_needed`,
+      // unique parmi les popups) — reclamp au cas où `.list` déborderait de
+      // la nouvelle largeur disponible après un rétrécissement.
+      window.addEventListener("resize", () => {
+        const current = list.getBoundingClientRect().width;
+        list.style.width = `${clampListWidth(current)}px`;
+      });
+    })();
+
+    let entries = [];
+    let selected = 0;
+    // index -> data URI pleine résolution, remplie paresseusement par
+    // `window.setFullImage` (voir `select` ci-dessous) — vidée à chaque
+    // `window.setState` (une nouvelle entrée a pu tout décaler).
+    const fullImages = {};
+
+    function select(index) {
+      selected = index;
+      go("select", index);
+      renderList();
+      renderPreview();
+    }
+
+    function renderList() {
+      const list = document.getElementById("list");
+      list.replaceChildren();
+      list.appendChild(el("h2", {}, ["Historique"]));
+      if (entries.length === 0) {
+        list.appendChild(el("div", { class: "empty" }, ["Presse-papiers vide"]));
+        return;
+      }
+      for (const entry of entries) {
+        const row = el("div", { class: "row" + (entry.index === selected ? " selected" : ""), onclick: () => select(entry.index) });
+        if (entry.kind === "image") {
+          row.appendChild(el("img", { src: entry.thumbDataUri || "" }));
+          row.appendChild(el("div", { class: "img-label" }, [`Image ${entry.width}×${entry.height}`]));
+        } else {
+          row.appendChild(el("div", { class: "preview-text" }, [entry.text]));
+        }
+        list.appendChild(row);
+      }
+    }
+
+    // ---- LE ZOOM DE L'IMAGE (molette) ----
+    // DEMANDE (2026-10-24) : « zoomer sur les images de la zone de visualisation
+    // du presse-papiers avec la molette ». `k` : le facteur ; `x`, `y` : le coin de
+    // l'image agrandie dans la zone, en pixels de la zone. Gardé par ENTRÉE :
+    // `renderPreview` reconstruit l'image (pleine résolution qui arrive, nouvel
+    // état), le zoom doit y survivre ; une autre entrée repart à la vue entière.
+    const ZOOM_MAX = 10;
+    let zoomImage = { index: -1, k: 1, x: 0, y: 0 };
+
+    /// Le coin borné : plus petite que la zone, l'image est centrée ; plus
+    /// grande, elle la couvre sans laisser de vide.
+    function borneZoom(z, zone, l, h) {
+      const axe = (pos, taille, place) => taille <= place ? (place - taille) / 2 : Math.min(0, Math.max(place - taille, pos));
+      return { ...z, x: axe(z.x, l * z.k, zone.clientWidth), y: axe(z.y, h * z.k, zone.clientHeight) };
+    }
+
+    /// Pose la transformation : l'image garde sa place de mise en page
+    /// (`offsetLeft`/`offsetTop`), on la déplace vers le coin voulu.
+    function appliquerZoom(zone, img) {
+      if (!img.offsetWidth) return;
+      if (zoomImage.k <= 1) {
+        img.style.transform = "";
+        zone.classList.remove("zoomee");
+        return;
+      }
+      zoomImage = borneZoom(zoomImage, zone, img.offsetWidth, img.offsetHeight);
+      const dx = zoomImage.x - img.offsetLeft, dy = zoomImage.y - img.offsetTop;
+      img.style.transform = `translate(${dx}px, ${dy}px) scale(${zoomImage.k})`;
+      zone.classList.add("zoomee");
+    }
+
+    function brancherZoom(zone, img, index) {
+      if (zoomImage.index !== index) zoomImage = { index, k: 1, x: 0, y: 0 };
+      img.addEventListener("load", () => appliquerZoom(zone, img));
+      // Les pixels de la zone, `zoom` CSS de la page compris.
+      const versZone = (e) => {
+        const r = zone.getBoundingClientRect();
+        const echelle = r.width / zone.clientWidth || 1;
+        return [(e.clientX - r.left) / echelle, (e.clientY - r.top) / echelle];
+      };
+      zone.addEventListener("wheel", (e) => {
+        if (!img.offsetWidth) return;
+        e.preventDefault();
+        const [mx, my] = versZone(e);
+        const { k } = zoomImage;
+        // Au repos, le coin est celui de la mise en page.
+        const x0 = k <= 1 ? img.offsetLeft : zoomImage.x, y0 = k <= 1 ? img.offsetTop : zoomImage.y;
+        const k2 = Math.max(1, Math.min(ZOOM_MAX, k * Math.exp(-e.deltaY * 0.0015)));
+        // Le point sous le curseur ne bouge pas.
+        zoomImage = { index, k: k2, x: mx - (mx - x0) * k2 / k, y: my - (my - y0) * k2 / k };
+        appliquerZoom(zone, img);
+      }, { passive: false });
+      zone.addEventListener("dblclick", () => {
+        zoomImage = { index, k: 1, x: 0, y: 0 };
+        appliquerZoom(zone, img);
+      });
+      let prise = null;
+      zone.addEventListener("pointerdown", (e) => {
+        if (zoomImage.k <= 1 || e.button !== 0) return;
+        const [mx, my] = versZone(e);
+        prise = { mx, my, x: zoomImage.x, y: zoomImage.y };
+        zone.setPointerCapture(e.pointerId);
+        zone.classList.add("glisse");
+      });
+      zone.addEventListener("pointermove", (e) => {
+        if (!prise) return;
+        const [mx, my] = versZone(e);
+        zoomImage = { ...zoomImage, x: prise.x + mx - prise.mx, y: prise.y + my - prise.my };
+        appliquerZoom(zone, img);
+      });
+      const lacher = () => { prise = null; zone.classList.remove("glisse"); };
+      zone.addEventListener("pointerup", lacher);
+      zone.addEventListener("pointercancel", lacher);
+      // Le panneau change de taille : le coin est reborné.
+      new ResizeObserver(() => appliquerZoom(zone, img)).observe(zone);
+    }
+
+    // ⭐ LES QR CODES, par entrée — `{ svg }` ou `{ erreur }` (voir `win32::qr`).
+    const qrs = {};
+    window.setQr = function (index, reponse) {
+      qrs[index] = reponse;
+      if (selected === index) renderPreview();
+    };
+
+    // ⭐ LE GÉNÉRATEUR DE MOTS DE PASSE — DEMANDE EXPLICITE (2026-10-24).
+    // Tiré par `crypto.getRandomValues` (le générateur cryptographique du
+    // navigateur), sans biais de modulo (tirage rejeté au-delà du dernier
+    // multiple). Rien n'est envoyé à Rust avant « Copier », qui copie HORS de
+    // tout historique (voir `clipboard::write_secret`).
+    const mdp = { ouvert: false, longueur: 20, majuscules: true, chiffres: true, symboles: true, valeur: "", copie: null };
+    const MINUSCULES = "abcdefghijkmnopqrstuvwxyz";
+    const MAJUSCULES = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+    const CHIFFRES = "23456789";
+    const SYMBOLES = "!#$%&*+-=?@^_~";
+    function tirage(n) {
+      const limite = Math.floor(0x100000000 / n) * n;
+      const u = new Uint32Array(1);
+      do { crypto.getRandomValues(u); } while (u[0] >= limite);
+      return u[0] % n;
+    }
+    function genererMotDePasse() {
+      const classes = [MINUSCULES];
+      if (mdp.majuscules) classes.push(MAJUSCULES);
+      if (mdp.chiffres) classes.push(CHIFFRES);
+      if (mdp.symboles) classes.push(SYMBOLES);
+      const alphabet = classes.join("");
+      // Au moins un caractère de CHAQUE famille choisie : on retire jusqu'à
+      // l'obtenir (la probabilité d'échec est infime au-delà de 8 caractères).
+      for (;;) {
+        let v = "";
+        for (let i = 0; i < mdp.longueur; i++) v += alphabet[tirage(alphabet.length)];
+        if (classes.every((c) => [...v].some((x) => c.includes(x)))) { mdp.valeur = v; break; }
+      }
+      mdp.copie = null;
+    }
+    function basculerMotDePasse() {
+      mdp.ouvert = !mdp.ouvert;
+      if (mdp.ouvert && !mdp.valeur) genererMotDePasse();
+      document.getElementById("bouton-mdp").classList.toggle("actif", mdp.ouvert);
+      renderPreview();
+    }
+    window.motDePasseCopie = function (ok) {
+      mdp.copie = ok;
+      renderPreview();
+    };
+    function renderMotDePasse(preview) {
+      const boite = el("div", { class: "mdp" }, [el("h2", {}, ["Générateur de mots de passe"])]);
+      boite.appendChild(el("div", { class: "valeur" }, [mdp.valeur]));
+      const longueur = el("input", { type: "range", min: "8", max: "64", value: String(mdp.longueur) });
+      const nombre = el("span", {}, [String(mdp.longueur)]);
+      longueur.addEventListener("input", () => { mdp.longueur = Number(longueur.value); nombre.textContent = longueur.value; });
+      longueur.addEventListener("change", () => { genererMotDePasse(); renderPreview(); });
+      boite.appendChild(el("label", {}, ["Longueur", longueur, nombre]));
+      for (const [cle, libelle] of [["majuscules", "Majuscules"], ["chiffres", "Chiffres"], ["symboles", "Symboles"]]) {
+        const caseACocher = el("input", { type: "checkbox" });
+        caseACocher.checked = mdp[cle];
+        caseACocher.addEventListener("change", () => { mdp[cle] = caseACocher.checked; genererMotDePasse(); renderPreview(); });
+        boite.appendChild(el("label", {}, [caseACocher, libelle]));
+      }
+      boite.appendChild(el("div", { class: "actions" }, [
+        el("button", { class: "action", onclick: () => { genererMotDePasse(); renderPreview(); } }, ["Nouveau"]),
+        el("button", { class: "action", onclick: () => go("mot-de-passe", mdp.valeur) }, ["Copier"]),
+        el("button", { class: "action", onclick: basculerMotDePasse }, ["Fermer"]),
+      ]));
+      const note = mdp.copie === true
+        ? "Copié — sans entrer dans l'historique du presse-papiers (ni celui-ci, ni celui de Windows)."
+        : mdp.copie === false
+          ? "La copie a échoué : une autre application tient le presse-papiers. Réessayez."
+          : "Ambigus écartés (l, 1, I, O, 0). « Copier » ne garde le mot de passe dans aucun historique.";
+      boite.appendChild(el("div", { class: "meta" }, [note]));
+      preview.appendChild(boite);
+    }
+
+    function renderPreview() {
+      const preview = document.getElementById("preview");
+      preview.replaceChildren();
+      if (mdp.ouvert) {
+        renderMotDePasse(preview);
+        return;
+      }
+      const entry = entries.find((e) => e.index === selected);
+      if (!entry) {
+        preview.appendChild(el("div", { class: "no-selection" }, ["Aucune entrée sélectionnée"]));
+        return;
+      }
+
+      const actions = el("div", { class: "actions" }, [
+        // « Sélectionner » (et non « Coller ») : ce bouton ne colle RIEN, il
+        // met l'entrée dans le presse-papiers Windows et referme la fenêtre.
+        // Le `title` porte la précision que le mot seul ne donne pas, la page
+        // appelant déjà « sélectionnée » la ligne surlignée à gauche.
+        el("button", {
+          class: "action",
+          title: "Mettre cette entrée dans le presse-papiers Windows et revenir à l'application précédente (Ctrl+V pour coller)",
+          onclick: () => go("copy", entry.index),
+        }, ["Sélectionner"]),
+        el("button", { class: "action", onclick: () => go("save", entry.index) }, ["Enregistrer sous…"]),
+        el("button", { class: "action", onclick: () => go("delete", entry.index) }, ["Effacer"]),
+      ]);
+      if (entry.kind === "text") {
+        actions.appendChild(el("button", {
+          class: "action",
+          title: "Afficher ce texte en QR code, pour le lire avec un téléphone",
+          onclick: () => {
+            if (qrs[entry.index]) { delete qrs[entry.index]; renderPreview(); } else go("qr", entry.index);
+          },
+        }, [qrs[entry.index] ? "Masquer le QR code" : "QR code"]));
+      } else {
+        // ⭐ LE TEXTE DE L'IMAGE (demande 2026-11-04) : le moteur se CHOISIT.
+        // Le menu est celui du clic droit (`menu_contextuel.js`), ouvert ici par
+        // un bouton : même apparence que les menus de l'application, et deux
+        // moteurs qui tiennent dans une ligne d'actions déjà chargée.
+        actions.appendChild(el("button", {
+          class: "action",
+          title: "Reconnaître le texte de l'image — avec NAPS2 (en local) ou Copilot",
+          onclick: (e) => menuContextuel.ouvrir(e, [
+            { texte: "Reconnaître avec NAPS2", action: () => go("texte", entry.index, "tesseract") },
+            { texte: "Reconnaître avec Copilot", action: () => go("texte", entry.index, "windows") },
+          ]),
+        }, ["Reconnaître le texte"]));
+        // ⭐ UN QUART DE TOUR (demande 2026-11-08) : l'entrée est remplacée par
+        // l'image tournée (`cef_clipboard::handle_pivoter`).
+        actions.appendChild(el("button", {
+          class: "action",
+          title: "Pivoter l'image d'un quart de tour à gauche",
+          onclick: () => go("pivoter", entry.index, "gauche"),
+        }, ["↺"]));
+        actions.appendChild(el("button", {
+          class: "action",
+          title: "Pivoter l'image d'un quart de tour à droite",
+          onclick: () => go("pivoter", entry.index, "droite"),
+        }, ["↻"]));
+      }
+      preview.appendChild(actions);
+
+      if (entry.kind === "text") {
+        const content = el("div", { class: "content" });
+        // `readonly` (pas de saisie possible ici — le contenu vient du
+        // presse-papiers, pas d'édition dans ce visualiseur, voir
+        // win32::clipboard_viewer::build_ui, même principe côté egui) mais
+        // un vrai <textarea> plutôt qu'un simple <div> : reste sélectionnable/
+        // copiable au clavier/souris, avec sa propre barre de défilement.
+        const textarea = el("textarea", { readonly: "readonly" }, []);
+        textarea.value = entry.text;
+        content.appendChild(textarea);
+        preview.appendChild(content);
+        const qr = qrs[entry.index];
+        if (qr && qr.svg) {
+          // Le SVG vient de Rust (`win32::qr`), jamais du texte de l'entrée :
+          // il ne contient que des tracés.
+          const image = el("div", { class: "qr" });
+          image.innerHTML = qr.svg;
+          preview.appendChild(image);
+        } else if (qr && qr.erreur) {
+          preview.appendChild(el("div", { class: "meta" }, [qr.erreur]));
+        }
+        const count = [...entry.text].length;
+        preview.appendChild(el("div", { class: "meta" }, [`${count} caractère${count > 1 ? "s" : ""}`]));
+      } else {
+        const wrap = el("div", { class: "image-wrap" });
+        // Miniature en attendant l'image pleine résolution (voir
+        // `window.setFullImage`) — jamais agrandie au-delà de sa taille
+        // réelle une fois chargée : `max-width/max-height:100%` sur
+        // `.image-wrap img` (voir la feuille de style) ne fait QUE réduire
+        // une image trop grande pour l'espace disponible, jamais grandir
+        // une image plus petite — même garantie que la version egui
+        // d'origine, sans calcul manuel de mise à l'échelle.
+        const img = el("img", { src: fullImages[entry.index] || entry.thumbDataUri || "" });
+        wrap.title = "Molette : zoomer · glisser : se déplacer · double-clic : vue entière";
+        wrap.appendChild(img);
+        preview.appendChild(wrap);
+        brancherZoom(wrap, img, entry.index);
+        preview.appendChild(el("div", { class: "meta" }, [`${entry.width}×${entry.height}`]));
+      }
+    }
+
+    // Appelée depuis Rust (win32::cef_clipboard::push_state) — à
+    // l'ouverture ET à chaque nouvelle entrée copiée pendant que la fenêtre
+    // reste ouverte (voir la doc d'en-tête).
+    window.setState = function (state) {
+      entries = state.entries;
+      for (const key of Object.keys(fullImages)) delete fullImages[key];
+      // Les index se décalent à chaque nouvelle entrée : un QR gardé désignerait
+      // une AUTRE entrée.
+      for (const key of Object.keys(qrs)) delete qrs[key];
+      if (!entries.some((e) => e.index === selected)) {
+        selected = entries.length > 0 ? entries[0].index : 0;
+      }
+      // Voir --thumb-scale/--text-scale (en-tête <style>) et win32::
+      // cef_clipboard::push_state — curseurs "Miniatures"/"Texte" du
+      // panneau de réglages.
+      const root = document.documentElement.style;
+      root.setProperty("--thumb-scale", state.thumbScalePercent / 100);
+      root.setProperty("--text-scale", state.textScalePercent / 100);
+      root.setProperty("--page-scale", state.pageScale ?? 1);
+      renderList();
+      renderPreview();
+    };
+
+    // Appelée depuis Rust (win32::cef_clipboard::dispatch_actions, réponse
+    // paresseuse à `select`) — image PLEINE RÉSOLUTION d'UNE entrée
+    // précise, voir la doc d'en-tête.
+    window.setFullImage = function (index, dataUri) {
+      fullImages[index] = dataUri;
+      if (selected === index) {
+        renderPreview();
+      }
+    };
+
+    renderList();
+    renderPreview();
+  </script>
+</body>
+</html>

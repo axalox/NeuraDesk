@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<!--
+  LA CALCULATRICE (voir `win32::cef_calculatrice`, qui porte la liste des
+  actions, et `win32::calculatrice`, l'évaluateur et l'historique).
+
+  ÉTAT REÇU (window.setState) :
+    { historique: [{ expression, resultat }]  — le plus récent en premier,
+      angle: "deg" | "rad",
+      dernier: { numero, expression, resultat, erreur } | null,
+      contentScale }
+
+  ⚠️ **LA PAGE N'ÉVALUE RIEN** : « = » envoie le champ tel qu'écrit, et le
+  résultat revient dans `dernier`. La page ne l'applique que lorsque son
+  `numero` CHANGE — et jamais au premier état reçu, qui décrit un calcul d'une
+  ouverture précédente.
+
+  ⚠️ **LE CHAMP EST STATIQUE** : seule la liste de l'historique est
+  reconstruite. Les touches du pavé ne prennent pas le focus (`mousedown`
+  annulé) : le curseur reste dans le champ, et une touche s'insère À SA PLACE.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<script src="menu_contextuel.js"></script>
+<style>
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    overflow-y: auto;
+    /* Même grossissement que le calendrier : `zoom` seul, jamais multiplié
+       dans une taille (voir l'en-tête de `calendar_applet.html`). */
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    min-height: calc(100vh / var(--text-scale));
+  }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 6px; }
+  h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  h2 { margin: 0 0 6px; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; opacity: calc(.65 * max(1, var(--popup-alpha, 1))); }
+  button {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 5px 10px;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  button.actif { background: rgb(var(--popup-accent-solid-rgb)); }
+  .close-btn { background: none; font-size: 16px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+  .close-btn:hover { background: none; opacity: 1; }
+  .cache { display: none !important; }
+
+  main { display: flex; flex-wrap: wrap; gap: 18px; padding: 0 16px 16px; align-items: flex-start; }
+  #calcul { flex: 0 1 380px; min-width: 280px; }
+  #cote { flex: 1 1 260px; min-width: 220px; }
+
+  /* ---- L'AFFICHAGE ---- */
+  #ecran {
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.06 * var(--popup-fond-alpha, 1)));
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.15 * var(--popup-fond-alpha, 1)));
+    border-radius: var(--nd-rayon-controle);
+    padding: 8px 10px;
+    margin-bottom: 8px;
+  }
+  #rappel { min-height: 18px; font-size: 13px; opacity: calc(.6 * max(1, var(--popup-alpha, 1))); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #champ {
+    width: 100%;
+    box-sizing: border-box;
+    background: none;
+    border: none;
+    outline: none;
+    color: inherit;
+    font: inherit;
+    font-size: 26px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    padding: 2px 0;
+  }
+  #message { min-height: 18px; font-size: 13px; text-align: right; }
+  #message.erreur { color: rgb(255, 130, 120); }
+
+  .ligne { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+  .ligne .pousse { flex: 1 1 auto; }
+
+  /* ---- LE PAVÉ ---- */
+  #pave { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; }
+  #pave button { padding: 9px 0; font-size: 15px; font-variant-numeric: tabular-nums; }
+  #pave button.chiffre { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.10 * var(--popup-fond-alpha, 1))); font-size: 17px; }
+  #pave button.chiffre:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.18 * var(--popup-fond-alpha, 1))); }
+  #pave button.fonction { font-size: 13px; opacity: calc(.9 * max(1, var(--popup-alpha, 1))); }
+  #pave button.egal { background: rgb(var(--popup-accent-solid-rgb)); grid-row: span 2; font-size: 20px; }
+  #pave button.large { grid-column: span 2; }
+
+  /* ---- L'HISTORIQUE ---- */
+  #historique { max-height: 70vh; overflow-y: auto; }
+  .entree {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 4px 4px 8px;
+    margin-bottom: 4px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-accent-rgb), calc(0.14 * var(--popup-fond-alpha, 1)));
+  }
+  .entree .texte { flex: 1 1 auto; min-width: 0; text-align: right; }
+  .entree .expression, .entree .resultat {
+    display: block;
+    width: 100%;
+    background: none;
+    padding: 1px 4px;
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .entree .expression { font-size: 12px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); }
+  .entree .resultat { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .entree .expression:hover, .entree .resultat:hover { background: rgba(var(--popup-accent-rgb), calc(0.35 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  .entree .suppr { background: none; opacity: calc(.5 * max(1, var(--popup-alpha, 1))); padding: 4px 6px; }
+  .entree .suppr:hover { background: none; opacity: 1; }
+  .vide { opacity: calc(.55 * max(1, var(--popup-alpha, 1))); font-style: italic; }
+  .aide { font-size: 12px; opacity: calc(.55 * max(1, var(--popup-alpha, 1))); margin-top: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Calculatrice</h1>
+  <button class="close-btn" onclick="go('close')" title="Fermer (Échap sur un champ vide)"><span class="ico ico-x"></span></button>
+</header>
+
+<main>
+  <section id="calcul">
+    <div id="ecran">
+      <div id="rappel"></div>
+      <input id="champ" type="text" spellcheck="false" autocomplete="off" placeholder="0">
+      <div id="message"></div>
+    </div>
+    <div class="ligne">
+      <button id="angle-deg" title="Angles en degrés">DEG</button>
+      <button id="angle-rad" title="Angles en radians">RAD</button>
+      <span class="pousse"></span>
+    </div>
+    <!-- Rempli par le script à partir de TOUCHES. -->
+    <div id="pave"></div>
+    <div class="aide">Entrée calcule · Échap efface · un clic dans l'historique réinsère le calcul ou le résultat</div>
+    <div class="aide">Conversions : « 12 in en cm », « 90 km/h en m/s », « 100 °C en °F », « 1 Gio en Mo », « 100 € en $ » (taux BCE du jour)</div>
+  </section>
+
+  <section id="cote">
+    <div class="ligne">
+      <h2 class="pousse" style="margin: 0">Historique</h2>
+      <button id="vider" onclick="go('historique-vider')" title="Effacer tout l'historique">Effacer</button>
+    </div>
+    <div id="historique"></div>
+  </section>
+</main>
+
+<script>
+  // `el` et `go` — MÊMES HELPERS que les autres pages du dépôt (voir
+  // `calendar_applet.html`) : tout `on…` passe par `addEventListener`.
+  function el(tag, attrs, children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (key === "class") node.className = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value);
+    }
+    for (const child of children || []) {
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+    return node;
+  }
+
+  // Segments ENCODÉS un par un — le « / » d'une division ne doit pas changer
+  // l'arité de l'action.
+  function go(...segments) {
+    location.href = "neuradesk://calculatrice/" + segments.map(encodeURIComponent).join("/");
+  }
+
+  const champ = document.getElementById("champ");
+  const rappel = document.getElementById("rappel");
+  const message = document.getElementById("message");
+
+  // [étiquette, texte inséré | action, classe, titre]. Un texte qui CONTINUE
+  // un résultat (opérateur, suffixe) s'y ajoute ; tout autre le remplace.
+  const TOUCHES = [
+    ["sin", "sin(", "fonction", "Sinus"], ["cos", "cos(", "fonction", "Cosinus"], ["tan", "tan(", "fonction", "Tangente"],
+    ["ln", "ln(", "fonction", "Logarithme népérien"], ["log", "log(", "fonction", "Logarithme décimal"],
+    ["√", "√(", "fonction", "Racine carrée"], ["x²", "²", "fonction", "Carré"], ["xʸ", "^", "fonction", "Puissance"],
+    ["n!", "!", "fonction", "Factorielle"], ["π", "π", "fonction", "Pi"],
+    ["(", "(", "", "Parenthèse ouvrante"], [")", ")", "", "Parenthèse fermante"], ["%", "%", "", "Pour cent — 200 + 10 % = 220"],
+    ["C", effacer, "", "Tout effacer (Échap)"], ["⌫", reculer, "", "Effacer le dernier caractère"],
+    ["7", "7", "chiffre"], ["8", "8", "chiffre"], ["9", "9", "chiffre"], ["÷", "÷", "", "Diviser"], ["e", "e", "fonction", "Constante e"],
+    ["4", "4", "chiffre"], ["5", "5", "chiffre"], ["6", "6", "chiffre"], ["×", "×", "", "Multiplier"],
+    ["Ans", "ans", "fonction", "Le dernier résultat"],
+    ["1", "1", "chiffre"], ["2", "2", "chiffre"], ["3", "3", "chiffre"], ["−", "−", "", "Soustraire"],
+    ["=", calculer, "egal", "Calculer (Entrée)"],
+    ["0", "0", "chiffre large"], [",", ",", "chiffre", "Virgule"], ["+", "+", "", "Additionner"],
+  ];
+  const CONTINUE = new Set(["+", "−", "×", "÷", "^", "²", "!", "%"]);
+
+  // Vrai tant que le champ montre le résultat d'un « = » que l'utilisateur
+  // n'a pas encore touché.
+  let resultatAffiche = false;
+
+  function inserer(texte) {
+    if (resultatAffiche && !CONTINUE.has(texte)) champ.value = "";
+    resultatAffiche = false;
+    const debut = champ.selectionStart ?? champ.value.length;
+    const fin = champ.selectionEnd ?? champ.value.length;
+    champ.value = champ.value.slice(0, debut) + texte + champ.value.slice(fin);
+    champ.focus();
+    champ.setSelectionRange(debut + texte.length, debut + texte.length);
+    message.textContent = "";
+    message.className = "";
+  }
+
+  function effacer() {
+    champ.value = "";
+    rappel.textContent = "";
+    message.textContent = "";
+    message.className = "";
+    resultatAffiche = false;
+    champ.focus();
+  }
+
+  function reculer() {
+    resultatAffiche = false;
+    const debut = champ.selectionStart ?? champ.value.length;
+    const fin = champ.selectionEnd ?? champ.value.length;
+    if (debut !== fin) {
+      champ.value = champ.value.slice(0, debut) + champ.value.slice(fin);
+      champ.setSelectionRange(debut, debut);
+    } else if (debut > 0) {
+      champ.value = champ.value.slice(0, debut - 1) + champ.value.slice(debut);
+      champ.setSelectionRange(debut - 1, debut - 1);
+    }
+    champ.focus();
+  }
+
+  function calculer() {
+    const expression = champ.value.trim();
+    if (expression) go("calculer", expression);
+    champ.focus();
+  }
+
+  const pave = document.getElementById("pave");
+  for (const [etiquette, effet, classe, titre] of TOUCHES) {
+    pave.appendChild(el("button", {
+      class: classe || "",
+      title: titre || etiquette,
+      // Le focus reste dans le champ : la touche s'insère au curseur.
+      onmousedown: (e) => e.preventDefault(),
+      onclick: () => (typeof effet === "function" ? effet() : inserer(effet)),
+    }, [etiquette]));
+  }
+
+  document.getElementById("angle-deg").addEventListener("click", () => go("angle", "deg"));
+  document.getElementById("angle-rad").addEventListener("click", () => go("angle", "rad"));
+  for (const id of ["angle-deg", "angle-rad", "vider"]) {
+    document.getElementById(id).addEventListener("mousedown", (e) => e.preventDefault());
+  }
+
+  champ.addEventListener("input", () => {
+    resultatAffiche = false;
+    message.textContent = "";
+    message.className = "";
+  });
+  champ.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      calculer();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      if (champ.value) effacer();
+      else go("close");
+    } else if (resultatAffiche && e.key.length === 1 && !e.ctrlKey && !e.altKey) {
+      // Au clavier comme au pavé : un opérateur continue le résultat, un
+      // chiffre en commence un nouveau.
+      const texte = { "-": "−", "*": "×", "/": "÷" }[e.key] || e.key;
+      e.preventDefault();
+      inserer(texte);
+    }
+  });
+
+  // ---- L'HISTORIQUE ----
+  // Un calcul réinséré au milieu d'une saisie est entouré de parenthèses :
+  // « 2 × » suivi de « 3+4 » doit valoir 14, pas 10.
+  function reprendreCalcul(expression) {
+    const seul = !champ.value || resultatAffiche;
+    inserer(seul ? expression : `(${expression})`);
+  }
+
+  function renderHistorique() {
+    const liste = document.getElementById("historique");
+    liste.replaceChildren();
+    document.getElementById("vider").classList.toggle("cache", !state.historique.length);
+    if (!state.historique.length) {
+      liste.appendChild(el("div", { class: "vide" }, ["Aucun calcul pour l'instant."]));
+      return;
+    }
+    state.historique.forEach((entree, index) => {
+      liste.appendChild(el("div", { class: "entree" }, [
+        el("div", { class: "texte" }, [
+          el("button", {
+            class: "expression",
+            title: "Réinsérer ce calcul",
+            onmousedown: (e) => e.preventDefault(),
+            onclick: () => reprendreCalcul(entree.expression),
+          }, [entree.expression]),
+          el("button", {
+            class: "resultat",
+            title: "Réinsérer ce résultat",
+            onmousedown: (e) => e.preventDefault(),
+            onclick: () => inserer(entree.resultat),
+          }, ["= " + entree.resultat]),
+        ]),
+        el("button", {
+          class: "suppr",
+          title: "Retirer de l'historique",
+          onmousedown: (e) => e.preventDefault(),
+          onclick: () => go("historique-supprimer", String(index)),
+        }, ["✕"]),
+      ]));
+    });
+  }
+
+  function appliquerDernier(d) {
+    rappel.textContent = d.expression + " =";
+    if (d.erreur) {
+      message.textContent = d.erreur;
+      message.className = "erreur";
+      resultatAffiche = false;
+    } else {
+      champ.value = d.resultat;
+      champ.setSelectionRange(d.resultat.length, d.resultat.length);
+      message.textContent = "";
+      message.className = "";
+      resultatAffiche = true;
+    }
+  }
+
+  let state = { historique: [], angle: "deg", dernier: null, contentScale: 1 };
+  let dernierJson = null;
+  // `undefined` = aucun état reçu encore (voir l'en-tête).
+  let numeroVu;
+
+  window.setState = function (next) {
+    const json = JSON.stringify(next);
+    if (json === dernierJson) return;
+    dernierJson = json;
+    state = next;
+    document.documentElement.style.setProperty("--text-scale", state.contentScale || 1);
+    document.getElementById("angle-deg").classList.toggle("actif", state.angle === "deg");
+    document.getElementById("angle-rad").classList.toggle("actif", state.angle === "rad");
+    const numero = state.dernier ? state.dernier.numero : 0;
+    if (numeroVu !== undefined && numero !== numeroVu && state.dernier) appliquerDernier(state.dernier);
+    numeroVu = numero;
+    renderHistorique();
+    champ.focus();
+  };
+
+  renderHistorique();
+  go("ready");
+</script>
+</body>
+</html>

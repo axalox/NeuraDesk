@@ -1,0 +1,296 @@
+<!doctype html>
+<!--
+  win32::cef_phonetique — la fenêtre des symboles phonétiques.
+
+  DEMANDE EXPLICITE (2026-10-11) : « une applet qui ouvre une fenêtre pour les
+  symboles de phonétique en deux onglets, un pour le français […], un pour
+  l'anglais […] ; il faut que les symboles soient cliquables pour les insérer
+  facilement dans un autre programme ».
+
+  ⚠️ **LA SŒUR DE `kaomoji.html`** — bande de titre qui DÉPLACE la fenêtre, punaise
+  `◇`/`◆`, croix `✕`, mêmes verbes. Ce qui change : deux ONGLETS, et une GRILLE de
+  cases égales (le symbole en grand, l'exemple dessous).
+
+  ⛔ **AUCUN `menu.js`** : c'est une FENÊTRE, sa taille ne se négocie pas.
+
+  DEUX GESTES SUR UNE CASE :
+    - clic GAUCHE -> `phonetique/frapper/<index>` : FRAPPÉ dans la dernière fenêtre
+      étrangère (voir `win32::cible_de_frappe`) ;
+    - clic DROIT  -> `phonetique/copier/<index>` : COPIÉ — la voie sûre vers une
+      fenêtre ÉLEVÉE, qui refuse nos frappes en silence.
+
+  ⚠️ **L'INDEX EST GLOBAL** — onglets puis groupes, exactement ce que
+  `cef_phonetique::symbole_par_index` relit. ⚠️ **LA TABLE VIENT DE RUST**
+  (`state.langues`), jamais d'ici.
+
+  ⛔ **LES TAILLES DE `.case`, `.grille`, `.groupe` SONT COMPTÉES PAR RUST**
+  (`cef_phonetique::LARGEUR_CASE`, etc.) — le test `la_page_porte_les_memes_chiffres`
+  les compare.
+
+  ⚠️ **AUCUN `background` sur `<html>`/`<body>`** : le fond est le BUREAU FLOUTÉ que
+  Rust dessine SOUS la page.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: var(--nd-police);
+    /* ⛔ La couleur de texte vient du thème — sans elle, NOIR (voir `kaomoji.html`). */
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    user-select: none;
+  }
+  #barre {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    cursor: default;
+  }
+  #titre {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* ⚠️ `Segoe UI Symbol` EN CLAIR : `◇`/`◆`/`✕` sortiraient en COULEUR de la police
+     emoji. */
+  .bouton {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+  }
+  .bouton:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  .bouton[aria-pressed="true"] {
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1)));
+    opacity: 1;
+  }
+  /* LES ONGLETS — des BOUTONS (jamais de `<select>` dans une page CEF). */
+  #onglets {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 6px;
+    padding: 6px 8px 0 8px;
+  }
+  .onglet {
+    all: unset;
+    padding: 4px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    opacity: calc(.7 * max(1, var(--popup-alpha, 1)));
+  }
+  .onglet:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.15 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  .onglet[aria-selected="true"] {
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.40 * var(--popup-fond-alpha, 1)));
+    opacity: 1;
+  }
+  #liste {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    /* La marge qui facilite le redimensionnement — `cef_phonetique::MARGE`. */
+    padding: 8px;
+  }
+  .groupe { margin-bottom: 10px; }
+  /* 18 de ligne + 6 de marge : `cef_phonetique::HAUTEUR_TITRE`. */
+  .titre-groupe {
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 18px;
+    margin: 0 0 6px 2px;
+    opacity: calc(.75 * max(1, var(--popup-alpha, 1)));
+  }
+  .grille {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, 112px);
+    gap: 6px;
+  }
+  .case {
+    all: unset;
+    box-sizing: border-box;
+    width: 112px;
+    height: 50px;
+    padding: 2px 6px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-controle);
+    box-shadow: inset 0 0 0 1px rgba(var(--popup-fg-rgb, 255, 255, 255), var(--nd-bordure-alpha));
+    cursor: pointer;
+    position: relative;
+  }
+  .case:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.30 * var(--popup-fond-alpha, 1))); }
+  .case:active { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.55 * var(--popup-fond-alpha, 1))); }
+  /* ⛔ **UNE POLICE QUI A L'API** : `Segoe UI` couvre l'essentiel des IPA Extensions,
+     les polices SIL (si elles sont là) dessinent mieux les diacritiques combinants
+     (`ɑ̃`, `t̬`), et `Lucida Sans Unicode` rattrape le reste. */
+  .symbole {
+    /* ⚠️ « Charis » AVANT « Charis SIL » : la publication de SIL Global de 2025
+       nomme la FAMILLE « Charis » (mesuré dans la table `name` du TTF), donc
+       l'ancien nom ne correspond à rien et la page retombait sur Segoe UI. */
+    font-family: "Charis", "Charis SIL", "Doulos SIL", "Segoe UI", "Lucida Sans Unicode", "Arial Unicode MS", sans-serif;
+    font-size: 20px;
+    line-height: 24px;
+  }
+  .exemple {
+    font-size: 10px;
+    line-height: 13px;
+    opacity: calc(.75 * max(1, var(--popup-alpha, 1)));
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .note {
+    position: absolute;
+    top: 2px;
+    right: 4px;
+    font-size: 8px;
+    line-height: 10px;
+    opacity: calc(.6 * max(1, var(--popup-alpha, 1)));
+  }
+  #source {
+    flex: 0 0 auto;
+    padding: 3px 10px 5px 10px;
+    font-size: 10px;
+    opacity: calc(.55 * max(1, var(--popup-alpha, 1)));
+  }
+</style>
+</head>
+<body>
+  <div id="barre">
+    <span id="titre">Symboles phonétiques</span>
+    <!-- Caractères ÉCRITS EN CLAIR : un `\uXXXX` ne s'interprète pas dans du HTML. -->
+    <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
+    <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="onglets"></div>
+  <div id="liste"></div>
+  <div id="source"></div>
+<script>
+  function go(action) {
+    location.href = "neuradesk://phonetique/" + action;
+  }
+
+  // ⛔ La bande de titre DÉPLACE la fenêtre — jamais depuis un bouton.
+  document.getElementById("barre").addEventListener("mousedown", function (e) {
+    if (e.target.closest("button")) return;
+    go("deplacer");
+  });
+  document.getElementById("epingle").addEventListener("click", function () { go("epingler"); });
+  document.getElementById("fermer").addEventListener("click", function () { go("fermer"); });
+
+  // L'onglet ouvert vit DANS LA PAGE : il survit aux poussées d'état (la punaise en
+  // refait une), et la page reste chargée quand la fenêtre se cache.
+  let ouvert = 0;
+  let dernier = null;
+
+  function dessiner() {
+    const state = dernier;
+    if (!state) return;
+    const langues = state.langues || [];
+    if (ouvert >= langues.length) ouvert = 0;
+
+    const onglets = document.getElementById("onglets");
+    onglets.replaceChildren();
+    langues.forEach(function (langue, i) {
+      const b = document.createElement("button");
+      b.className = "onglet";
+      b.textContent = langue.nom;
+      b.setAttribute("aria-selected", String(i === ouvert));
+      b.onclick = function () {
+        if (ouvert === i) return;
+        ouvert = i;
+        dessiner();
+        document.getElementById("liste").scrollTop = 0;
+      };
+      onglets.appendChild(b);
+    });
+
+    // ⚠️ **L'INDEX GLOBAL COMPTE AUSSI LES ONGLETS QUI PRÉCÈDENT** — repartir de
+    // zéro dans l'onglet anglais écrirait un symbole français.
+    let index = 0;
+    for (let i = 0; i < ouvert; i++) {
+      for (const groupe of langues[i].groupes) index += groupe.symboles.length;
+    }
+
+    const liste = document.getElementById("liste");
+    // ⛔ VIDER avant de reconstruire : `appendChild` AJOUTE.
+    liste.replaceChildren();
+    const langue = langues[ouvert];
+    if (!langue) return;
+    for (const groupe of langue.groupes) {
+      const bloc = document.createElement("div");
+      bloc.className = "groupe";
+      const titre = document.createElement("h2");
+      titre.className = "titre-groupe";
+      titre.textContent = groupe.nom;
+      bloc.appendChild(titre);
+      const grille = document.createElement("div");
+      grille.className = "grille";
+      for (const e of groupe.symboles) {
+        const ici = index++;
+        const bouton = document.createElement("button");
+        bouton.className = "case";
+        const symbole = document.createElement("span");
+        symbole.className = "symbole";
+        symbole.textContent = e.s;
+        const exemple = document.createElement("span");
+        exemple.className = "exemple";
+        exemple.textContent = e.ex;
+        bouton.appendChild(symbole);
+        bouton.appendChild(exemple);
+        if (e.note) {
+          const note = document.createElement("span");
+          note.className = "note";
+          // UK / US en coin ; une note plus longue (« e fermé ») passe dans la bulle.
+          note.textContent = e.note.length <= 2 ? e.note : "";
+          bouton.appendChild(note);
+        }
+        bouton.title = "[" + e.s + "]  " + e.ex + (e.note ? "  (" + e.note + ")" : "") +
+          "\nclic : insérer — clic droit : copier";
+        bouton.onclick = function () { location.href = "neuradesk://phonetique/frapper/" + ici; };
+        bouton.oncontextmenu = function (ev) {
+          ev.preventDefault();
+          location.href = "neuradesk://phonetique/copier/" + ici;
+          return false;
+        };
+        grille.appendChild(bouton);
+      }
+      bloc.appendChild(grille);
+      liste.appendChild(bloc);
+    }
+    document.getElementById("source").textContent = langue.source;
+  }
+
+  window.setState = function (state) {
+    const epingle = document.getElementById("epingle");
+    epingle.setAttribute("aria-pressed", String(!!state.epingle));
+    epingle.innerHTML = state.epingle ? '<span class="ico ico-push-pin-fill"></span>' : '<span class="ico ico-push-pin"></span>';
+    epingle.title = state.epingle ? "Ne plus rester au premier plan" : "Rester au premier plan";
+    dernier = state;
+    dessiner();
+  };
+</script>
+</body>
+</html>

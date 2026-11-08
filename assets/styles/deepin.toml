@@ -1,0 +1,30 @@
+# Style « deepin » — DEMANDE EXPLICITE (2026-10-12) : « ajoute un style deepin
+# ainsi que ses thèmes ».
+#
+# DDE, le bureau de deepin, et sa boîte à outils DTK : des coins francs mais
+# arrondis (8 px sur les contrôles, 12 px sur les fenêtres), des icônes en
+# carrés très arrondis, des contours à peine marqués, une ombre douce sous les
+# dashs — PAS sous les barres, décision de l'utilisateur du 2026-10-06 —, la
+# police Noto Sans de deepin et un point sous l'application ouverte. Les couleurs
+# vont avec la famille « deepin » (thème clair, thème sombre, accent bleu).
+
+nom = "deepin"
+
+[formes]
+rayon_petit = 4
+rayon_controle = 8
+rayon_surface = 10
+rayon_grand = 12
+rayon_icone = 14
+
+[traits]
+bordure_alpha = 0.08
+
+[relief]
+ombre = 0.3
+
+[texte]
+police = "Noto Sans"
+
+[structure]
+indicateur = "point"

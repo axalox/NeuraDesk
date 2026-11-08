@@ -1,0 +1,25 @@
+# Style « COSMIC » — DEMANDE EXPLICITE (2026-10-12), avec elementary et
+# Cinnamon.
+#
+# Le bureau de System76 (Pop!_OS) : des coins TRÈS ronds (8 px sur les boutons,
+# 16 px sur les fenêtres et les cartes), AUCUN contour — les surfaces se
+# détachent par leur teinte —, la police Open Sans de COSMIC, et l'élément actif
+# d'une liste en aplat arrondi. Les couleurs vont avec la famille « COSMIC ».
+
+nom = "COSMIC"
+
+[formes]
+rayon_petit = 4
+rayon_controle = 8
+rayon_surface = 12
+rayon_grand = 16
+rayon_icone = 16
+
+[traits]
+bordure_alpha = 0.0
+
+[texte]
+police = "Open Sans"
+
+[structure]
+indicateur = "point"

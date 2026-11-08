@@ -1,0 +1,270 @@
+<!doctype html>
+<!--
+  win32::cef_maths — la fenêtre des symboles mathématiques.
+
+  DEMANDE EXPLICITE (2026-10-12) : « une nouvelle applet dans la zone intégrés
+  pour ouvrir une fenêtre permettant d'insérer les caractères mathématiques ».
+
+  ⚠️ **LA JUMELLE DE `phonetique.html`** — bande de titre qui DÉPLACE la fenêtre,
+  punaise `◇`/`◆`, croix `✕`, mêmes verbes, ONGLETS et GRILLE de cases égales. Ce
+  qui change : six onglets, le NOM du symbole sous lui, aucune ligne de source.
+
+  ⛔ **AUCUN `menu.js`** : c'est une FENÊTRE, sa taille ne se négocie pas.
+
+  DEUX GESTES SUR UNE CASE :
+    - clic GAUCHE -> `maths/frapper/<index>` : FRAPPÉ dans la dernière fenêtre
+      étrangère (voir `win32::cible_de_frappe`) ;
+    - clic DROIT  -> `maths/copier/<index>` : COPIÉ — la voie sûre vers une
+      fenêtre ÉLEVÉE, qui refuse nos frappes en silence.
+
+  ⚠️ **L'INDEX EST GLOBAL** — onglets puis groupes, exactement ce que
+  `cef_maths::symbole_par_index` relit. ⚠️ **LA TABLE VIENT DE RUST**
+  (`state.onglets`), jamais d'ici.
+
+  ⛔ **LES TAILLES DE `.case`, `.grille`, `.groupe` SONT COMPTÉES PAR RUST**
+  (`cef_maths::LARGEUR_CASE`, etc.) — le test `la_page_porte_les_memes_chiffres`
+  les compare.
+
+  ⚠️ **AUCUN `background` sur `<html>`/`<body>`** : le fond est le BUREAU FLOUTÉ que
+  Rust dessine SOUS la page.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: var(--nd-police);
+    /* ⛔ La couleur de texte vient du thème — sans elle, NOIR (voir `kaomoji.html`). */
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    user-select: none;
+  }
+  #barre {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    cursor: default;
+  }
+  #titre {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* ⚠️ `Segoe UI Symbol` EN CLAIR : `◇`/`◆`/`✕` sortiraient en COULEUR de la police
+     emoji. */
+  .bouton {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+  }
+  .bouton:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  .bouton[aria-pressed="true"] {
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1)));
+    opacity: 1;
+  }
+  /* LES ONGLETS — des BOUTONS (jamais de `<select>` dans une page CEF). */
+  /* ⚠️ Six onglets : sur un écran étroit ils PASSENT À LA LIGNE — la liste, en
+     `flex: 1`, défile d'autant, rien n'est perdu. */
+  #onglets {
+    flex: 0 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 6px 8px 0 8px;
+  }
+  .onglet {
+    all: unset;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    opacity: calc(.7 * max(1, var(--popup-alpha, 1)));
+  }
+  .onglet:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.15 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  .onglet[aria-selected="true"] {
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.40 * var(--popup-fond-alpha, 1)));
+    opacity: 1;
+  }
+  #liste {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    /* La marge qui facilite le redimensionnement — `cef_maths::MARGE`. */
+    padding: 8px;
+  }
+  .groupe { margin-bottom: 10px; }
+  /* 18 de ligne + 6 de marge : `cef_maths::HAUTEUR_TITRE`. */
+  .titre-groupe {
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 18px;
+    margin: 0 0 6px 2px;
+    opacity: calc(.75 * max(1, var(--popup-alpha, 1)));
+  }
+  .grille {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, 112px);
+    gap: 6px;
+  }
+  .case {
+    all: unset;
+    box-sizing: border-box;
+    width: 112px;
+    height: 50px;
+    padding: 2px 6px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-controle);
+    box-shadow: inset 0 0 0 1px rgba(var(--popup-fg-rgb, 255, 255, 255), var(--nd-bordure-alpha));
+    cursor: pointer;
+    position: relative;
+  }
+  .case:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.30 * var(--popup-fond-alpha, 1))); }
+  .case:active { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.55 * var(--popup-fond-alpha, 1))); }
+  /* ⛔ **UNE POLICE MATHÉMATIQUE** : `Cambria Math` (livrée avec Windows) couvre
+     tous les symboles de la table, `𝔻` compris ; `Segoe UI Symbol` rattrape le
+     reste. */
+  .symbole {
+    font-family: "Cambria Math", "Segoe UI Symbol", "Segoe UI", sans-serif;
+    font-size: 20px;
+    line-height: 24px;
+  }
+  .nom {
+    font-size: 10px;
+    line-height: 13px;
+    opacity: calc(.75 * max(1, var(--popup-alpha, 1)));
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+  <div id="barre">
+    <span id="titre">Symboles mathématiques</span>
+    <!-- Caractères ÉCRITS EN CLAIR : un `\uXXXX` ne s'interprète pas dans du HTML. -->
+    <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
+    <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="onglets"></div>
+  <div id="liste"></div>
+<script>
+  function go(action) {
+    location.href = "neuradesk://maths/" + action;
+  }
+
+  // ⛔ La bande de titre DÉPLACE la fenêtre — jamais depuis un bouton.
+  document.getElementById("barre").addEventListener("mousedown", function (e) {
+    if (e.target.closest("button")) return;
+    go("deplacer");
+  });
+  document.getElementById("epingle").addEventListener("click", function () { go("epingler"); });
+  document.getElementById("fermer").addEventListener("click", function () { go("fermer"); });
+
+  // L'onglet ouvert vit DANS LA PAGE : il survit aux poussées d'état (la punaise en
+  // refait une), et la page reste chargée quand la fenêtre se cache.
+  let ouvert = 0;
+  let dernier = null;
+
+  function dessiner() {
+    const state = dernier;
+    if (!state) return;
+    const onglets = state.onglets || [];
+    if (ouvert >= onglets.length) ouvert = 0;
+
+    const rangee = document.getElementById("onglets");
+    rangee.replaceChildren();
+    onglets.forEach(function (onglet, i) {
+      const b = document.createElement("button");
+      b.className = "onglet";
+      b.textContent = onglet.nom;
+      b.setAttribute("aria-selected", String(i === ouvert));
+      b.onclick = function () {
+        if (ouvert === i) return;
+        ouvert = i;
+        dessiner();
+        document.getElementById("liste").scrollTop = 0;
+      };
+      rangee.appendChild(b);
+    });
+
+    // ⚠️ **L'INDEX GLOBAL COMPTE AUSSI LES ONGLETS QUI PRÉCÈDENT** — repartir de
+    // zéro dans l'onglet « Grec » écrirait un symbole du premier onglet.
+    let index = 0;
+    for (let i = 0; i < ouvert; i++) {
+      for (const groupe of onglets[i].groupes) index += groupe.symboles.length;
+    }
+
+    const liste = document.getElementById("liste");
+    // ⛔ VIDER avant de reconstruire : `appendChild` AJOUTE.
+    liste.replaceChildren();
+    const onglet = onglets[ouvert];
+    if (!onglet) return;
+    for (const groupe of onglet.groupes) {
+      const bloc = document.createElement("div");
+      bloc.className = "groupe";
+      const titre = document.createElement("h2");
+      titre.className = "titre-groupe";
+      titre.textContent = groupe.nom;
+      bloc.appendChild(titre);
+      const grille = document.createElement("div");
+      grille.className = "grille";
+      for (const e of groupe.symboles) {
+        const ici = index++;
+        const bouton = document.createElement("button");
+        bouton.className = "case";
+        const symbole = document.createElement("span");
+        symbole.className = "symbole";
+        symbole.textContent = e.s;
+        const nom = document.createElement("span");
+        nom.className = "nom";
+        nom.textContent = e.nom;
+        bouton.appendChild(symbole);
+        bouton.appendChild(nom);
+        bouton.title = e.s + "  " + e.nom + "\nclic : insérer — clic droit : copier";
+        bouton.onclick = function () { location.href = "neuradesk://maths/frapper/" + ici; };
+        bouton.oncontextmenu = function (ev) {
+          ev.preventDefault();
+          location.href = "neuradesk://maths/copier/" + ici;
+          return false;
+        };
+        grille.appendChild(bouton);
+      }
+      bloc.appendChild(grille);
+      liste.appendChild(bloc);
+    }
+  }
+
+  window.setState = function (state) {
+    const epingle = document.getElementById("epingle");
+    epingle.setAttribute("aria-pressed", String(!!state.epingle));
+    epingle.innerHTML = state.epingle ? '<span class="ico ico-push-pin-fill"></span>' : '<span class="ico ico-push-pin"></span>';
+    epingle.title = state.epingle ? "Ne plus rester au premier plan" : "Rester au premier plan";
+    dernier = state;
+    dessiner();
+  };
+</script>
+</body>
+</html>

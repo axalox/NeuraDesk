@@ -1,0 +1,159 @@
+<!doctype html>
+<!--
+  win32::cef_apropos — la fenêtre « À propos de NeuraDesk ».
+
+  DEMANDE (2026-11-08) : « une entrée about dans le menu du clic droit sur
+  l'icône NeuraDesk avec des explications, le logo et le numéro de version ».
+
+  ⚠️ **LA FACTURE DES FENÊTRES DE JEU** (`quadrapassel.html`) : bande de titre
+  qui DÉPLACE la fenêtre, croix, verbes `deplacer`/`fermer` — plus `aide`, qui
+  ouvre le panneau d'aide. La version est POUSSÉE par Rust (`setState`) : elle
+  vient de `Cargo.toml` et de `git` au moment du build (`build.rs`).
+
+  ⛔ **AUCUN `menu.js`** : c'est une FENÊTRE, sa taille ne se négocie pas.
+
+  ⚠️ **AUCUN `background` sur `<html>`/`<body>`** : le fond est le BUREAU FLOUTÉ que
+  Rust dessine SOUS la page.
+
+  Le logo est le même fichier que l'aide et l'écran d'accueil : fond transparent,
+  posé sur une carte noire pour garder son aspect sur tout thème.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: var(--nd-police);
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    user-select: none;
+  }
+  #barre {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    cursor: default;
+  }
+  #titre { flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bouton {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+  }
+  .bouton:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  #corps {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 14px 18px 16px;
+    box-sizing: border-box;
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  .logo { display: block; max-width: 260px; margin: 0 auto 8px; padding: 6px 10px; box-sizing: border-box;
+          background: #000; border-radius: var(--nd-rayon-grand, 12px); }
+  .logo img { display: block; width: 100%; height: auto; -webkit-user-drag: none; }
+  #accroche { text-align: center; font-size: 13px; font-weight: 600; margin: 0 0 10px; }
+  #version {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 2px 12px;
+    margin: 0 0 12px;
+    padding: 8px 12px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.10 * var(--popup-fond-alpha, 1)));
+    user-select: text;
+  }
+  #version dt { opacity: .7; }
+  #version dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+  p { margin: 0 0 8px; }
+  #pied { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
+  #licence { font-size: 11px; opacity: .65; }
+  #ouvrir-aide {
+    all: unset;
+    padding: 7px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.40 * var(--popup-fond-alpha, 1)));
+  }
+  #ouvrir-aide:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.60 * var(--popup-fond-alpha, 1))); }
+</style>
+</head>
+<body>
+  <div id="barre">
+    <span id="titre">À propos de NeuraDesk</span>
+    <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="corps">
+    <div class="logo"><img src="logo_neuradesk.png" alt="NeuraDesk"></div>
+    <p id="accroche">Un bureau façon Unity et GNOME, posé sur Windows.</p>
+
+    <dl id="version">
+      <dt>Version</dt><dd id="v-version">—</dd>
+      <dt>Révision</dt><dd id="v-revision">—</dd>
+      <dt>Date</dt><dd id="v-date">—</dd>
+      <dt>Publication</dt><dd id="v-publication">—</dd>
+    </dl>
+
+    <p>NeuraDesk remplace l'aspect de la barre des tâches par un environnement
+    complet : un <b>dock</b> d'icônes à gauche avec effet de loupe, une
+    <b>barre du haut</b> (horloge, réseau, son, notifications), une barre du
+    bas pour les fenêtres ouvertes, et des <b>zones</b> d'icônes que l'on
+    organise à sa guise.</p>
+    <p>Le <b>Dash</b> (clic sur le logo) rassemble les applications ; les
+    <b>applets</b> intégrées (notes, presse-papiers, calendrier, météo, terminal,
+    capture, minuteur, jeux…) s'ouvrent d'un clic. Couleurs, styles, textures et
+    effets se règlent dans les <b>Réglages</b>.</p>
+    <p>Écrit en Rust, rendu en Direct3D 11, les panneaux en pages web (CEF).
+    NeuraDesk ne modifie pas Windows : il se pose par-dessus le bureau.</p>
+
+    <div id="pied">
+      <span id="licence">Logiciel libre — licence GNU GPL v3</span>
+      <button id="ouvrir-aide">Ouvrir l'aide</button>
+    </div>
+  </div>
+<script>
+  "use strict";
+  function go(action) { location.href = "neuradesk://apropos/" + action; }
+  document.getElementById("barre").addEventListener("mousedown", function (e) {
+    if (e.target.closest("button")) return;
+    go("deplacer");
+  });
+  document.getElementById("fermer").addEventListener("click", function () { go("fermer"); });
+  document.getElementById("ouvrir-aide").addEventListener("click", function () { go("aide"); });
+  window.addEventListener("keydown", function (e) { if (e.key === "Escape") go("fermer"); });
+
+  // La date du commit (`AAAA-MM-JJ`) en clair, à la française.
+  function dateLisible(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "");
+    if (!m) return iso || "—";
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    return d.toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
+  }
+
+  // L'état que Rust pousse : la version du paquet et la révision du build.
+  window.setState = function (state) {
+    document.getElementById("v-version").textContent = state.version || "—";
+    document.getElementById("v-revision").textContent = state.revision || "—";
+    document.getElementById("v-date").textContent = dateLisible(state.date);
+    document.getElementById("v-publication").textContent = state.publication || "—";
+  };
+</script>
+</body>
+</html>

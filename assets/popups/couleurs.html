@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<!--
+  LE SÉLECTEUR DE COULEURS — voir `win32::cef_couleurs` pour la fenêtre et les
+  actions qu'elle accepte, `win32::palette_gpl` pour les palettes `.gpl`, et
+  `ui::color::harmonies` pour la palette dérivée.
+
+  ⚠️ **UNE VRAIE FENÊTRE, PAS UN PANNEAU** (voir `cef_popup::PopupSpec::fenetre`) :
+  sa barre de titre est dessinée ICI, comme tout le reste de l'application, et le
+  système ne fournit plus ni déplacement ni redimensionnement (voir
+  `cef_couleurs::wndproc`). Elle ne charge donc PAS `menu.js` — c'est lui qui
+  annonce une hauteur, ce qu'une fenêtre ne doit jamais faire sous peine de
+  lutter contre le redimensionnement.
+
+  ÉTAT REÇU (window.setState) :
+    { contentScale, pipette, actuel, rgb, hsl, historique, palette,
+      bibliotheque, groupes }
+
+  ⚠️ **TROIS LISTES, TROIS RÔLES, ET ELLES NE SE CONFONDENT PAS** :
+    - `historique` : ce qu'on a PRÉLEVÉ (plafonné côté Rust, et un doublon y
+      remonte au lieu de s'ajouter) ;
+    - `groupes`   : ce qui est DÉRIVÉ de la couleur courante — jamais modifiable ;
+    - `palette`   : ce qu'on CONSTRUIT, et c'est elle seule qu'on enregistre et
+      qu'on exporte. Un `.gpl` chargé s'y ajoute.
+
+  ⚠️ **AUCUNE ACTION PAR `mousemove`**, jamais : `cef_popup::drain_actions`
+  journalise CHAQUE action reçue, et un geste de souris en produirait au rythme
+  de l'écran. Ce qui suit le curseur (la loupe) est poussé de Rust vers la page.
+
+  ⚠️ **PAS DE `<select>`** dans une page CEF de ce dépôt : le rendu hors écran
+  exige `OnPopupShow`/`OnPopupSize`/`PET_POPUP`, que l'intégration n'implémente
+  pas — une liste déroulante ne s'ouvrirait JAMAIS. Des boutons.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<script src="menu_contextuel.js"></script>
+<style>
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    /* ⚠️ **AUCUN FOND ICI, ET C'EST LE POINT.** Le fond de la fenêtre est le
+       BUREAU FLOUTÉ que Rust dessine SOUS cette page (voir `cef_popup::render`).
+       Peindre une couleur ici le masquerait entièrement — c'est exactement ce
+       qui arrivait avant : la page n'avait rien à peindre et affichait le fond
+       par défaut de CEF. */
+    background: transparent;
+    /* Même grossissement que les autres pages : `zoom` seul, jamais multiplié
+       dans une taille (voir l'en-tête de `calendar_applet.html`). */
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    /* **LA FENÊTRE EST UNE COLONNE, ET SEULE LA PARTIE BASSE DÉFILE.**
+       DEMANDE EXPLICITE : « il faudrait que la barre de titre reste toujours
+       affichée ». Avec `overflow-y: auto` sur le `body`, la barre sortait de
+       l'écran dès qu'on descendait — et comme c'est elle qui porte la FERMETURE
+       et le DÉPLACEMENT, on perdait les deux en même temps.
+       Une colonne flex plutôt qu'un `position: sticky` : la barre n'a alors
+       besoin d'AUCUN fond, et le flou reste uniforme. */
+    height: calc(100vh / var(--text-scale));
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  /* **LA BARRE DE TITRE NEURADESK.** La fenêtre n'a plus celle de Windows
+     (voir `cef_popup::create_window` : `WS_POPUP` pour un `fenetre`). */
+  .barre-titre {
+    flex: 0 0 auto;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 9px 14px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    /* Le curseur dit ce que la barre FAIT : on la saisit pour déplacer. */
+    cursor: move;
+    user-select: none;
+  }
+  .barre-titre h1 { margin: 0; font-size: 14px; font-weight: 600; opacity: calc(.9 * max(1, var(--popup-alpha, 1))); }
+  h2 { margin: 18px 0 6px; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; opacity: calc(.65 * max(1, var(--popup-alpha, 1))); }
+  h3 { margin: 12px 0 0; font-size: 12.5px; font-weight: 600; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+  button {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 5px 10px;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  /* « Armée » se voit : sans ça, rien ne distingue une pipette qui attend un
+     clic d'une pipette éteinte, et l'utilisateur clique dans le vide. */
+  button.actif { background: rgb(var(--popup-accent-solid-rgb)); color: rgba(var(--popup-on-accent-rgb), min(1, var(--popup-alpha, 1))); }
+  .close-btn { background: none; font-size: 16px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+  .close-btn:hover { background: none; opacity: 1; }
+  /* La SEULE partie qui défile (voir `body`, doc). */
+  main { flex: 1 1 auto; overflow-y: auto; padding: 0 16px 16px; }
+  .aide { opacity: calc(.7 * max(1, var(--popup-alpha, 1))); font-size: 12.5px; margin: 8px 0 0; }
+  .couleur {
+    height: 72px; margin: 6px 0;
+    border-radius: var(--nd-rayon-surface);
+    /* Un liseré : une couleur prélevée peut être NOIRE, et sans bordure elle
+       se confondrait avec le fond. */
+    box-shadow: inset 0 0 0 1px rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.35 * var(--popup-fond-alpha, 1)));
+  }
+  .valeur {
+    font-family: Consolas, monospace; font-size: 15px; font-weight: 600;
+    letter-spacing: .04em; margin-bottom: 2px;
+  }
+  .ligne-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .pastilles { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }
+  .pastille {
+    width: 30px; height: 30px; padding: 0;
+    border-radius: var(--nd-rayon-petit);
+    /* Un liseré : une pastille peut être NOIRE, et sans bordure elle se
+       confondrait avec le fond. */
+    box-shadow: inset 0 0 0 1px rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.35 * var(--popup-fond-alpha, 1)));
+  }
+  /* La couleur courante se voit : sans ça, on ne saurait pas laquelle des
+     pastilles est « celle qu'on regarde ». */
+  .pastille.courante { box-shadow: inset 0 0 0 2px rgb(var(--popup-fg-rgb, 255, 255, 255)); }
+  /* Le ✕ d'une pastille de PALETTE — même idiome que les couleurs
+     personnalisées des Réglages (voir `settings.html`, `.custom-swatch-wrap`). */
+  .pastille-enveloppe { position: relative; }
+  .pastille-enveloppe .retirer {
+    position: absolute; top: -6px; right: -6px;
+    width: 17px; height: 17px; padding: 0;
+    border-radius: 50%;
+    font-size: 9px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  /* **UNE PASTILLE MEMORISÉE PORTE SON CODE.** Le `title` de la pastille ne
+     suffit PAS : en rendu OSR, CEF ne dessine pas les infobulles (fiche
+     « infobulles `title` des pages CEF » — c'est `on_tooltip` + `TooltipWindow`
+     côté Rust qui les rend, et seulement pour ce que Rust sait nommer). La
+     valeur prélevée restait donc muette sur sa propre pastille, et on ne la
+     retrouvait qu'en cliquant pour la copier. Le code se pose SOUS la teinte,
+     sur le fond de la fenêtre : aucune teinte ne peut le rendre illisible, donc
+     aucune correction d'alpha (`composite_over`) n'est à payer ici. */
+  .pastille-col {
+    position: relative;
+    display: flex; flex-direction: column; align-items: center;
+    gap: 3px; width: 60px;
+  }
+  .pastille-col .code {
+    font-family: Consolas, monospace; font-size: 10px; line-height: 1;
+    letter-spacing: .02em;
+  }
+  .groupe { display: flex; align-items: baseline; gap: 8px; }
+  .groupe button { padding: 1px 8px; font-size: 12px; }
+  .palette-liste { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+  .palette-liste .ligne { display: flex; align-items: center; gap: 6px; }
+  .palette-liste .charger { flex: 1 1 auto; text-align: left; }
+  input[type="text"] {
+    background: rgba(0, 0, 0, .25);
+    color: inherit; font: inherit;
+    border: 1px solid rgba(var(--popup-accent-rgb), calc(.8 * var(--popup-fond-alpha, 1)));
+    border-radius: var(--nd-rayon-petit);
+    padding: 5px 8px; outline: none;
+  }
+</style>
+</head>
+<body>
+<div class="barre-titre" id="barre">
+  <h1>Sélecteur de couleurs</h1>
+  <button class="close-btn" id="fermer" title="Fermer"><span class="ico ico-x"></span></button>
+</div>
+<main>
+  <!-- Reconstruit à chaque `setState` : ce qui change tout le temps. -->
+  <div id="corps"></div>
+
+  <!-- ⛔ **STATIQUE, ET C'EST DÉLIBÉRÉ.** `render()` reconstruit `#corps` à
+       chaque `setState`, et l'état change À CHAQUE PRÉLÈVEMENT. Un champ de nom
+       écrit ici serait donc vidé et perdrait le focus au moment précis où l'on
+       s'en sert — le piège déjà payé avec le champ date (« ne pas reconstruire
+       sous les doigts »). Seule la LISTE, sous le champ, est reconstruite. -->
+  <section id="fichiers">
+    <h2>Palettes enregistrées</h2>
+    <div id="bibliotheque"></div>
+    <div class="ligne-actions">
+      <input id="nom-palette" type="text" placeholder="Nom de la palette" maxlength="60">
+    </div>
+    <div class="ligne-actions">
+      <button id="btn-enregistrer">Enregistrer</button>
+      <button id="btn-exporter">Exporter…</button>
+      <button id="btn-importer">Importer…</button>
+    </div>
+    <p class="aide" id="aide-fichiers">
+      Les palettes vivent dans <code>%APPDATA%\NeuraDesk\palettes\</code>, au
+      format GIMP — que GIMP et Inkscape lisent tous les deux. Charger une
+      palette <b>s'ajoute</b> à celle-ci, sans la remplacer.
+    </p>
+  </section>
+</main>
+
+<script>
+  // `el` et `go` — MÊMES HELPERS que les autres pages du dépôt (voir
+  // `calculatrice.html`) : tout `on…` passe par `addEventListener`, jamais par
+  // `setAttribute`, qui en ferait une chaîne jamais exécutée.
+  function el(tag, attrs, children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (key === "class") node.className = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value);
+    }
+    for (const child of children || []) {
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+    return node;
+  }
+
+  // Segments ENCODÉS un par un — un « / » dans un argument ne doit pas changer
+  // l'arité de l'action.
+  function go(...segments) {
+    location.href = "neuradesk://couleurs/" + segments.map(encodeURIComponent).join("/");
+  }
+
+  // **LA BARRE DE TITRE DÉPLACE LA FENÊTRE — ET ON NE LA DÉPLACE PAS ICI.** La
+  // page se contente de DIRE « on m'a saisi sur l'en-tête » ; Rust rend la main
+  // à Windows (`HTCAPTION`), qui refait alors ce qu'il fait pour n'importe
+  // quelle barre de titre : aimantation aux bords, double-clic, passage d'un
+  // écran à l'autre. Le réimplémenter ici donnerait une fenêtre qui se traîne.
+  document.getElementById("barre").addEventListener("mousedown", (e) => {
+    if (e.button === 0) go("deplacer");
+  });
+
+  const fermer = document.getElementById("fermer");
+  // ⚠️ **LE BOUTON EST DANS LA BARRE** : sans cette ligne, cliquer « fermer »
+  // déclencherait AUSSI le déplacement — et la fenêtre partirait avec le clic.
+  fermer.addEventListener("mousedown", (e) => e.stopPropagation());
+  fermer.addEventListener("click", () => go("close"));
+
+  // Le nom saisi sert à « Enregistrer » et à « Exporter ». Il vit dans le
+  // document, pas dans l'état : voir le commentaire de `#fichiers`.
+  const nomSaisi = () => document.getElementById("nom-palette").value;
+  document.getElementById("btn-enregistrer").addEventListener("click", () => go("gpl-enregistrer", nomSaisi()));
+  document.getElementById("btn-exporter").addEventListener("click", () => go("gpl-exporter", nomSaisi()));
+  document.getElementById("btn-importer").addEventListener("click", () => go("gpl-importer"));
+
+  let state = { contentScale: 1, pipette: false, actuel: null, rgb: null, hsl: null, historique: [], palette: [], bibliotheque: [], groupes: [] };
+  let dernierJson = null;
+
+  // **LA PASTILLE, ET SES DEUX GESTES** — choix explicite : le clic GAUCHE
+  // copie, le clic DROIT fait de cette couleur la couleur COURANTE (et la
+  // palette harmonieuse se recalcule autour d'elle).
+  function pastille(hex) {
+    const b = el("button", {
+      class: "pastille" + (hex === state.actuel ? " courante" : ""),
+      title: hex + "\nClic gauche : copier — clic droit : devenir la couleur courante",
+      onclick: () => go("copier", hex),
+      // ⚠️ `preventDefault` EN PLUS d'agir : sans lui, CEF ouvrirait aussi son
+      // menu contextuel par-dessus la fenêtre.
+      oncontextmenu: (e) => { e.preventDefault(); go("actuel", hex); },
+    });
+    b.style.background = hex;
+    return b;
+  }
+
+  function rangee(teintes) {
+    return el("div", { class: "pastilles" }, teintes.map(pastille));
+  }
+
+  // **UNE PASTILLE MEMORISÉE** — historique ou palette : la teinte, son CODE
+  // écrit dessous, et le ✕ qui la retire de CETTE liste. Le même geste que les
+  // autres pastilles (clic gauche copier, clic droit la rendre courante), et
+  // l'index est celui de la liste affichée : c'est Rust qui le valide, la page
+  // ne suppose rien de la taille de la liste ni du contenu des autres listes.
+  //
+  // Les groupes d'harmonies restent en pastilles SIMPLES : ce ne sont pas des
+  // couleurs mémorisées, et leurs codes ne sont pas ce qu'on cherche.
+  //
+  // ⚠️ `retirer` est une **FERMETURE**, pas le nom du verbe : le verbe doit
+  // rester écrit en LITTÉRAL au point d'appel, sinon le test de parité
+  // `la_page_et_le_dispatch_acceptent_les_memes_verbes` ne le voit plus (il lit
+  // le verbe entre guillemets qui suit l'appel de `go`, dans le texte de la
+  // page) et la page pourrait émettre un verbe que `dispatch_actions` ne
+  // connaît pas — la panne décrite dans la mémoire « arguments de page encodés ».
+  function pastilleMemorisee(hex, retirer, titreRetrait) {
+    return el("div", { class: "pastille-col" }, [
+      el("div", { class: "pastille-enveloppe" }, [
+        pastille(hex),
+        el("button", {
+          class: "retirer cible-24",
+          title: titreRetrait,
+          onclick: retirer,
+        }, ["✕"]),
+      ]),
+      el("span", { class: "code" }, [hex]),
+    ]);
+  }
+
+  // **SUPPRIMER DEMANDE DEUX CLICS** — même idiome que les sauvegardes du
+  // dégradé animé et que les zones (voir `settings.html`) : on n'efface pas un
+  // FICHIER sur un clic mal placé, et un fichier n'a pas de corbeille ici.
+  //
+  // ⚠️ Le nom en attente vit dans une variable de MODULE, pas dans le DOM : la
+  // liste est reconstruite à chaque état reçu, donc un drapeau posé sur le
+  // bouton disparaîtrait avec lui — et l'attente ne serait jamais confirmable.
+  let suppressionEnAttente = null;
+
+  function ligneBibliotheque(nom) {
+    const enAttente = suppressionEnAttente === nom;
+    return el("div", { class: "ligne" }, [
+      el("button", { class: "charger", title: "Ajouter cette palette à la palette courante", onclick: () => go("gpl-charger", nom) }, [nom]),
+      el("button", {
+        class: "retirer-palette",
+        title: enAttente ? "Cliquer encore pour supprimer définitivement" : "Supprimer cette palette",
+        onclick: () => {
+          if (!enAttente) {
+            suppressionEnAttente = nom;
+            renderBibliotheque();
+            return;
+          }
+          suppressionEnAttente = null;
+          go("gpl-supprimer", nom);
+        },
+      }, [enAttente ? "Supprimer ?" : "✕"]),
+    ]);
+  }
+
+  function renderBibliotheque() {
+    const zone = document.getElementById("bibliotheque");
+    if (!state.bibliotheque || !state.bibliotheque.length) {
+      zone.replaceChildren(el("p", { class: "aide" }, ["Aucune palette enregistrée pour l'instant."]));
+      return;
+    }
+    zone.replaceChildren(el("div", { class: "palette-liste" }, state.bibliotheque.map(ligneBibliotheque)));
+  }
+
+  function render() {
+    const corps = document.getElementById("corps");
+    corps.replaceChildren();
+
+    corps.appendChild(el("h2", {}, ["Prélèvement"]));
+    // **BASCULE** : la page envoie le GESTE, pas un état — Rust seul sait si la
+    // pipette est armée, et lui faire deviner serait la porte ouverte aux deux
+    // moitiés qui se désynchronisent.
+    corps.appendChild(el("button", {
+      class: state.pipette ? "actif" : "",
+      onclick: () => go("pipette"),
+    }, [state.pipette ? "Pipette armée" : "Pipette"]));
+    corps.appendChild(el("p", { class: "aide" }, [
+      state.pipette
+        ? "Clique n'importe où à l'écran pour prélever. Échap ou clic droit pour arrêter — la pipette reste armée après chaque prélèvement."
+        : "Arme la pipette, puis clique le pixel à prélever.",
+    ]));
+
+    corps.appendChild(el("h2", {}, ["Couleur prélevée"]));
+    if (state.actuel) {
+      const courante = el("div", { class: "couleur" });
+      courante.style.background = state.actuel;
+      corps.appendChild(courante);
+      corps.appendChild(el("div", { class: "valeur" }, [state.actuel]));
+      // `rgb` et `hsl` sont déjà mis en forme par Rust : la page n'a AUCUNE
+      // conversion à faire, donc aucun risque d'afficher d'autres nombres que
+      // ceux du dépôt.
+      corps.appendChild(el("p", { class: "aide" }, ["RVB " + state.rgb + " · TSL " + state.hsl]));
+      corps.appendChild(el("div", { class: "ligne-actions" }, [
+        el("button", { onclick: () => go("copier", state.actuel) }, ["Copier " + state.actuel]),
+      ]));
+    } else {
+      corps.appendChild(el("p", { class: "aide" }, ["Aucune couleur prélevée pour l'instant."]));
+    }
+
+    // L'historique ne contient que les PRÉLÈVEMENTS (voir `cef_couleurs::poll`) :
+    // une section absente vaut mieux qu'une section vide.
+    if (state.historique && state.historique.length) {
+      corps.appendChild(el("h2", {}, ["Historique"]));
+      corps.appendChild(el("div", { class: "pastilles" },
+        state.historique.map((hex, i) =>
+          pastilleMemorisee(hex, () => go("historique-retirer", String(i)), "Retirer de l'historique"))));
+    }
+
+    // La palette CONSTRUITE — ce qu'on enregistre et ce qu'on exporte.
+    corps.appendChild(el("h2", {}, ["Palette"]));
+    if (state.palette && state.palette.length) {
+      corps.appendChild(el("div", { class: "pastilles" },
+        state.palette.map((hex, i) =>
+          pastilleMemorisee(hex, () => go("palette-retirer", String(i)), "Retirer de la palette"))));
+    } else {
+      corps.appendChild(el("p", { class: "aide" }, [
+        "Palette vide — ajoute la couleur courante, ou un groupe d'harmonies.",
+      ]));
+    }
+    const actions = [];
+    if (state.actuel) {
+      actions.push(el("button", { onclick: () => go("palette-ajouter", state.actuel) }, ["Ajouter la couleur courante"]));
+    }
+    if (state.palette && state.palette.length) {
+      actions.push(el("button", { onclick: () => go("palette-vider") }, ["Vider la palette"]));
+    }
+    if (actions.length) {
+      corps.appendChild(el("div", { class: "ligne-actions" }, actions));
+    }
+
+    // Les cinq schémas, dans l'ordre fixe que Rust rend (`ui::color::harmonies`).
+    // Le « + » verse le groupe entier dans la palette — c'est ce qui permet de
+    // partir d'une couleur et d'en garder les déclinaisons.
+    if (state.groupes && state.groupes.length) {
+      corps.appendChild(el("h2", {}, ["Palette harmonieuse"]));
+      for (const groupe of state.groupes) {
+        corps.appendChild(el("div", { class: "groupe" }, [
+          el("h3", {}, [groupe.nom]),
+          el("button", {
+            title: "Ajouter ce groupe à la palette",
+            // ⛔ **UNE SEULE NAVIGATION POUR TOUT LE GROUPE.** Deux
+            // `location.href` dans la même tâche se TÉLESCOPENT en silence —
+            // seule la dernière action arriverait, et le groupe serait
+            // tronqué sans que rien ne le dise. On joint donc les couleurs,
+            // et Rust les découpe.
+            onclick: () => go("palette-ajouter-groupe", groupe.teintes.join(",")),
+          }, ["+"]),
+        ]));
+        corps.appendChild(rangee(groupe.teintes));
+      }
+    }
+
+    renderBibliotheque();
+  }
+
+  // ⭐ **LA FENÊTRE DOIT MONTRER TOUT SON CONTENU** — voir `cef_couleurs::
+  // appliquer_hauteur`, qui reçoit ce chiffre et redimensionne.
+  //
+  // ⛔ **UNE SEULE NAVIGATION.** Deux `location.href` dans la même tâche se
+  // TÉLESCOPENT en silence — le même piège que le « + » d'un groupe d'harmonies
+  // plus haut. La mesure part donc SEULE, jamais accompagnée.
+  //
+  // ⛔ **ON NE MESURE PAS `main.scrollHeight` — ET C'EST UN PIÈGE DE
+  // RÉTROACTION, pas une imprécision.** `main` est étiré par le flex du `body`
+  // (`flex: 1 1 auto`) : dès que le contenu est plus COURT que la fenêtre, son
+  // `scrollHeight` rend la hauteur du CONTENEUR. La mesure serait donc juste
+  // quand ça déborde, et se surestimerait dès que ça ne déborde plus — la
+  // fenêtre garderait pour toujours le vide qu'un premier agrandissement aurait
+  // créé, et ne redescendrait jamais.
+  //
+  // On mesure donc les DEUX MOITIÉS du contenu, qui sont des blocs ordinaires et
+  // se taillent sur ce qu'elles portent : `#corps` (reconstruit à chaque
+  // `setState`) et `#fichiers` (statique — palettes, champ, boutons, aide).
+  // Seule la barre de titre est ajoutée, plus le rembourrage bas de `main`.
+  // ⭐ **LA SOUPLESSE — MÊME RÔLE ET MÊME NOM QUE DANS `cef_caracteres`.** Une
+  // fenêtre taillée EXACTEMENT sur son contenu ramène la barre de défilement que
+  // ce correctif ferme : elle ne se contente pas de s'afficher, elle RÉTRÉCIT la
+  // largeur, donc le texte se remet à la ligne et le contenu RALLONGE — un
+  // débordement d'une unité se paie en re-flux, une marge de quelques unités ne
+  // se voit pas. Mesuré : à `+ 2` puis `+ 24`, la barre était TOUJOURS là.
+  const SOUPLESSE = 48;
+
+  function mesurer() {
+    const barre = document.getElementById("barre");
+    const corps = document.getElementById("corps");
+    const fichiers = document.getElementById("fichiers");
+    if (!corps || !fichiers) return;
+    // ⚠️ **LA SOMME DES DEUX MOITIÉS NE VOIT PAS TOUT, ET LA MESURE A ÉTÉ
+    // CORRIGÉE PAR ELLE.** Mesurée à `+ 2` de marge, elle donnait 431 unités :
+    // le contenu descendait bien jusqu'au bas, mais **une barre de défilement
+    // apparaissait** — et elle ne se contente pas de se montrer, elle RÉTRÉCIT
+    // la largeur, donc le texte se remet à la ligne et le contenu RALLONGE.
+    // Manquaient les marges entre les deux moitiés, que ni `offsetHeight` ni
+    // `scrollHeight` ne comptent.
+    //
+    // `+ 16` : le `padding: 0 16px 16px` de `main`. `+ SOUPLESSE` : ces marges,
+    // plus de quoi ne JAMAIS déclencher la barre de défilement.
+    const unites =
+      (barre ? barre.offsetHeight : 0) +
+      corps.scrollHeight +
+      fichiers.offsetHeight +
+      16 +
+      SOUPLESSE;
+    // ⚠️ Mesurées SOUS le zoom de la page : la fenêtre, elle, voit ces unités
+    // multipliées par lui (`--text-scale`).
+    go("hauteur", String(Math.ceil(unites * (state.contentScale || 1))));
+  }
+
+  window.setState = function (next) {
+    const json = JSON.stringify(next);
+    if (json === dernierJson) return;
+    dernierJson = json;
+    state = next;
+    // Un nom supprimé disparaît de la liste : l'attente n'a plus d'objet. La
+    // garder ferait qu'une palette RECRÉÉE sous le même nom serait effacée au
+    // premier clic, sans confirmation.
+    if (suppressionEnAttente && !(next.bibliotheque || []).includes(suppressionEnAttente)) {
+      suppressionEnAttente = null;
+    }
+    document.documentElement.style.setProperty("--text-scale", state.contentScale || 1);
+    render();
+    // ⭐ **LA MESURE VIENT APRÈS LE RENDU** — elle porte sur le contenu que
+    // `render` vient de construire. Rust demande une mesure par OUVERTURE, et
+    // referme le drapeau en appliquant (voir `appliquer_hauteur`) : c'est ce qui
+    // empêche la fenêtre de se redimensionner toute seule sous la main de
+    // l'utilisateur à chaque changement de couleur.
+    if (next.mesurer) mesurer();
+  };
+
+  render();
+  go("ready");
+</script>
+</body>
+</html>

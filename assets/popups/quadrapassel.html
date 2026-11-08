@@ -1,0 +1,386 @@
+<!doctype html>
+<!--
+  win32::cef_quadrapassel — un fork web du jeu GNOME Quadrapassel (clone de
+  Tetris), en applet de la zone Intégrés.
+
+  DEMANDE (2026-11-07) : « une applet pour le quadrapassel de gnome ».
+
+  ⚠️ **LA FACTURE DE `jeu2048.html`** — bande de titre qui DÉPLACE la fenêtre,
+  punaise, croix, et les MÊMES trois verbes de fenêtre (`deplacer`, `epingler`,
+  `fermer`). Ce qui change : le jeu vit ENTIÈREMENT dans cette page (aucune
+  logique côté Rust), piloté au clavier (flèches / ZQSD / espace). Le meilleur
+  score tient dans `localStorage`.
+
+  ⛔ **AUCUN `menu.js`** : c'est une FENÊTRE, sa taille ne se négocie pas.
+
+  ⚠️ **AUCUN `background` sur `<html>`/`<body>`** : le fond est le BUREAU FLOUTÉ que
+  Rust dessine SOUS la page ; les couleurs du thème viennent des variables CSS
+  `--popup-*` posées par la composition.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: var(--nd-police);
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    user-select: none;
+  }
+  #barre {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    cursor: default;
+  }
+  #titre {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .bouton {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+  }
+  .bouton:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  .bouton[aria-pressed="true"] {
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1)));
+    opacity: 1;
+  }
+  #scene {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    gap: 12px;
+    padding: 12px;
+    box-sizing: border-box;
+  }
+  #jeu {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  /* Le plateau : une surface arrondie qui porte le canevas. */
+  #plateau {
+    border-radius: var(--nd-rayon-grand, 12px);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.12 * var(--popup-fond-alpha, 1)));
+    display: block;
+  }
+  #cote {
+    flex: 0 0 auto;
+    width: 92px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .carte {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 6px 8px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.12 * var(--popup-fond-alpha, 1)));
+  }
+  .carte .etiq { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
+  .carte .val { font-size: 18px; font-weight: 700; line-height: 1.3; font-variant-numeric: tabular-nums; }
+  #suivant { display: block; }
+  #nouvelle {
+    all: unset;
+    margin-top: auto;
+    text-align: center;
+    padding: 8px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.40 * var(--popup-fond-alpha, 1)));
+  }
+  #nouvelle:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.60 * var(--popup-fond-alpha, 1))); }
+  #fin {
+    position: absolute;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    border-radius: var(--nd-rayon-grand, 12px);
+    background: rgba(var(--popup-fond-rgb, 20, 20, 20), calc(0.72 * var(--popup-fond-alpha, 1)));
+    z-index: 2;
+  }
+  #fin.vu { display: flex; }
+  #fin .mot { font-size: 26px; font-weight: 800; }
+  #fin button {
+    all: unset;
+    padding: 10px 18px;
+    font-size: 14px;
+    font-weight: 700;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.55 * var(--popup-fond-alpha, 1)));
+  }
+  #aide {
+    flex: 0 0 auto;
+    text-align: center;
+    font-size: 11px;
+    opacity: .6;
+    padding: 0 12px 10px 12px;
+  }
+</style>
+</head>
+<body>
+  <div id="barre">
+    <span id="titre">Quadrapassel</span>
+    <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
+    <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="scene">
+    <div id="jeu">
+      <canvas id="plateau"></canvas>
+      <div id="fin"><span class="mot" id="fin-mot"></span><button id="rejouer">Rejouer</button></div>
+    </div>
+    <div id="cote">
+      <div class="carte"><span class="etiq">Score</span><span class="val" id="score">0</span></div>
+      <div class="carte"><span class="etiq">Record</span><span class="val" id="record">0</span></div>
+      <div class="carte"><span class="etiq">Lignes</span><span class="val" id="lignes">0</span></div>
+      <div class="carte"><span class="etiq">Niveau</span><span class="val" id="niveau">1</span></div>
+      <div class="carte"><span class="etiq">Suivant</span><canvas id="suivant" width="72" height="56"></canvas></div>
+      <button id="nouvelle">Nouvelle</button>
+    </div>
+  </div>
+  <div id="aide">← → ou Q D : déplacer · ↑ / W : tourner · ↓ : descendre · Espace : chute</div>
+<script>
+  "use strict";
+  const COLS = 10, ROWS = 20;
+  const CLE_RECORD = "neuradesk-quadrapassel-record";
+
+  function go(action) { location.href = "neuradesk://quadrapassel/" + action; }
+  document.getElementById("barre").addEventListener("mousedown", function (e) {
+    if (e.target.closest("button")) return;
+    go("deplacer");
+  });
+  document.getElementById("epingle").addEventListener("click", function () { go("epingler"); });
+  document.getElementById("fermer").addEventListener("click", function () { go("fermer"); });
+
+  // Les sept tétrominos : une matrice carrée (pour tourner par transposition) et
+  // une couleur. Standard de Tetris.
+  const PIECES = [
+    { c: "#22d3ee", m: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]] }, // I
+    { c: "#facc15", m: [[1,1],[1,1]] },                               // O
+    { c: "#c084fc", m: [[0,1,0],[1,1,1],[0,0,0]] },                   // T
+    { c: "#4ade80", m: [[0,1,1],[1,1,0],[0,0,0]] },                   // S
+    { c: "#f87171", m: [[1,1,0],[0,1,1],[0,0,0]] },                   // Z
+    { c: "#60a5fa", m: [[1,0,0],[1,1,1],[0,0,0]] },                   // J
+    { c: "#fb923c", m: [[0,0,1],[1,1,1],[0,0,0]] },                   // L
+  ];
+
+  const plateau = document.getElementById("plateau");
+  const ctx = plateau.getContext("2d");
+  const suivantCanvas = document.getElementById("suivant");
+  const ctxSuivant = suivantCanvas.getContext("2d");
+
+  let grille, piece, suivante, score, record, lignes, niveau, fini, cellule, chuteMs, dernier;
+
+  function matriceVide() {
+    return Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+  }
+  function nouvellePiece() {
+    const base = PIECES[Math.floor(Math.random() * PIECES.length)];
+    return { m: base.m.map((l) => l.slice()), c: base.c, x: Math.floor((COLS - base.m[0].length) / 2), y: -base.m.length + 1 };
+  }
+  function tourner(m) {
+    const n = m.length;
+    const t = Array.from({ length: n }, () => Array(n).fill(0));
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) t[c][n - 1 - r] = m[r][c];
+    return t;
+  }
+  function collision(m, x, y) {
+    for (let r = 0; r < m.length; r++) {
+      for (let c = 0; c < m[r].length; c++) {
+        if (!m[r][c]) continue;
+        const gx = x + c, gy = y + r;
+        if (gx < 0 || gx >= COLS || gy >= ROWS) return true;
+        if (gy >= 0 && grille[gy][gx]) return true;
+      }
+    }
+    return false;
+  }
+  function figer() {
+    for (let r = 0; r < piece.m.length; r++) {
+      for (let c = 0; c < piece.m[r].length; c++) {
+        if (!piece.m[r][c]) continue;
+        const gy = piece.y + r, gx = piece.x + c;
+        if (gy < 0) { terminer(); return; }
+        grille[gy][gx] = piece.c;
+      }
+    }
+    nettoyer();
+    piece = suivante;
+    suivante = nouvellePiece();
+    if (collision(piece.m, piece.x, piece.y)) terminer();
+    dessinerSuivant();
+  }
+  function nettoyer() {
+    let faites = 0;
+    for (let r = ROWS - 1; r >= 0; r--) {
+      if (grille[r].every((x) => x)) {
+        grille.splice(r, 1);
+        grille.unshift(Array(COLS).fill(null));
+        faites++;
+        r++;
+      }
+    }
+    if (faites) {
+      lignes += faites;
+      score += [0, 100, 300, 500, 800][faites] * niveau;
+      niveau = 1 + Math.floor(lignes / 10);
+      chuteMs = Math.max(90, 650 - (niveau - 1) * 55);
+      if (score > record) { record = score; try { localStorage.setItem(CLE_RECORD, String(record)); } catch (e) {} }
+      tete();
+    }
+  }
+  function descendre() {
+    if (collision(piece.m, piece.x, piece.y + 1)) { figer(); return; }
+    piece.y++;
+  }
+  function chute() {
+    while (!collision(piece.m, piece.x, piece.y + 1)) piece.y++;
+    figer();
+  }
+  function bouger(dx) {
+    if (!collision(piece.m, piece.x + dx, piece.y)) piece.x += dx;
+  }
+  function pivoter() {
+    const m = tourner(piece.m);
+    for (const dx of [0, -1, 1, -2, 2]) {
+      if (!collision(m, piece.x + dx, piece.y)) { piece.m = m; piece.x += dx; return; }
+    }
+  }
+
+  function tete() {
+    document.getElementById("score").textContent = score;
+    document.getElementById("record").textContent = record;
+    document.getElementById("lignes").textContent = lignes;
+    document.getElementById("niveau").textContent = niveau;
+  }
+
+  function ajuster() {
+    const jeu = document.getElementById("jeu");
+    const dispoW = jeu.clientWidth, dispoH = jeu.clientHeight;
+    cellule = Math.max(6, Math.floor(Math.min(dispoW / COLS, dispoH / ROWS)));
+    plateau.width = cellule * COLS;
+    plateau.height = cellule * ROWS;
+  }
+
+  function bloc(context, x, y, taille, couleur) {
+    context.fillStyle = couleur;
+    context.fillRect(x + 1, y + 1, taille - 2, taille - 2);
+    context.fillStyle = "rgba(255,255,255,0.18)";
+    context.fillRect(x + 1, y + 1, taille - 2, Math.max(1, taille * 0.18));
+  }
+
+  function dessiner() {
+    ctx.clearRect(0, 0, plateau.width, plateau.height);
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (grille[r][c]) bloc(ctx, c * cellule, r * cellule, cellule, grille[r][c]);
+      }
+    }
+    if (piece) {
+      for (let r = 0; r < piece.m.length; r++) {
+        for (let c = 0; c < piece.m[r].length; c++) {
+          if (piece.m[r][c] && piece.y + r >= 0) bloc(ctx, (piece.x + c) * cellule, (piece.y + r) * cellule, cellule, piece.c);
+        }
+      }
+    }
+  }
+  function dessinerSuivant() {
+    ctxSuivant.clearRect(0, 0, suivantCanvas.width, suivantCanvas.height);
+    const m = suivante.m, t = 12;
+    const w = m[0].length * t, h = m.length * t;
+    const ox = (suivantCanvas.width - w) / 2, oy = (suivantCanvas.height - h) / 2;
+    for (let r = 0; r < m.length; r++) {
+      for (let c = 0; c < m[r].length; c++) {
+        if (m[r][c]) bloc(ctxSuivant, ox + c * t, oy + r * t, t, suivante.c);
+      }
+    }
+  }
+
+  function boucle(t) {
+    if (fini) return;
+    if (!dernier) dernier = t;
+    if (t - dernier >= chuteMs) { descendre(); dernier = t; }
+    dessiner();
+    requestAnimationFrame(boucle);
+  }
+
+  function terminer() {
+    fini = true;
+    document.getElementById("fin-mot").textContent = "Partie terminée";
+    document.getElementById("fin").classList.add("vu");
+  }
+
+  function neuf() {
+    grille = matriceVide();
+    score = 0; lignes = 0; niveau = 1; fini = false; chuteMs = 650; dernier = 0;
+    piece = nouvellePiece();
+    suivante = nouvellePiece();
+    document.getElementById("fin").classList.remove("vu");
+    ajuster();
+    tete();
+    dessinerSuivant();
+    requestAnimationFrame(boucle);
+  }
+
+  window.addEventListener("keydown", function (e) {
+    if (fini) return;
+    const k = e.key;
+    let pris = true;
+    if (k === "ArrowLeft" || k === "q" || k === "Q") bouger(-1);
+    else if (k === "ArrowRight" || k === "d" || k === "D") bouger(1);
+    else if (k === "ArrowDown" || k === "s" || k === "S") { descendre(); dernier = performance.now(); }
+    else if (k === "ArrowUp" || k === "w" || k === "W" || k === "z" || k === "Z") pivoter();
+    else if (k === " ") chute();
+    else pris = false;
+    if (pris) { e.preventDefault(); dessiner(); }
+  });
+  window.addEventListener("resize", function () { if (!fini) { ajuster(); dessiner(); } });
+
+  document.getElementById("nouvelle").addEventListener("click", neuf);
+  document.getElementById("rejouer").addEventListener("click", neuf);
+
+  // L'état de fenêtre que Rust pousse : seulement la punaise.
+  window.setState = function (state) {
+    const epingle = document.getElementById("epingle");
+    epingle.setAttribute("aria-pressed", String(!!state.epingle));
+    epingle.innerHTML = state.epingle ? '<span class="ico ico-push-pin-fill"></span>' : '<span class="ico ico-push-pin"></span>';
+    epingle.title = state.epingle ? "Ne plus rester au premier plan" : "Rester au premier plan";
+  };
+
+  try { record = parseInt(localStorage.getItem(CLE_RECORD), 10) || 0; } catch (e) { record = 0; }
+  neuf();
+</script>
+</body>
+</html>

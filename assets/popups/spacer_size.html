@@ -1,0 +1,376 @@
+<!doctype html>
+<!--
+  win32::cef_spacer_size (clic droit sur un espace invisible du dock) —
+  reproduit en CSS le contenu de win32::popup_menu::render_spacer_size.
+
+  Contrairement aux popups précédents, `<input type="range">` avec un
+  gestionnaire `input` (pas `change`) : il se déclenche à CHAQUE pas du
+  glissement, pas seulement au relâchement — même comportement "EN TEMPS
+  RÉEL" que `egui::Slider::changed()` (voir la doc de
+  `render_spacer_size`). Chaque pas fait `location.href =
+  "neuradesk://spacer/size/<px>"`, intercepté comme les autres popups
+  (RequestHandler::on_before_browse) — un curseur HTML natif au clavier/
+  souris (glisser, flèches, clic sur le rail) déclenche `input` dans tous
+  les cas, aucune logique de glissement à réimplémenter.
+
+  QUATRE GRANDEURS, quatre commandes, JAMAIS LES QUATRE ENSEMBLE : un espace
+  LATÉRAL porte la taille de son blanc, OU — s'il est un SÉPARATEUR DE ZONE — la
+  cote de la zone qu'il ouvre, le nombre de colonnes de sa grille et son verrou
+  (voir win32::cef_spacer_size, doc de module). Rust pousse `null` pour la
+  grandeur qui ne s'applique pas, et c'est cette ABSENCE qui masque la ligne :
+  un `0` l'afficherait et laisserait croire à une zone de hauteur nulle. La
+  dernière ligne est une CASE et non un curseur : un verrou n'a que deux états.
+  **Le blanc est du nombre** : un séparateur de zone n'en a plus (son emplacement
+  vaut la taille de son marqueur, voir ui::dock::bar_layout), donc Rust annonce
+  `size: null` et la ligne disparaît — c'est la réciproque exacte de la cote.
+  Son plafond (`maxCote`) vient aussi de Rust (ui::dock::Dock::zone_cote_max),
+  jamais d'une constante recopiée ici : le curseur et le geste de
+  redimensionnement doivent s'arrêter au même endroit. C'est ce plafond qui
+  manquait — la borne unique de 180 px datait du temps où ce popup ne réglait
+  que le blanc d'un espace, et rendait toute cote au-delà INATTEIGNABLE.
+
+  ⛔ **LA COTE NE DESCEND PLUS À 0 — BUG RÉEL SIGNALÉ LE 2026-10-08.** Elle y
+  descendait, et 0 DÉFAIT la zone (voir ui::dock::Dock::set_zone_height) : ce
+  curseur DÉTRUISAIT donc une zone en silence, en affichant simplement « 0 px ».
+  L'utilisateur a perdu sa zone de notification comme ça. Un plancher à 1 px le
+  rend inoffensif — et le curseur d'une HAUTEUR ne peut de toute façon pas valoir
+  zéro : « pas de hauteur » se dit en CACHANT la zone, pas en la défaisant.
+  ⚠️ Le GESTE de redimensionnement, lui, garde le 0 délibérément (on y voit la
+  zone se défaire sous la main) — les deux ne s'arrêtent donc plus au même
+  endroit, et c'est VOULU : un contrôle discret qui détruit est un piège, un
+  geste continu qui défait est une commande.
+
+  PAS d'index de séparateur dans l'action : cette fenêtre est réutilisée
+  pour N'IMPORTE QUEL espace (comme toutes les fenêtres popup de ce
+  projet, un seul exemplaire réutilisé/repositionné à chaque ouverture,
+  voir win32::cef_popup) — win32::cef_spacer_size retient CÔTÉ RUST quel
+  espace est concerné (fixé à l'ouverture, voir son `toggle`), cette page
+  n'a besoin de connaître que les valeurs.
+
+  PAS de `background` sur `<html>`/`<body>` : transparent par défaut en
+  rendu hors-écran CEF.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<script src="menu_contextuel.js"></script>
+<link rel="stylesheet" href="menu.css">
+<style>
+  .menu {
+    padding: 14px;
+    box-sizing: border-box;
+    height: auto;
+    width: fit-content;
+    max-width: 100vw;
+    max-height: 100vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .title {
+    font-weight: 600;
+    font-size: 15px;
+    opacity: calc(0.9 * max(1, var(--popup-alpha, 1)));
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .row[hidden] {
+    display: none;
+  }
+  /* Même aplat que les curseurs (voir `input[type="range"]` plus bas) : c'est
+     le même genre de commande, elle ne doit pas jurer à côté. */
+  input[type="checkbox"] {
+    margin-left: auto;
+    accent-color: rgba(var(--menu-accent-rgb, 255, 255, 255), calc(0.85 * var(--popup-fond-alpha, 1)));
+  }
+  .name {
+    min-width: 118px;
+    opacity: calc(0.75 * max(1, var(--popup-alpha, 1)));
+  }
+  input[type="range"] {
+    flex: 1;
+    /* Aplat plein — voir menu.css, `--menu-accent-rgb` (même choix que le
+       curseur de gain de voicemeeter.html). */
+    accent-color: rgba(var(--menu-accent-rgb, 255, 255, 255), calc(0.85 * var(--popup-fond-alpha, 1)));
+  }
+  .value {
+    min-width: 56px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  /* LES TROIS BOUTONS DE SORTE — même famille que les curseurs voisins, et
+     surtout PAS un `<select>` : en rendu hors écran, la liste d'un `<select>` ne
+     peut pas s'ouvrir (CEF exige `OnPopupShow`/`OnPopupSize`/`PET_POPUP`, que ce
+     dépôt n'implémente pas). */
+  .sorte-choices {
+    margin-left: auto;
+    display: flex;
+    gap: 6px;
+  }
+  .sorte-choices button {
+    all: unset;
+    cursor: pointer;
+    padding: 4px 10px;
+    border-radius: var(--nd-rayon-surface);
+    background: rgba(var(--menu-zone-rgb, 255, 255, 255), calc(0.15 * var(--popup-fond-alpha, 1)));
+  }
+  .sorte-choices button:hover {
+    background: rgba(var(--menu-zone-rgb, 255, 255, 255), calc(0.36 * var(--popup-fond-alpha, 1)));
+  }
+  /* La sorte ACTIVE — un cran plus marquée que le survol, sans quoi on ne saurait
+     pas laquelle est posée quand le pointeur est ailleurs. */
+  .sorte-choices button.actif {
+    background: rgba(var(--menu-zone-rgb, 255, 255, 255), calc(0.55 * var(--popup-fond-alpha, 1)));
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+  <div class="menu">
+    <div class="title">Séparateur</div>
+    <!-- Masquée pour un SÉPARATEUR DE ZONE (`size: null`) : son emplacement vaut
+         la taille de son marqueur (voir ui::dock::bar_layout), donc ce curseur
+         n'y réglerait rien — et l'offrir ferait croire qu'une zone s'agrandit
+         sous la main. Visible d'emblée (`hidden` ABSENT), contrairement aux trois
+         lignes suivantes : c'est la seule qu'un espace ordinaire possède. -->
+    <div class="row" id="size-row">
+      <span class="name">Blanc</span>
+      <input type="range" id="slider" min="4" max="180" step="1">
+      <span class="value" id="value">— px</span>
+    </div>
+    <!-- Masquée tant que Rust n'a pas annoncé de cote (voir la doc
+         d'en-tête) : le `hidden` initial est ce qui évite un saut de mise en
+         page au premier `setState`, qui arrive toujours après le chargement. -->
+    <div class="row" id="cote-row" hidden>
+      <span class="name">Hauteur de zone</span>
+      <input type="range" id="cote" min="1" max="800" step="1">
+      <span class="value" id="cote-value">— px</span>
+    </div>
+    <!-- Le NOMBRE DE COLONNES de la grille (voir win32::cef_spacer_size,
+         `SpacerEdit::Columns`) : masquée comme la précédente, mais pour une
+         raison de plus — la grille n'existe que dans la barre de DROITE (voir
+         ui::dock::Dock::effective_zone_columns), donc Rust ne l'annonce que
+         là. Le plafond (`maxColumns`) vient de la largeur RÉELLE de la barre,
+         jamais d'une constante recopiée : c'est ce qui garantit qu'aucune
+         colonne ne descend sous les 32 px. -->
+    <div class="row" id="columns-row" hidden>
+      <span class="name">Colonnes</span>
+      <input type="range" id="columns" min="1" max="4" step="1">
+      <span class="value" id="columns-value">—</span>
+    </div>
+    <!-- Le VERROU de la zone — DEMANDE EXPLICITE : « pour la barre de
+         droite, la possibilité de verrouiller par séparateur ». Une CASE et non
+         un curseur : il n'y a que deux états, et un rail n'y aurait aucun sens.
+         Masquée tant que Rust n'annonce pas de verrou (`locked: null`), comme
+         les deux lignes précédentes — un espace ordinaire ne peut pas être
+         verrouillé, et l'afficher décoché le laisserait croire. -->
+    <label class="row" id="locked-row" hidden>
+      <span class="name">Verrouiller la zone</span>
+      <input type="checkbox" id="locked">
+    </label>
+    <!-- LA SORTE — trois BOUTONS, jamais un `<select>` : en rendu hors écran, la
+         liste d'un `<select>` ne peut pas s'ouvrir (CEF exige `OnPopupShow`/
+         `OnPopupSize`/`PET_POPUP`, que ce dépôt n'implémente pas). C'est la règle
+         écrite une fois pour toutes, et elle vaut ici comme ailleurs.
+
+         ⚠️ LE BOUTON « Élastique » EST MASQUÉ HORS DE LA BARRE DU BAS (`hidden`,
+         posé par `setState` sur `elastiquePossible`) : c'est la seule barre dont
+         la largeur soit connue, donc la seule où « ce qui reste » existe. Le
+         proposer ailleurs serait un réglage SANS EFFET — pire qu'un réglage
+         absent, et ce popup applique déjà cette règle au blanc d'un séparateur de
+         zone (voir `sorte-row`, plus bas). -->
+    <div class="row" id="sorte-row" hidden>
+      <span class="name">Sorte</span>
+      <div class="sorte-choices" id="sorte-choices">
+        <button id="sorte-rond" type="button">Rond</button>
+        <button id="sorte-trait" type="button">Trait</button>
+        <button id="sorte-elastique" type="button">Élastique</button>
+      </div>
+    </div>
+  </div>
+  <script>
+    const slider = document.getElementById("slider");
+    // Plafond de la rangée « Taille » hors emplacement — LU de l'attribut
+    // `max` de la balise plutôt que recopié : c'est ce littéral-là qui est la
+    // définition, et `setState` doit pouvoir le REPOSER après une ouverture sur
+    // un emplacement, qui a le sien (voir plus bas).
+    const DEFAULT_SIZE_MAX = Number(slider.max);
+    const value = document.getElementById("value");
+    const sizeRow = document.getElementById("size-row");
+    const coteRow = document.getElementById("cote-row");
+    const cote = document.getElementById("cote");
+    const coteValue = document.getElementById("cote-value");
+    const columnsRow = document.getElementById("columns-row");
+    const columns = document.getElementById("columns");
+    const columnsValue = document.getElementById("columns-value");
+    const lockedRow = document.getElementById("locked-row");
+    const locked = document.getElementById("locked");
+    const sorteRow = document.getElementById("sorte-row");
+    // Une entrée par sorte, indexée par SA CLÉ — celle que Rust relit
+    // (`SorteEspace::depuis_cle`). Un `forEach` sur ce tableau vaut mieux qu'un
+    // `if` par bouton : ajouter une sorte ne demandera qu'une ligne ICI, et le
+    // tableau des boutons suit tout seul.
+    const sorteBoutons = {
+      rond: document.getElementById("sorte-rond"),
+      trait: document.getElementById("sorte-trait"),
+      elastique: document.getElementById("sorte-elastique"),
+    };
+    for (const [cle, bouton] of Object.entries(sorteBoutons)) {
+      bouton.addEventListener("click", () => {
+        location.href = "neuradesk://spacer/sorte/" + cle;
+      });
+    }
+
+    function updateLabel() {
+      value.textContent = slider.value + " px";
+    }
+
+    function updateCoteLabel() {
+      coteValue.textContent = cote.value + " px";
+    }
+
+    function updateColumnsLabel() {
+      // Pas d'unité : un NOMBRE de colonnes, et « 1 » se lit mieux que « 1 col ».
+      columnsValue.textContent = columns.value;
+    }
+
+    slider.addEventListener("input", () => {
+      updateLabel();
+      location.href = "neuradesk://spacer/size/" + slider.value;
+    });
+
+    cote.addEventListener("input", () => {
+      updateCoteLabel();
+      location.href = "neuradesk://spacer/cote/" + cote.value;
+    });
+
+    // Une case n'a que deux états, et elle les envoie tels quels : c'est Rust
+    // qui les interprète (voir `SpacerEdit::Locked`).
+    locked.addEventListener("change", () => {
+      location.href = "neuradesk://spacer/locked/" + (locked.checked ? "1" : "0");
+    });
+
+    columns.addEventListener("input", () => {
+      updateColumnsLabel();
+      location.href = "neuradesk://spacer/columns/" + columns.value;
+    });
+
+    // Numéro d'ouverture DÉJÀ APPLIQUÉ, `null` au départ — voir
+    // win32::cef_spacer_size, doc de `OPEN_COUNT`.
+    //
+    // Rust repousse l'état à CHAQUE frame tant que ce popup est visible, et
+    // c'est nécessaire : la poussée faite à l'ouverture peut arriver avant que
+    // ce `<script>` n'ait tourné, et `window.setState` n'existe alors pas
+    // encore — la page resterait sur ses valeurs par défaut (défaut réel
+    // constaté par capture : poignée au milieu du rail et ligne « Hauteur de
+    // zone » absente). Mais un état ne s'applique qu'UNE fois par ouverture :
+    // le réappliquer à chaque frame réécrirait la poignée que l'utilisateur
+    // est en train de glisser — règle du projet, « ne jamais réécrire ce que
+    // l'utilisateur règle à la main » — et, Rust ayant une frame de retard sur
+    // l'action qu'on vient de lui envoyer, ferait carrément RECULER le curseur
+    // sous le doigt.
+    //
+    // C'est ce que porte `open` : un état d'ouverture différent s'applique
+    // toujours (y compris quand le popup est rouvert sur un AUTRE espace,
+    // cette fenêtre étant réutilisée), le même est ignoré.
+    let appliedOpen = null;
+
+    // Appelée depuis Rust (win32::cef_spacer_size::push_state) — les valeurs
+    // de l'espace concerné, lues côté Rust à l'ouverture (voir la doc
+    // d'en-tête : reflète toujours l'état réel, même garantie que la version
+    // egui d'origine).
+    window.setState = function (next) {
+      if (next.open === appliedOpen) {
+        return;
+      }
+      appliedOpen = next.open;
+      // `typeof null` vaut "object" : c'est bien l'absence qui masque la ligne —
+      // ici celle du BLANC, que Rust n'annonce plus pour un séparateur de zone.
+      const hasSize = typeof next.size === "number";
+      sizeRow.hidden = !hasSize;
+      if (hasSize) {
+        // Le PLAFOND vient de Rust quand la cible en a un — un EMPLACEMENT de
+        // la rangée de la barre du haut (voir ui::topbar::MAX_SLOT_WIDTH), plus
+        // large que celui d'un espace du dock. Sinon le rail garde le sien.
+        //
+        // **IL FAUT LE REPOSER, et pas seulement le poser** : cette fenêtre est
+        // RÉUTILISÉE pour n'importe quel espace (voir win32::cef_spacer_size,
+        // doc de module), donc `slider.max` garderait la valeur de l'ouverture
+        // PRÉCÉDENTE — un espace du dock hériterait du plafond d'un emplacement,
+        // et le curseur promettrait une taille que Rust ramènerait ensuite.
+        // `DEFAULT_SIZE_MAX` est lu de l'attribut `max` de la balise : il n'y a
+        // qu'un littéral, celui qu'on lit à l'écran.
+        slider.max = (typeof next.maxSize === "number" && next.maxSize > 0)
+          ? Math.round(next.maxSize)
+          : DEFAULT_SIZE_MAX;
+        // La valeur APRÈS le plafond, comme pour les colonnes plus bas : posée
+        // d'abord, une valeur au-dessus du rail serait rognée par le navigateur
+        // et la poignée ne suivrait pas le doigt.
+        slider.value = Math.round(next.size);
+        updateLabel();
+      }
+      // `typeof null` vaut "object" : c'est bien l'absence qui masque la ligne.
+      //
+      // LES DEUX LIGNES DE ZONE SONT INDÉPENDANTES, et chacune a son propre
+      // `return` : la COTE est annoncée pour toute zone, les COLONNES seulement
+      // pour une zone de la barre de droite (voir la doc d'en-tête). Les lier
+      // ferait disparaître l'une quand l'autre manque.
+      const hasCote = typeof next.cote === "number";
+      coteRow.hidden = !hasCote;
+      if (hasCote) {
+        if (typeof next.maxCote === "number" && next.maxCote > 0) {
+          cote.max = Math.round(next.maxCote);
+        }
+        cote.value = Math.round(next.cote);
+        updateCoteLabel();
+      }
+
+      // `typeof null` vaut "object" : c'est bien l'absence qui masque la ligne.
+      const hasLocked = typeof next.locked === "boolean";
+      lockedRow.hidden = !hasLocked;
+      if (hasLocked) {
+        locked.checked = next.locked;
+      }
+
+      // **LA SORTE — `null` HORS D'UN ESPACE DE DOCK, ET C'EST CE QUI MASQUE LA
+      // LIGNE.** Un emplacement de la rangée du haut n'a pas de case propre à
+      // traverser (`spacer_hover_line_rect` y rend `(0,0)`) : lui proposer
+      // « Trait » serait un contrôle qui ment. Même contrat que le blanc et la
+      // cote, dont c'est l'absence qui cache la ligne.
+      const aUneSorte = typeof next.sorte === "string";
+      sorteRow.hidden = !aUneSorte;
+      if (aUneSorte) {
+        // ⚠️ **L'ÉLASTIQUE N'EST PROPOSÉ QUE LÀ OÙ IL A UN EFFET** — la barre du
+        // bas, la seule dont la largeur soit connue (voir `SorteEspace`). Le
+        // masquer plutôt que le griser : un bouton grisé laisse croire qu'il
+        // s'activera un jour, un bouton absent dit la vérité.
+        sorteBoutons.elastique.hidden = !next.elastiquePossible;
+        // Et si la sorte COURANTE est justement celle qu'on masque (un élastique
+        // posé sur une autre barre, puis rouvert), on ne la surligne pas : le
+        // bouton n'est pas là pour le dire.
+        for (const [cle, bouton] of Object.entries(sorteBoutons)) {
+          bouton.classList.toggle("actif", cle === next.sorte && !bouton.hidden);
+        }
+      }
+
+      const hasColumns = typeof next.columns === "number";
+      columnsRow.hidden = !hasColumns;
+      if (hasColumns) {
+        // Le PLAFOND d'abord : poser une valeur au-dessus de celui-ci la ferait
+        // rogner par le navigateur, et la poignée ne suivrait pas le doigt.
+        if (typeof next.maxColumns === "number" && next.maxColumns > 0) {
+          columns.max = Math.round(next.maxColumns);
+        }
+        columns.value = Math.round(next.columns);
+        updateColumnsLabel();
+      }
+    };
+  </script>
+<script src="menu.js"></script>
+</body>
+</html>

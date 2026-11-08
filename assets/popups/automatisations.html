@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<!--
+  LES AUTOMATISATIONS « quand… alors… » (voir `win32::cef_automatisations`, qui
+  porte les actions, et `win32::automatisations`, le moteur).
+
+  ÉTAT REÇU (window.setState), à chaque frame où le panneau est visible :
+    { automatisation: [ { nom, actif, quand, heure, minute, jours, exe, sens,
+                          conditions: [...], actions: [...] } ],
+      journal: [ { quand, automatisation, resume, reussi } ], contentScale }
+
+  APPELS DE RUST (window.automatisations.*) :
+    montre()      — le panneau vient de s'ouvrir.
+
+  ACTIONS ÉMISES (`go(...)`, segments encodés séparément) :
+    ready · close · editer · tester <nom>
+
+  ⚠️ **LA LISTE ENTIÈRE PART PAR `cef_data`, PAS PAR `neuradesk://`** : une
+  automatisation avec ses conditions et ses actions dépasse vite la taille d'une
+  URL, et deux navigations dans la même tâche se télescopent. La page POSTE
+  d'abord, puis émet `editer` dans le `.then()` — le corps doit être arrivé
+  avant que Rust ne le lise.
+
+  ⚠️ **LE FORMULAIRE N'EST JAMAIS RECONSTRUIT SOUS LES DOIGTS.** L'état est
+  repoussé à chaque frame (le journal bouge tout seul) ; si un rendu refaisait le
+  formulaire pendant la saisie, le curseur et la frappe en cours seraient perdus.
+  `rendre()` ne touche donc QUE la liste et le journal.
+
+  ⛔ **PAS DE `<select>` DANS UNE PAGE CEF** (règle du dépôt) : des boutons.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    display: flex;
+    flex-direction: column;
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    height: calc(100vh / var(--text-scale));
+    overflow: hidden;
+  }
+  header { display: flex; align-items: center; gap: 10px; padding: 12px 16px 8px; flex: 0 0 auto; }
+  h1 { margin: 0; font-size: 17px; font-weight: 600; white-space: nowrap; }
+  h2 { margin: 18px 16px 6px; font-size: 13px; font-weight: 600; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); text-transform: uppercase; letter-spacing: .06em; }
+  button {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    color: inherit; border: none; border-radius: var(--nd-rayon-controle);
+    padding: 4px 10px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  button:hover { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  button.actif { background: rgb(var(--popup-accent-solid-rgb)); color: rgba(var(--popup-on-accent-solid-rgb, 0, 0, 0), min(1, var(--popup-alpha, 1))); }
+  button.discret { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.1 * var(--popup-fond-alpha, 1))); }
+  button.discret:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.2 * var(--popup-fond-alpha, 1))); }
+  .close-btn { background: none; font-size: 16px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); margin-left: auto; }
+  .close-btn:hover { background: none; opacity: 1; }
+  .cache { display: none !important; }
+
+  input[type=text], input[type=number], input[type=time] {
+    font: inherit; font-size: 13px; color: inherit;
+    padding: 4px 8px; border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.08 * var(--popup-fond-alpha, 1)));
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.25 * var(--popup-fond-alpha, 1)));
+    outline: none; min-width: 0;
+  }
+  input:focus { border-color: rgba(var(--popup-accent-rgb), calc(.9 * var(--popup-fond-alpha, 1))); }
+  input::placeholder { color: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.45 * var(--popup-alpha, 1))); }
+
+  #corps { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  .ligne {
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto auto;
+    gap: 4px 10px; align-items: center;
+    padding: 7px 10px; margin: 2px 8px; border-radius: 5px;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.05 * var(--popup-fond-alpha, 1)));
+  }
+  .ligne.eteinte { opacity: calc(.55 * max(1, var(--popup-alpha, 1))); }
+  .ligne .nom { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ligne .quand { grid-column: 2 / span 5; font-size: 11px; opacity: calc(.6 * max(1, var(--popup-alpha, 1))); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ligne .resume { grid-column: 2 / span 5; font-size: 12px; opacity: calc(.75 * max(1, var(--popup-alpha, 1))); }
+
+  #form { padding: 0 16px 12px; }
+  #form .bloc { margin: 10px 0; padding: 10px; border-radius: 6px; background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.05 * var(--popup-fond-alpha, 1))); }
+  #form .bloc > .titre { font-size: 12px; opacity: calc(.65 * max(1, var(--popup-alpha, 1))); margin-bottom: 6px; }
+  #form .rangee { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+  #form .rangee > .etiquette { font-size: 12px; opacity: calc(.6 * max(1, var(--popup-alpha, 1))); min-width: 62px; }
+  .item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0; padding: 6px 8px; border-radius: 5px; background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.05 * var(--popup-fond-alpha, 1))); }
+  .item .retirer { margin-left: auto; }
+  .jour { padding: 3px 8px; font-size: 12px; }
+  .journal { margin: 0 8px; font-size: 12px; }
+  .journal .entree { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 10px; padding: 3px 10px; border-radius: 3px; }
+  .journal .entree.rate { color: rgb(255, 130, 120); }
+  .journal .heure, .journal .qui { opacity: calc(.6 * max(1, var(--popup-alpha, 1))); white-space: nowrap; }
+  .vide, .aide { padding: 14px 16px; font-size: 13px; opacity: calc(.6 * max(1, var(--popup-alpha, 1))); line-height: 1.5; }
+  #message { padding: 4px 16px; font-size: 13px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); flex: 0 0 auto; }
+  #message.erreur { color: rgb(255, 130, 120); opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Automatisations</h1>
+  <button id="nouvelle" class="discret">Nouvelle</button>
+  <button class="close-btn" onclick="go('close')" title="Fermer (Échap)"><span class="ico ico-x"></span></button>
+</header>
+<div id="message" class="cache"></div>
+<div id="corps">
+  <div id="liste"></div>
+  <div id="form" class="cache"></div>
+  <h2>Journal des exécutions</h2>
+  <div id="journal" class="journal"></div>
+</div>
+
+<script>
+  const ROUTE = "automatisations/liste";
+  const CANAL = "http://neuradesk-data.invalid/";
+  const JOURS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"];
+  const SORTES_ACTION = [["lancer", "Lancer"], ["commande", "Commande"], ["theme", "Thème"],
+                         ["eclairage", "Éclairage nocturne"], ["notifier", "Notifier"], ["interface", "Interface"]];
+  const SORTES_CONDITION = [["plage", "Plage horaire"], ["jours", "Jours"], ["programme", "Programme en cours"]];
+
+  function el(tag, attrs, children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (key === "class") node.className = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value);
+    }
+    for (const child of children || []) {
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+    return node;
+  }
+
+  // Segments ENCODÉS un par un : un nom d'automatisation peut porter des « / ».
+  function go(...segments) {
+    location.href = "neuradesk://automatisations/" + segments.map(encodeURIComponent).join("/");
+  }
+
+  const encodeur = new TextEncoder();
+  function poster(route, texte) {
+    return fetch(CANAL + route, { method: "POST", body: encodeur.encode(texte) });
+  }
+
+  const liste = document.getElementById("liste");
+  const form = document.getElementById("form");
+  const journal = document.getElementById("journal");
+  const message = document.getElementById("message");
+  const boutonNouvelle = document.getElementById("nouvelle");
+
+  let etat = { automatisation: [], journal: [] };
+  // Le brouillon : il vit HORS de `etat`, pour qu'une poussée de Rust ne
+  // l'écrase pas pendant la saisie.
+  let brouillon = null;
+
+  // **LA CONFIRMATION SE DEMANDE SUR LE BOUTON, EN DEUX TEMPS** — faute de
+  // boîte native (voir le commentaire de « Supprimer » dans `rendreListe`). Le
+  // bouton s'arme, dit ce qu'il va faire, et se désarme tout seul au bout de
+  // trois secondes : un geste qu'on ne confirme pas n'engage à rien.
+  const DESARMEMENT_MS = 3000;
+  function armer(bouton, action) {
+    if (bouton.dataset.arme === "oui") {
+      bouton.dataset.arme = "";
+      action();
+      return;
+    }
+    bouton.dataset.arme = "oui";
+    const avant = bouton.textContent;
+    bouton.textContent = "Confirmer";
+    bouton.classList.add("actif");
+    setTimeout(() => {
+      bouton.dataset.arme = "";
+      bouton.textContent = avant;
+      bouton.classList.remove("actif");
+    }, DESARMEMENT_MS);
+  }
+
+  function dire(texte, erreur) {
+    message.textContent = texte || "";
+    message.classList.toggle("cache", !texte);
+    message.classList.toggle("erreur", !!erreur);
+  }
+
+  // ------------------------------------------------------------------ lecture
+
+  function resumeDeclencheur(a) {
+    if (a.quand === "heure") {
+      const jours = (a.jours && a.jours.length) ? a.jours.join(", ") : "tous les jours";
+      return `à ${String(a.heure).padStart(2, "0")}:${String(a.minute).padStart(2, "0")} — ${jours}`;
+    }
+    if (a.quand === "programme") return `${a.sens === "ferme" ? "à la fermeture" : "à l'ouverture"} de ${a.exe}`;
+    return "au démarrage de NeuraDesk";
+  }
+
+  function resumeCondition(c) {
+    if (c.sorte === "plage") return `entre ${c.depuis} et ${c.jusqua}`;
+    if (c.sorte === "jours") return `seulement ${(c.jours || []).join(", ")}`;
+    if (c.sorte === "programme") return `si ${c.exe} tourne`;
+    return c.sorte;
+  }
+
+  function resumeAction(a) {
+    if (a.sorte === "lancer") return `lancer ${a.chemin}${a.arguments ? " " + a.arguments : ""}`;
+    if (a.sorte === "commande") return `commande « ${a.nom} »${a.mode === "arriere-plan" ? " (arrière-plan)" : " (onglet visible)"}`;
+    if (a.sorte === "theme") return `thème ${a.valeur}`;
+    if (a.sorte === "eclairage") return `éclairage nocturne ${a.valeur}`;
+    if (a.sorte === "notifier") return `notifier « ${a.titre || "NeuraDesk"} »${a.son ? " (avec son)" : ""}`;
+    if (a.sorte === "interface") return a.masquer ? "masquer l'interface" : "réafficher l'interface";
+    return a.sorte;
+  }
+
+  function resume(a) {
+    const morceaux = (a.actions || []).map(resumeAction);
+    return morceaux.length ? "Alors : " + morceaux.join(" ; ") : "Aucune action";
+  }
+
+  // ------------------------------------------------------------------ écriture
+
+  // Envoie la liste ENTIÈRE : le moteur remplace son état d'un coup.
+  function enregistrer() {
+    const copie = etat.automatisation;
+    poster(ROUTE, JSON.stringify({ automatisation: copie, journal: etat.journal }))
+      .then(() => { go("editer"); }, () => dire("la liste n'a pas pu être envoyée", true));
+  }
+
+  function remplacer(index, auto) {
+    const copie = etat.automatisation.slice();
+    if (index === null) copie.push(auto); else copie[index] = auto;
+    etat = Object.assign({}, etat, { automatisation: copie });
+    enregistrer();
+    rendre();
+  }
+
+  function supprimer(index) {
+    const copie = etat.automatisation.slice();
+    copie.splice(index, 1);
+    etat = Object.assign({}, etat, { automatisation: copie });
+    enregistrer();
+    rendre();
+  }
+
+  function basculer(index) {
+    const copie = etat.automatisation.slice();
+    copie[index] = Object.assign({}, copie[index], { actif: !copie[index].actif });
+    etat = Object.assign({}, etat, { automatisation: copie });
+    enregistrer();
+    rendre();
+  }
+
+  // ------------------------------------------------------------------- le form
+
+  // Une suite de boutons qui n'en laisse qu'un actif — le remplaçant du `<select>`
+  // interdit dans une page CEF.
+  function choix(valeurs, valeur, surChoix) {
+    const rangee = el("div", { class: "rangee" });
+    for (const [cle, libelle] of valeurs) {
+      rangee.appendChild(el("button", {
+        type: "button", class: cle === valeur ? "actif" : "",
+        onclick: () => surChoix(cle),
+      }, [libelle]));
+    }
+    return rangee;
+  }
+
+  function champ(cle, valeur, placeholder, surSaisie, type) {
+    return el("input", {
+      type: type || "text", value: valeur === undefined || valeur === null ? "" : valeur,
+      placeholder: placeholder || "",
+      oninput: (e) => surSaisie(e.target.value),
+    });
+  }
+
+  function itemDeCondition(c, i) {
+    const item = el("div", { class: "item" });
+    item.appendChild(choix(SORTES_CONDITION, c.sorte, (s) => {
+      brouillon.conditions[i] = conditionNeuve(s);
+      rendreForm();
+    }));
+    if (c.sorte === "plage") {
+      item.appendChild(champ("depuis", c.depuis, "08:00", (v) => { c.depuis = v; }));
+      item.appendChild(el("span", {}, ["→"]));
+      item.appendChild(champ("jusqua", c.jusqua, "18:00", (v) => { c.jusqua = v; }));
+    } else if (c.sorte === "jours") {
+      item.appendChild(selecteurJours(c.jours || [], (liste2) => { c.jours = liste2; }));
+    } else {
+      item.appendChild(champ("exe", c.exe, "obs64.exe", (v) => { c.exe = v; }));
+    }
+    item.appendChild(el("button", { type: "button", class: "discret retirer", onclick: () => {
+      brouillon.conditions.splice(i, 1);
+      rendreForm();
+    } }, ["Retirer"]));
+    return item;
+  }
+
+  function itemDAction(a, i) {
+    const item = el("div", { class: "item" });
+    item.appendChild(choix(SORTES_ACTION, a.sorte, (s) => {
+      brouillon.actions[i] = actionNeuve(s);
+      rendreForm();
+    }));
+    if (a.sorte === "lancer") {
+      item.appendChild(champ("chemin", a.chemin, "C:\\Outils\\sauve.bat ou https://…", (v) => { a.chemin = v; }));
+      item.appendChild(champ("arguments", a.arguments, "arguments (facultatif)", (v) => { a.arguments = v; }));
+    } else if (a.sorte === "commande") {
+      item.appendChild(champ("nom", a.nom, "nom de la commande enregistrée", (v) => { a.nom = v; }));
+      item.appendChild(choix([["visible", "Onglet visible"], ["arriere-plan", "Arrière-plan"]], a.mode, (m) => {
+        a.mode = m; rendreForm();
+      }));
+    } else if (a.sorte === "theme") {
+      item.appendChild(choix([["clair", "Clair"], ["sombre", "Sombre"], ["basculer", "Basculer"]], a.valeur, (v) => { a.valeur = v; }));
+    } else if (a.sorte === "eclairage") {
+      item.appendChild(choix([["allumer", "Allumer"], ["eteindre", "Éteindre"], ["basculer", "Basculer"]], a.valeur, (v) => { a.valeur = v; }));
+    } else if (a.sorte === "notifier") {
+      item.appendChild(champ("titre", a.titre, "titre", (v) => { a.titre = v; }));
+      item.appendChild(champ("message", a.message, "message", (v) => { a.message = v; }));
+      item.appendChild(choix([[true, "Avec son"], [false, "Sans son"]], a.son, (s) => { a.son = s === true; }));
+    } else if (a.sorte === "interface") {
+      item.appendChild(choix([[true, "Masquer"], [false, "Réafficher"]], a.masquer, (m) => { a.masquer = m === true; }));
+    }
+    item.appendChild(el("button", { type: "button", class: "discret retirer", onclick: () => {
+      brouillon.actions.splice(i, 1);
+      rendreForm();
+    } }, ["Retirer"]));
+    return item;
+  }
+
+  function selecteurJours(actifs, surChoix) {
+    const rangee = el("div", { class: "rangee" });
+    for (const jour of JOURS) {
+      rangee.appendChild(el("button", {
+        type: "button", class: "jour" + (actifs.indexOf(jour) >= 0 ? " actif" : ""),
+        onclick: (e) => {
+          const actuels = actifs.slice();
+          const i = actuels.indexOf(jour);
+          if (i >= 0) actuels.splice(i, 1); else actuels.push(jour);
+          e.target.classList.toggle("actif", i < 0);
+          surChoix(actuels);
+        },
+      }, [jour.slice(0, 3)]));
+    }
+    return rangee;
+  }
+
+  function conditionNeuve(sorte) {
+    if (sorte === "plage") return { sorte: "plage", depuis: "08:00", jusqua: "18:00" };
+    if (sorte === "jours") return { sorte: "jours", jours: JOURS.slice(0, 5) };
+    return { sorte: "programme", exe: "" };
+  }
+
+  function actionNeuve(sorte) {
+    if (sorte === "lancer") return { sorte: "lancer", chemin: "", arguments: "" };
+    if (sorte === "commande") return { sorte: "commande", nom: "", mode: "visible" };
+    if (sorte === "theme") return { sorte: "theme", valeur: "basculer" };
+    if (sorte === "eclairage") return { sorte: "eclairage", valeur: "basculer" };
+    if (sorte === "notifier") return { sorte: "notifier", titre: "", message: "", son: true };
+    return { sorte: "interface", masquer: true };
+  }
+
+  function autoNeuve() {
+    return { nom: "", actif: false, quand: "heure", heure: 18, minute: 0, jours: [], conditions: [], actions: [] };
+  }
+
+  // ⚠️ Le formulaire est reconstruit ICI et NULLE PART ailleurs : `rendre()` ne
+  // le touche jamais pendant la saisie.
+  function rendreForm() {
+    form.replaceChildren();
+    if (!brouillon) { form.classList.add("cache"); return; }
+    form.classList.remove("cache");
+
+    form.appendChild(el("h2", {}, [brouillon.index === undefined || brouillon.index === null ? "Nouvelle automatisation" : "Modifier l'automatisation"]));
+    form.appendChild(el("div", { class: "rangee" }, [
+      el("span", { class: "etiquette" }, ["Nom"]),
+      champ("nom", brouillon.nom, "Sauvegarde du soir", (v) => { brouillon.nom = v; }),
+    ]));
+
+    const quand = el("div", { class: "bloc" }, [el("div", { class: "titre" }, ["Quand"])]);
+    quand.appendChild(choix([["heure", "À une heure"], ["demarrage", "Au démarrage"], ["programme", "Programme"]], brouillon.quand, (q) => {
+      brouillon.quand = q; rendreForm();
+    }));
+    if (brouillon.quand === "heure") {
+      const rangee = el("div", { class: "rangee" }, [el("span", { class: "etiquette" }, ["Heure"])]);
+      rangee.appendChild(champ("heure", String(brouillon.heure).padStart(2, "0"), "18", (v) => {
+        const n = parseInt(v, 10);
+        // On ne réécrit PAS le champ sous les doigts : seule la valeur retenue
+        // change, la frappe reste ce que l'utilisateur a tapé.
+        if (!isNaN(n) && n >= 0 && n < 24) brouillon.heure = n;
+      }));
+      rangee.appendChild(el("span", {}, [":"]));
+      rangee.appendChild(champ("minute", String(brouillon.minute).padStart(2, "0"), "00", (v) => {
+        const n = parseInt(v, 10);
+        if (!isNaN(n) && n >= 0 && n < 60) brouillon.minute = n;
+      }));
+      quand.appendChild(rangee);
+      quand.appendChild(el("div", { class: "rangee" }, [
+        el("span", { class: "etiquette" }, ["Jours"]),
+        selecteurJours(brouillon.jours || [], (l) => { brouillon.jours = l; }),
+      ]));
+    } else if (brouillon.quand === "programme") {
+      const rangee = el("div", { class: "rangee" }, [el("span", { class: "etiquette" }, ["Programme"])]);
+      rangee.appendChild(champ("exe", brouillon.exe, "obs64.exe", (v) => { brouillon.exe = v; }));
+      rangee.appendChild(choix([["ouvre", "S'ouvre"], ["ferme", "Se ferme"]], brouillon.sens || "ouvre", (s) => { brouillon.sens = s; }));
+      quand.appendChild(rangee);
+    }
+    form.appendChild(quand);
+
+    const conds = el("div", { class: "bloc" }, [el("div", { class: "titre" }, ["Seulement si"])]);
+    brouillon.conditions.forEach((c, i) => conds.appendChild(itemDeCondition(c, i)));
+    conds.appendChild(el("button", { type: "button", class: "discret", onclick: () => {
+      brouillon.conditions.push(conditionNeuve("plage")); rendreForm();
+    } }, ["Ajouter une condition"]));
+    form.appendChild(conds);
+
+    const acts = el("div", { class: "bloc" }, [el("div", { class: "titre" }, ["Alors"])]);
+    brouillon.actions.forEach((a, i) => acts.appendChild(itemDAction(a, i)));
+    acts.appendChild(el("button", { type: "button", class: "discret", onclick: () => {
+      brouillon.actions.push(actionNeuve("notifier")); rendreForm();
+    } }, ["Ajouter une action"]));
+    form.appendChild(acts);
+
+    form.appendChild(el("div", { class: "rangee" }, [
+      el("button", { type: "button", onclick: () => {
+        if (!brouillon.nom.trim()) { dire("donnez un nom à l'automatisation", true); return; }
+        if (!brouillon.actions.length) { dire("ajoutez au moins une action", true); return; }
+        dire("");
+        const index = brouillon.index === undefined ? null : brouillon.index;
+        const copie = Object.assign({}, brouillon);
+        delete copie.index;
+        brouillon = null;
+        remplacer(index, copie);
+        rendreForm();
+      } }, ["Enregistrer"]),
+      el("button", { type: "button", class: "discret", onclick: () => { brouillon = null; rendreForm(); } }, ["Annuler"]),
+    ]));
+  }
+
+  // ------------------------------------------------------------------ le rendu
+
+  function rendreListe() {
+    liste.replaceChildren();
+    const autos = etat.automatisation || [];
+    if (!autos.length) {
+      liste.appendChild(el("div", { class: "aide" }, [
+        "Aucune automatisation. « Nouvelle » en crée une : un déclencheur (quand…), ",
+        "des conditions facultatives (seulement si…), et une ou plusieurs actions (alors…).",
+      ]));
+      return;
+    }
+    autos.forEach((a, i) => {
+      const ligne = el("div", { class: "ligne" + (a.actif ? "" : " eteinte") });
+      // ⛔ **`checked` SE POSE EN PROPRIÉTÉ, JAMAIS PAR `setAttribute`.** `el()`
+      // pose les attributs tels quels : lui passer `null` écrirait la CHAÎNE
+      // « null », et une case à cocher serait cochée pour de bon.
+      const case_ = el("input", {
+        type: "checkbox",
+        title: a.actif ? "Désactiver" : "Activer",
+        onchange: () => basculer(i),
+      });
+      case_.checked = !!a.actif;
+      ligne.appendChild(case_);
+      ligne.appendChild(el("span", { class: "nom" }, [a.nom]));
+      ligne.appendChild(el("button", { class: "discret", onclick: () => {
+        brouillon = JSON.parse(JSON.stringify(a));
+        brouillon.index = i;
+        rendreForm();
+        form.scrollIntoView({ block: "nearest" });
+      } }, ["Modifier"]));
+      ligne.appendChild(el("button", { class: "discret", onclick: () => go("tester", a.nom) }, ["Tester"]));
+      // ⛔ **PAS DE `confirm()`** : CEF rendu HORS ÉCRAN n'affiche pas les
+      // boîtes natives — le clic ne ferait rien du tout, en silence. On demande
+      // donc confirmation SUR LE BOUTON, en deux temps (voir `armer`).
+      const effacer = el("button", { class: "discret", onclick: () => armer(effacer, () => supprimer(i)) }, ["Supprimer"]);
+      ligne.appendChild(effacer);
+      ligne.appendChild(el("span", { class: "quand" }, [resumeDeclencheur(a)]));
+      ligne.appendChild(el("span", { class: "resume" }, [resume(a)]));
+      if ((a.conditions || []).length) {
+        ligne.appendChild(el("span", { class: "quand" }, ["Seulement si " + a.conditions.map(resumeCondition).join(" et ")]));
+      }
+      liste.appendChild(ligne);
+    });
+  }
+
+  function rendreJournal() {
+    journal.replaceChildren();
+    const entrees = (etat.journal || []).slice().reverse();
+    if (!entrees.length) {
+      journal.appendChild(el("div", { class: "vide" }, ["Rien ne s'est encore exécuté."]));
+      return;
+    }
+    for (const e of entrees) {
+      journal.appendChild(el("div", { class: "entree" + (e.reussi ? "" : " rate") }, [
+        el("span", { class: "heure" }, [e.quand]),
+        el("span", { class: "qui" }, [e.automatisation]),
+        el("span", {}, [e.resume]),
+      ]));
+    }
+  }
+
+  // Ne touche NI au formulaire NI à la saisie en cours.
+  function rendre() {
+    rendreListe();
+    rendreJournal();
+  }
+
+  boutonNouvelle.addEventListener("click", () => {
+    brouillon = autoNeuve();
+    brouillon.index = null;
+    rendreForm();
+    form.scrollIntoView({ block: "nearest" });
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") go("close"); });
+
+  window.automatisations = {
+    montre() { rendre(); },
+  };
+
+  let dernierJson = null;
+  window.setState = function (next) {
+    const json = JSON.stringify(next);
+    if (json === dernierJson) return;
+    dernierJson = json;
+    etat = next;
+    document.documentElement.style.setProperty("--text-scale", next.contentScale || 1);
+    rendre();
+  };
+
+  rendre();
+  go("ready");
+</script>
+</body>
+</html>

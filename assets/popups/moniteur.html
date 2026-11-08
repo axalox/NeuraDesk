@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<!--
+  LE MONITEUR SYSTÈME — processeur, mémoire, disque, réseau et carte graphique,
+  avec un historique (voir `win32::cef_moniteur`, qui porte la liste des
+  actions, et `win32::moniteur_systeme`, les mesures et le fil).
+
+  ÉTAT REÇU (window.setState) :
+    { plage: "5min"|"1h"|"24h"|"7j", debutS, pasS,
+      series: { <nom>: { actuel: n|null, moy: [n|null], max: [n|null] | null } },
+      coeurs: [%], ramUtilisee, ramTotale,
+      taches: [{ nom, instances, cpu: % de la machine }],
+      appareils: [{ cle, sorte: "disque"|"gpu", nom, precision, memoireTotale,
+                    series: { <nom>: comme ci-dessus } }], contentScale,
+      couleurs: { <nom de série>: "#rrggbb" } }
+
+  `couleurs` : les couleurs CHOISIES des courbes (`go("couleur", nom, hex)`,
+  persistées dans `moniteur_couleurs.txt`). Une série absente garde la sienne :
+  l'accent du thème pour la première courbe d'une carte, l'ambre pour la seconde.
+
+  `appareils` : UN GRAPHIQUE PAR DISQUE ET PAR CARTE GRAPHIQUE (voir
+  `win32::moniteur_peripheriques`) — un disque porte disque, lecture et
+  ecriture ; une carte gpu et gpuMemoire (en octets, rapportés ici à
+  memoireTotale). Ils REMPLACENT les cartes des totaux disque et GPU.
+
+  `taches` : les plus gourmandes en processeur, regroupées par exécutable,
+  relevées panneau ouvert seulement (voir `win32::moniteur_taches`) — vide au
+  premier état.
+    où <nom> est cpu, ram, disque, lecture, ecriture, envoi, reception, gpu,
+    gpuMemoire — en %, en octets par seconde, ou en octets (gpuMemoire).
+
+  ⚠️ **LA PAGE NE REÇOIT QUE DES POINTS** : Rust range les mesures de la plage
+  choisie, la page ne fait que les dessiner. `max` n'existe que pour les plages
+  lues en minutes (24 h, 7 j) : il se dessine en voile derrière la moyenne.
+
+  ⚠️ **UNE CARTE SANS AUCUNE MESURE EST MASQUÉE** : une machine sans carte
+  graphique (une machine virtuelle) n'a pas de compteurs GPU — ce n'est pas une
+  erreur à afficher.
+
+  ⚠️ **PAS DE <select>** : il ne s'ouvre jamais dans une page CEF rendue hors
+  écran. La plage se choisit par BOUTONS.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<script src="menu_contextuel.js"></script>
+<style>
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    overflow-y: auto;
+    /* Même grossissement que la Surveillance : `zoom` seul. */
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    min-height: calc(100vh / var(--text-scale));
+  }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 6px; }
+  h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  section { padding: 0 16px 14px; }
+  button {
+    background: rgba(var(--popup-accent-rgb), calc(0.25 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 5px 10px;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { background: rgba(var(--popup-accent-rgb), calc(0.4 * var(--popup-fond-alpha, 1))); }
+  button.actif { background: rgb(var(--popup-accent-solid-rgb)); }
+  .close-btn { background: none; font-size: 16px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+  .close-btn:hover { background: none; opacity: 1; }
+  .ligne { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .cache { display: none !important; }
+
+  .carte {
+    padding: 8px 10px;
+    margin-bottom: 8px;
+    border-radius: var(--nd-rayon-surface);
+    background: rgba(var(--popup-accent-rgb), calc(0.14 * var(--popup-fond-alpha, 1)));
+  }
+  .entete { display: flex; align-items: baseline; gap: 8px; }
+  .titre { font-weight: 600; flex: 1 1 auto; }
+  .valeur { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .detail { font-size: 12px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); font-variant-numeric: tabular-nums; }
+  .graphe { display: block; width: 100%; height: 56px; margin-top: 6px; }
+  .lecture { font-size: 12px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); min-height: 16px; font-variant-numeric: tabular-nums; }
+  .legende { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; }
+  #coeurs { display: flex; gap: 2px; height: 28px; align-items: flex-end; margin-top: 6px; }
+  /* Chaque cœur est une piste pleine hauteur, remplie par le bas : sans la piste,
+     des barres basses se lisaient comme un trait sans échelle (vu au rendu). */
+  #coeurs div { flex: 1 1 0; min-width: 2px; height: 100%; border-radius: 1px;
+    background: linear-gradient(to top, var(--courbe) var(--charge), rgba(255, 255, 255, 0.2) var(--charge)); }
+  /* Les tâches : la barre est relative à la plus gourmande — en % de la
+     machine, 6 % ne ferait qu'un trait. */
+  #taches { margin-top: 6px; display: grid; grid-template-columns: minmax(0, 1fr) 4fr auto; gap: 3px 8px; align-items: center; font-size: 12px; }
+  #taches .nom { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #taches .nb { opacity: calc(.6 * max(1, var(--popup-alpha, 1))); }
+  #taches .piste { height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.2); }
+  #taches .piste div { height: 100%; border-radius: 3px; background: var(--courbe); }
+  #taches .cpu { text-align: right; font-variant-numeric: tabular-nums; }
+  /* LA COULEUR D'UNE COURBE : la pastille ouvre la palette sous l'en-tête. */
+  .carte { --courbe: rgb(var(--popup-accent-solid-rgb)); }
+  button.teinte-courbe {
+    position: relative; flex: none; align-self: center;
+    width: 14px; height: 14px; padding: 0; border-radius: 50%;
+    border: 2px solid rgba(var(--popup-fg-rgb, 255, 255, 255), 0.35);
+  }
+  button.teinte-courbe:hover, button.teinte-courbe.ouverte { border-color: rgba(var(--popup-fg-rgb, 255, 255, 255), 0.9); }
+  .palette { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; }
+  .palette button.couleur { width: 24px; height: 24px; padding: 0; border-radius: 50%; border: 2px solid transparent; }
+  .palette button.couleur.choisie { border-color: rgba(var(--popup-fg-rgb, 255, 255, 255), 0.95); }
+  .palette .nom-courbe { font-size: 12px; margin-right: 4px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); }
+  .palette button.defaut { font-size: 12px; padding: 3px 8px; margin-left: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Moniteur système</h1>
+  <button class="close-btn" onclick="go('close')" title="Fermer"><span class="ico ico-x"></span></button>
+</header>
+
+<section>
+  <div class="ligne" id="plages">
+    <button data-plage="5min" onclick="choisirPlage('5min')">5 min</button>
+    <button data-plage="1h" onclick="choisirPlage('1h')">1 h</button>
+    <button data-plage="24h" onclick="choisirPlage('24h')">24 h</button>
+    <button data-plage="7j" onclick="choisirPlage('7j')">7 j</button>
+  </div>
+  <div id="cartes"></div>
+</section>
+
+<script>
+  // `el` et `go` — MÊMES HELPERS que les autres pages du dépôt (voir
+  // `surveillance.html`).
+  function el(tag, attrs, children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (key === "class") node.className = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value);
+    }
+    for (const child of children || []) {
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+    return node;
+  }
+
+  function go(...segments) {
+    location.href = "neuradesk://moniteur/" + segments.map(encodeURIComponent).join("/");
+  }
+
+  const SVG = "http://www.w3.org/2000/svg";
+  function svg(tag, attrs) {
+    const node = document.createElementNS(SVG, tag);
+    for (const [key, value] of Object.entries(attrs || {})) node.setAttribute(key, value);
+    return node;
+  }
+
+  function choisirPlage(nom) {
+    go("plage", nom);
+  }
+
+  let state = null;
+  let dernierEtatJson = null;
+  // Le graphique survolé : `{ id de la carte, position 0 → 1 }`, ou null.
+  let survol = null;
+
+  // --- LES UNITÉS ---
+  function pourcent(v) { return v === null || v === undefined ? "—" : v.toFixed(v >= 10 ? 0 : 1) + " %"; }
+  function octets(v) {
+    if (v === null || v === undefined) return "—";
+    const unites = ["o", "Ko", "Mo", "Go", "To"];
+    let i = 0;
+    while (v >= 1024 && i < unites.length - 1) { v /= 1024; i++; }
+    return (i === 0 ? Math.round(v) : v.toFixed(v >= 100 ? 0 : 1)) + " " + unites[i];
+  }
+  function debit(v) { return v === null || v === undefined ? "—" : octets(v) + "/s"; }
+
+  function deux(n) { return String(n).padStart(2, "0"); }
+  function instant(s) {
+    const d = new Date(s * 1000);
+    const heure = `${deux(d.getHours())}:${deux(d.getMinutes())}`;
+    if (state.pasS < 60) return heure + ":" + deux(d.getSeconds());
+    return `${deux(d.getDate())}/${deux(d.getMonth() + 1)} ${heure}`;
+  }
+
+  // --- LES CARTES ---
+  // Chaque carte : un titre, sa valeur principale, et UN graphique de une ou
+  // deux courbes. `pourcent: true` fixe l'échelle à 100 ; sinon elle suit le
+  // plus haut point de la plage.
+  // Deux couleurs : l'accent du thème, et un ambre FIXE pour la seconde courbe
+  // (lisible quel que soit le thème).
+  const AMBRE = "#ffb340";
+  const CARTES = [
+    { id: "cpu", titre: "Processeur", series: [["cpu", "Utilisation"]], format: pourcent, pourcent: true, coeurs: true },
+    { id: "ram", titre: "Mémoire", series: [["ram", "Occupée"]], format: pourcent, pourcent: true, ram: true },
+    { id: "reseau", titre: "Réseau", series: [["reception", "Réception"], ["envoi", "Envoi"]], format: debit },
+  ];
+
+  // Chaque carte lit ses séries dans `carte.source` : `state.series` pour le
+  // système, `appareil.series` pour un disque ou une carte graphique.
+  // `extras` : des valeurs de l'instant montrées sous le titre, sans courbe.
+  function carteDisque(a) {
+    return {
+      id: "a:" + a.cle, titre: a.nom, detail: a.precision, source: a.series,
+      series: [["disque", "Activité"]], format: pourcent, pourcent: true,
+      extras: [["lecture", "Lecture", debit], ["ecriture", "Écriture", debit]],
+    };
+  }
+
+  // La mémoire dédiée, rapportée à celle de la carte, partage l'échelle de
+  // l'utilisation (0 → 100 %) : UN graphique, deux courbes.
+  function carteGpu(a) {
+    const source = { ...a.series };
+    const series = [["gpu", "Utilisation"]];
+    const total = a.memoireTotale;
+    const memoire = a.series.gpuMemoire;
+    if (total > 0) {
+      const pct = (v) => (v === null ? null : Math.round((1000 * v) / total) / 10);
+      source.memoirePct = { actuel: pct(memoire.actuel), moy: memoire.moy.map(pct), max: memoire.max && memoire.max.map(pct) };
+      series.push(["memoirePct", "Mémoire"]);
+    }
+    const detail = memoire.actuel === null ? "" : `Mémoire dédiée : ${octets(memoire.actuel)}${total > 0 ? " sur " + octets(total) : ""}`;
+    return { id: "a:" + a.cle, titre: a.nom, detail, source, series, format: pourcent, pourcent: true };
+  }
+
+  // Le processeur et la mémoire, les disques, le réseau, les cartes graphiques.
+  function cartesDeLEtat() {
+    const systeme = (carte) => ({ ...carte, source: state.series });
+    const appareils = state.appareils || [];
+    return [
+      systeme(CARTES[0]),
+      systeme(CARTES[1]),
+      ...appareils.filter((a) => a.sorte === "disque").map(carteDisque),
+      systeme(CARTES[2]),
+      ...appareils.filter((a) => a.sorte === "gpu").map(carteGpu),
+    ];
+  }
+  // LA PALETTE des courbes : douze teintes lisibles sur un fond sombre comme clair.
+  const PALETTE = [
+    ["Rouge", "#ef4444"], ["Orange", "#f97316"], ["Ambre", "#ffb340"], ["Jaune", "#eab308"],
+    ["Citron", "#84cc16"], ["Vert", "#22c55e"], ["Sarcelle", "#14b8a6"], ["Cyan", "#06b6d4"],
+    ["Bleu", "#3b82f6"], ["Indigo", "#6366f1"], ["Violet", "#a855f7"], ["Rose", "#ec4899"],
+  ];
+  // La couleur de la i-ème courbe d'une carte : celle choisie pour sa série,
+  // sinon l'accent du thème (la première) ou l'ambre (la seconde).
+  function couleur(carte, i) {
+    const choisie = (state.couleurs || {})[carte.series[i][0]];
+    return choisie || (i === 0 ? "rgb(var(--popup-accent-solid-rgb))" : AMBRE);
+  }
+  // La palette ouverte : `{ id de la carte, nom de la série }`, ou null.
+  let paletteOuverte = null;
+
+  function choisirCouleur(nom, hex) {
+    // Tout de suite à l'écran ; Rust renverra le même état, persisté.
+    const couleurs = { ...(state.couleurs || {}) };
+    if (hex) couleurs[nom] = hex;
+    else delete couleurs[nom];
+    state = { ...state, couleurs };
+    paletteOuverte = null;
+    go("couleur", nom, hex);
+    rendreCartes();
+  }
+
+  function basculerPalette(carte, nom) {
+    const meme = paletteOuverte && paletteOuverte.id === carte.id && paletteOuverte.nom === nom;
+    paletteOuverte = meme ? null : { id: carte.id, nom };
+    rendreCartes();
+  }
+
+  function pastilleCourbe(carte, i) {
+    const [nom, libelle] = carte.series[i];
+    const ouverte = paletteOuverte && paletteOuverte.id === carte.id && paletteOuverte.nom === nom;
+    return el("button", {
+      class: "teinte-courbe cible-24" + (ouverte ? " ouverte" : ""),
+      style: `background: ${couleur(carte, i)}`,
+      title: `Couleur de la courbe « ${libelle} »`,
+      "aria-expanded": String(Boolean(ouverte)),
+      onclick: () => basculerPalette(carte, nom),
+    });
+  }
+
+  function palette(carte) {
+    const i = carte.series.findIndex(([nom]) => nom === paletteOuverte.nom);
+    if (i < 0) return null;
+    const [nom, libelle] = carte.series[i];
+    const actuelle = (state.couleurs || {})[nom];
+    return el("div", { class: "palette", role: "group", "aria-label": `Couleur de la courbe « ${libelle} »` }, [
+      el("span", { class: "nom-courbe" }, [libelle]),
+      ...PALETTE.map(([nomCouleur, hex]) => el("button", {
+        class: "couleur" + (hex === actuelle ? " choisie" : ""),
+        style: `background: ${hex}`,
+        title: nomCouleur,
+        "aria-pressed": String(hex === actuelle),
+        onclick: () => choisirCouleur(nom, hex),
+      })),
+      el("button", { class: "defaut", title: "Revenir à la couleur par défaut", onclick: () => choisirCouleur(nom, "") }, ["Par défaut"]),
+    ]);
+  }
+
+  // Une carte est-elle mesurée ? Une valeur de l'instant, ou un point de la plage.
+  function mesuree(carte) {
+    return carte.series.some(([nom]) => {
+      const s = carte.source[nom];
+      return s && (s.actuel !== null || s.moy.some((v) => v !== null));
+    });
+  }
+
+  // Les tracés d'une liste de valeurs : un segment par suite sans trou.
+  function traces(valeurs, H, plafond) {
+    const segments = [];
+    let courant = [];
+    valeurs.forEach((v, i) => {
+      if (v === null) {
+        if (courant.length) segments.push(courant);
+        courant = [];
+      } else {
+        courant.push(`${i + 0.5},${(H - Math.min(v, plafond) / plafond * (H - 1)).toFixed(2)}`);
+      }
+    });
+    if (courant.length) segments.push(courant);
+    return segments;
+  }
+
+  function graphe(carte, lecture) {
+    const H = 50;
+    const n = carte.source[carte.series[0][0]].moy.length;
+    const toutes = carte.series.flatMap(([nom]) => [...carte.source[nom].moy, ...(carte.source[nom].max || [])]);
+    const plafond = carte.pourcent ? 100 : Math.max(1, ...toutes.filter((v) => v !== null));
+    const g = svg("svg", { class: "graphe", viewBox: `0 0 ${n} ${H}`, preserveAspectRatio: "none" });
+    carte.series.forEach(([nom], i) => {
+      const s = carte.source[nom];
+      // Le MAXIMUM en voile, derrière la moyenne (24 h et 7 j seulement).
+      if (s.max) {
+        for (const seg of traces(s.max, H, plafond)) {
+          g.appendChild(svg("polyline", { points: seg.join(" "), fill: "none", stroke: couleur(carte, i), "stroke-opacity": 0.35, "stroke-width": 1, "vector-effect": "non-scaling-stroke" }));
+        }
+      }
+      for (const seg of traces(s.moy, H, plafond)) {
+        g.appendChild(svg("polyline", { points: seg.join(" "), fill: "none", stroke: couleur(carte, i), "stroke-width": 1.6, "vector-effect": "non-scaling-stroke", "stroke-linejoin": "round" }));
+      }
+    });
+    // La lecture au survol : l'instant et la valeur de chaque courbe.
+    const curseur = svg("line", { x1: 0, x2: 0, y1: 0, y2: H, stroke: "rgb(var(--popup-fg-rgb, 255, 255, 255))", "stroke-opacity": 0, "vector-effect": "non-scaling-stroke" });
+    g.appendChild(curseur);
+    const afficher = (fraction) => {
+      const i = Math.max(0, Math.min(n - 1, Math.floor(fraction * n)));
+      curseur.setAttribute("x1", i + 0.5);
+      curseur.setAttribute("x2", i + 0.5);
+      curseur.setAttribute("stroke-opacity", 0.5);
+      const morceaux = carte.series.map(([nom, libelle]) => {
+        const s = carte.source[nom];
+        const max = s.max && s.max[i] !== null ? ` (max ${carte.format(s.max[i])})` : "";
+        return `${libelle} ${carte.format(s.moy[i])}${max}`;
+      });
+      lecture.textContent = `${instant(state.debutS + i * state.pasS)} — ${morceaux.join(" · ")}`;
+    };
+    g.addEventListener("mousemove", (e) => {
+      const rect = g.getBoundingClientRect();
+      survol = { id: carte.id, fraction: (e.clientX - rect.left) / rect.width };
+      afficher(survol.fraction);
+    });
+    g.addEventListener("mouseleave", () => {
+      survol = null;
+      curseur.setAttribute("stroke-opacity", 0);
+      lecture.textContent = resume(carte);
+    });
+    // Les cartes sont reconstruites à CHAQUE état (une seconde) : sans ceci, la
+    // lecture au survol s'effacerait sous la souris.
+    if (survol && survol.id === carte.id) afficher(survol.fraction);
+    return g;
+  }
+
+  // Hors survol : le maximum de la plage, et la légende des deux courbes.
+  function resume(carte) {
+    const lignes = [...carte.series.map(([nom, libelle]) => [nom, libelle, carte.format]), ...(carte.extras || [])];
+    return lignes
+      .map(([nom, libelle, format]) => {
+        const s = carte.source[nom];
+        const valeurs = (s.max || s.moy).filter((v) => v !== null);
+        return valeurs.length ? `${libelle} : max ${format(Math.max(...valeurs))}` : "";
+      })
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  function rendreCartes() {
+    const cartes = document.getElementById("cartes");
+    cartes.replaceChildren();
+    for (const carte of cartesDeLEtat()) {
+      if (!mesuree(carte)) continue;
+      const valeurs = carte.series.map(([nom, libelle], i) =>
+        carte.series.length > 1
+          ? el("span", { class: "legende" }, [pastilleCourbe(carte, i), `${libelle} ${carte.format(carte.source[nom].actuel)}`])
+          : el("span", { class: "valeur" }, [carte.format(carte.source[nom].actuel)])
+      );
+      if (carte.series.length === 1) valeurs.unshift(pastilleCourbe(carte, 0));
+      const lecture = el("div", { class: "lecture" }, [resume(carte)]);
+      const enfants = [el("div", { class: "entete" }, [el("span", { class: "titre" }, [carte.titre]), ...valeurs])];
+      if (paletteOuverte && paletteOuverte.id === carte.id) {
+        const choix = palette(carte);
+        if (choix) enfants.push(choix);
+      }
+      const precisions = [carte.detail, ...(carte.extras || []).map(([nom, libelle, format]) => `${libelle} ${format(carte.source[nom].actuel)}`)];
+      if (precisions.some(Boolean)) {
+        enfants.push(el("div", { class: "detail" }, [precisions.filter(Boolean).join(" · ")]));
+      }
+      if (carte.ram && state.ramTotale > 0) {
+        enfants.push(el("div", { class: "detail" }, [`${octets(state.ramUtilisee)} sur ${octets(state.ramTotale)}`]));
+      }
+      if (carte.coeurs && state.coeurs.length) {
+        const barres = el("div", { id: "coeurs", title: `${state.coeurs.length} processeurs logiques` });
+        state.coeurs.forEach((c, i) => {
+          barres.appendChild(el("div", { style: `--charge: ${Math.max(4, c)}%`, title: `Cœur ${i} : ${pourcent(c)}` }));
+        });
+        enfants.push(barres);
+      }
+      enfants.push(graphe(carte, lecture), lecture);
+      if (carte.coeurs && state.taches && state.taches.length) {
+        const plus = Math.max(...state.taches.map((t) => t.cpu || 0), 0.1);
+        const liste = el("div", { id: "taches", title: "Les tâches qui consomment le plus de processeur, regroupées par programme" });
+        for (const t of state.taches) {
+          liste.append(
+            el("span", { class: "nom", title: t.nom }, [t.nom, ...(t.instances > 1 ? [el("span", { class: "nb" }, [` ×${t.instances}`])] : [])]),
+            el("div", { class: "piste" }, [el("div", { style: `width: ${(100 * (t.cpu || 0)) / plus}%` })]),
+            el("span", { class: "cpu" }, [pourcent(t.cpu)])
+          );
+        }
+        enfants.push(liste);
+      }
+      cartes.appendChild(el("div", { class: "carte", style: `--courbe: ${couleur(carte, 0)}` }, enfants));
+    }
+  }
+
+  // ⚠️ **LES CARTES SONT RECONSTRUITES CHAQUE SECONDE** : un bouton remplacé
+  // entre l'appui et le relâcher ne reçoit jamais son `click`. Bouton de souris
+  // enfoncé, on diffère donc la reconstruction jusqu'au relâcher.
+  let souris = false;
+  let enAttente = false;
+  document.addEventListener("pointerdown", () => { souris = true; }, true);
+  document.addEventListener("pointerup", () => {
+    souris = false;
+    // Après le `click` qui suit ce relâcher.
+    if (enAttente) setTimeout(() => { enAttente = false; rendreCartes(); }, 0);
+  }, true);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && paletteOuverte) { paletteOuverte = null; rendreCartes(); }
+  });
+
+  window.setState = function (next) {
+    const json = JSON.stringify(next);
+    if (json === dernierEtatJson) return;
+    state = next;
+    document.documentElement.style.setProperty("--text-scale", state.contentScale || 1);
+    for (const bouton of document.querySelectorAll("[data-plage]")) {
+      bouton.classList.toggle("actif", bouton.dataset.plage === state.plage);
+    }
+    if (souris) enAttente = true;
+    else rendreCartes();
+    // Marqué EN DERNIER — voir `surveillance.html`, même garde.
+    dernierEtatJson = json;
+  };
+
+  go("ready");
+</script>
+</body>
+</html>

@@ -1,0 +1,415 @@
+<!doctype html>
+<!--
+  win32::cef_textures — l'éditeur de la texture personnalisée (voir
+  `gfx::texture_perso`).
+
+  DEMANDE EXPLICITE (2026-10-15) : « une applet pour un dash d'édition de textures
+  calculées, évoluer, où les fonctions et réglages sont réalisables avec des cases
+  à cocher et des curseurs ».
+
+  Un PANNEAU de la zone libre, comme `lueurs.html` : la barre n'a que le titre et
+  le `✕` (`close-btn`, titre « Fermer »), à côté duquel `cef_popup` pose la punaise.
+  ⭐ L'APERÇU EST LE PANNEAU LUI-MÊME : son fond passe par le shader des barres,
+  la texture s'y voit en direct dès qu'elle est appliquée.
+
+  ⭐ **LES CONTRÔLES DU MOTIF SONT CONSTRUITS DEPUIS L'ÉTAT** (`state.reglages`,
+  décrits par `texture_perso::REGLAGES`) : une case, un curseur ou une rangée de
+  boutons selon la sorte ; un réglage qui DÉPEND d'une case est grisé tant
+  qu'elle est décochée.
+
+  ⭐ DEMANDE EXPLICITE (2026-10-16) : « éditer les textures par défaut, éditer les
+  textures d'interface et de fond de terminaux et avoir la possibilité de les
+  sauvegarder et d'en importer ». Deux CIBLES (`go("cible", 0|1)`), chacune sa
+  composition ; une BIBLIOTHÈQUE (voir `win32::textures_bibliotheque`) où les
+  préréglages sont des textures comme les autres : enregistrer sous leur nom les
+  remplace, « Restaurer l'original » les rétablit.
+
+  ⭐ L'APERÇU D'UN FOND DE TERMINAL — DEMANDE EXPLICITE (2026-10-16) : quand on
+  édite les terminaux, `#apercu-terminal` est peint EXACTEMENT comme
+  `.terminal-hote` (`terminal.html`) : la surface du thème à 92 %, puis l'image de
+  la texture que Rust pousse par `poserTextureDesTerminaux` (`terminal_theme.js`,
+  partagé), et le texte dans les couleurs de `themeDesTerminaux`.
+
+  ⚠️ **CONSTRUITS UNE FOIS, MIS À JOUR EN PLACE** : Rust repousse l'état après
+  chaque réglage, et reconstruire sous un curseur tenu le lâcherait. Le curseur
+  qui a le focus garde sa valeur.
+
+  ⛔ **AUCUN `menu.js`** — c'est un PANNEAU. ⛔ **AUCUNE liste déroulante ni
+  sélecteur de couleur natif** (rien ne s'y déroule en rendu hors écran) : des
+  BOUTONS. ⛔ **AUCUN `background` sur `<html>`/`<body>`** : le fond est le bureau
+  flouté — et la texture.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<script src="terminal_theme.js"></script>
+<style>
+  html { --text-scale: 1; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    flex-direction: column;
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    height: calc(100vh / var(--text-scale));
+    font-family: var(--nd-police);
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+  }
+  #barre {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    user-select: none;
+  }
+  #titre { flex: 1; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* ⚠️ `Segoe UI Symbol` EN CLAIR : `✕` existe aussi dans la police EMOJI. */
+  .close-btn {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+  }
+  .close-btn:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  #corps {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    gap: 10px;
+    padding: 8px;
+  }
+  .colonne { flex: 1 1 50%; min-width: 0; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+  .colonne > * { flex-shrink: 0; }
+  .bloc {
+    padding: 6px 8px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(0, 0, 0, 0.22);
+    font-size: 12px;
+  }
+  .bloc h3 { margin: 2px 0 6px; font-size: 13px; }
+  .ligne-outils { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+  .action {
+    all: unset;
+    padding: 5px 12px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.30 * var(--popup-fond-alpha, 1)));
+    font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .action:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.48 * var(--popup-fond-alpha, 1))); }
+  .action.choisie { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.62 * var(--popup-fond-alpha, 1))); font-weight: 600; }
+  .boutons { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
+  .boutons .action { padding: 4px 9px; }
+  .reglage { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+  .reglage label { flex: 0 0 150px; opacity: calc(.85 * max(1, var(--popup-alpha, 1))); }
+  .reglage input[type=range] { flex: 1; min-width: 0; }
+  .reglage .valeur { flex: 0 0 auto; min-width: 48px; white-space: nowrap; text-align: right; opacity: calc(.85 * max(1, var(--popup-alpha, 1))); }
+  .case { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-weight: 600; cursor: pointer; }
+  /* Un réglage dont la case est décochée : visible, mais sans effet. */
+  .inactif { opacity: calc(.35 * max(1, var(--popup-alpha, 1))); pointer-events: none; }
+  .avis { font-size: 12px; opacity: calc(.75 * max(1, var(--popup-alpha, 1))); }
+  .rangee { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+  #nom {
+    flex: 1;
+    min-width: 80px;
+    padding: 4px 8px;
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(0, 0, 0, 0.28);
+    color: inherit;
+    font: inherit;
+    font-size: 12px;
+  }
+  #en-cours { font-size: 12px; margin-top: 6px; }
+  #en-cours b { font-weight: 600; }
+  .masque { display: none; }
+  /* Le fond d'un terminal — les règles de `.terminal-hote` (`terminal.html`). */
+  #apercu-terminal {
+    margin-top: 4px;
+    padding: 10px 12px;
+    min-height: 150px;
+    border-radius: var(--nd-rayon-controle);
+    background-color: rgba(var(--popup-tint-rgb, 32, 32, 36), calc(.92 * var(--popup-fond-alpha, 1)));
+    background-image: var(--texture-terminaux, none);
+    background-size: var(--texture-terminaux-taille, auto);
+    background-attachment: fixed;
+    font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+    font-size: 13px;
+    line-height: 1.45;
+    white-space: pre;
+    overflow: hidden;
+  }
+</style>
+</head>
+<body>
+  <div id="barre">
+    <span id="titre">Textures</span>
+    <!-- La punaise des panneaux vient se poser JUSTE AVANT ce bouton. -->
+    <button id="fermer" class="close-btn" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="corps">
+    <div class="colonne">
+      <div class="bloc">
+        <div class="ligne-outils">
+          <span>Texture de</span>
+          <div class="boutons" style="margin-top: 0">
+            <button class="action" id="cible-interface">L'interface</button>
+            <button class="action" id="cible-terminaux">Les terminaux</button>
+          </div>
+        </div>
+        <div class="ligne-outils" style="margin-top: 6px">
+          <label class="case" style="margin-top: 0"><input id="applique" type="checkbox"> <span id="applique-libelle">Appliquer à l'interface</span></label>
+          <span style="flex: 1"></span>
+          <button class="action" id="reinitialiser" title="Revenir aux réglages par défaut du motif">Réinitialiser</button>
+        </div>
+        <div class="avis" id="avis-cible" style="margin-top: 6px"></div>
+      </div>
+      <div class="bloc masque" id="bloc-apercu">
+        <h3>Aperçu d'un terminal</h3>
+        <div id="apercu-terminal"></div>
+      </div>
+      <div class="bloc">
+        <h3>Bibliothèque</h3>
+        <div class="boutons" id="bibliotheque"></div>
+        <div id="en-cours"></div>
+        <div class="rangee">
+          <input id="nom" type="text" maxlength="60" placeholder="Nom de la texture" spellcheck="false">
+          <button class="action" id="enregistrer" title="Enregistrer la texture en cours sous ce nom">Enregistrer</button>
+        </div>
+        <div class="rangee">
+          <button class="action" id="exporter" title="Enregistrer la texture en cours dans un fichier .ndtexture">Exporter…</button>
+          <button class="action" id="importer" title="Ajouter un fichier .ndtexture à la bibliothèque, et l'appliquer">Importer…</button>
+          <span style="flex: 1"></span>
+          <button class="action masque" id="supprimer"></button>
+        </div>
+        <div class="avis" style="margin-top: 6px">Enregistrer sous le nom d'un préréglage le modifie (•) ; « Restaurer l'original » le rétablit.</div>
+      </div>
+      <div class="bloc">
+        <h3>Rendu</h3>
+        <div id="rendu"></div>
+      </div>
+    </div>
+    <div class="colonne">
+      <div class="bloc">
+        <h3>Motif</h3>
+        <div id="motif"></div>
+      </div>
+    </div>
+  </div>
+<script>
+  // Segments ENCODÉS un par un (voir `cef_textures::dispatch_actions`).
+  function go(...segments) {
+    location.href = "neuradesk://textures/" + segments.map((s) => encodeURIComponent(String(s))).join("/");
+  }
+
+  function el(tag, attrs, enfants) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (k === "class") n.className = v;
+      else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+      else n.setAttribute(k, v);
+    }
+    for (const e of enfants || []) n.append(e);
+    return n;
+  }
+
+  // Le nombre de décimales d'un pas (0.05 → 2) : la valeur s'affiche ainsi.
+  function decimales(pas) {
+    const t = String(pas);
+    return t.includes(".") ? t.split(".")[1].length : 0;
+  }
+
+  // **UN CURSEUR** — `maj(valeur)` le remet à jour EN PLACE, sauf s'il a le focus.
+  function curseur(parent, libelle, min, max, pas, envoyer, formater) {
+    const entree = el("input", { type: "range", min, max, step: pas });
+    const valeur = el("span", { class: "valeur" });
+    const ligne = el("div", { class: "reglage" }, [el("label", {}, [libelle]), entree, valeur]);
+    entree.addEventListener("input", () => {
+      valeur.textContent = formater(Number(entree.value));
+      envoyer(entree.value);
+    });
+    parent.appendChild(ligne);
+    return {
+      ligne,
+      maj(v) {
+        if (document.activeElement !== entree) entree.value = v;
+        valeur.textContent = formater(Number(entree.value));
+      },
+    };
+  }
+
+  const pourcent = (v) => v + " %";
+  // Les réglages COMMUNS (voir `texture_interface`), construits une fois.
+  const rendu = document.getElementById("rendu");
+  const communs = {
+    force: curseur(rendu, "Force", 0, 100, 5, (v) => go("force", v), pourcent),
+    echelle: curseur(rendu, "Échelle", 50, 400, 25, (v) => go("echelle", v), pourcent),
+    clarte: curseur(rendu, "Clarté", -100, 100, 5, (v) => go("clarte", v), (v) => (v === 0 ? "neutre" : (v > 0 ? "+" : "") + v + " %")),
+    teinte: curseur(rendu, "Teinte", 0, 360, 5, (v) => go("teinte", v), (v) => (v === 0 ? "sans couleur" : v + "°")),
+  };
+
+  // Les contrôles du MOTIF, par ID de réglage — construits au premier état, et
+  // reconstruits seulement si la LISTE des réglages change.
+  let controles = {};
+  let signature = "";
+  function construireLeMotif(reglages) {
+    const sig = reglages.map((r) => r.id).join(",");
+    if (sig === signature) return;
+    signature = sig;
+    controles = {};
+    const motif = document.getElementById("motif");
+    motif.replaceChildren();
+    for (const r of reglages) {
+      if (r.sorte === "case") {
+        const entree = el("input", { type: "checkbox" });
+        entree.addEventListener("change", () => go("reglage", r.id, entree.checked ? 1 : 0));
+        motif.appendChild(el("label", { class: "case" }, [entree, " " + r.libelle]));
+        controles[r.id] = { maj: (v) => { entree.checked = v >= 0.5; } };
+      } else if (r.sorte === "choix") {
+        const boutons = r.options.map((nom, i) => el("button", { class: "action", onclick: () => go("reglage", r.id, i) }, [nom]));
+        motif.appendChild(el("div", { class: "reglage" }, [el("label", {}, [r.libelle]), el("div", { class: "boutons" }, boutons)]));
+        controles[r.id] = { maj: (v) => boutons.forEach((b, i) => b.classList.toggle("choisie", i === Math.round(v))) };
+      } else {
+        const d = decimales(r.pas);
+        controles[r.id] = curseur(motif, r.libelle, r.min, r.max, r.pas, (v) => go("reglage", r.id, v), (v) => v.toFixed(d));
+      }
+    }
+  }
+
+  // LA BIBLIOTHÈQUE — un bouton par texture, refaite seulement quand la liste ou
+  // la texture en cours change. Les préréglages d'abord ; modifiés, un « • ».
+  let bibliothequeVue = "";
+  function construireLaBibliotheque(liste, source) {
+    const sig = JSON.stringify([liste, source && source.nom]);
+    if (sig === bibliothequeVue) return;
+    bibliothequeVue = sig;
+    const boutons = [];
+    liste.forEach((t, i) => {
+      // Une coupure entre les préréglages et les miennes.
+      if (i > 0 && liste[i - 1].prereglage && !t.prereglage) boutons.push(el("span", { style: "flex-basis: 100%; height: 0" }));
+      const titre = t.prereglage ? (t.enregistree ? "Préréglage modifié" : "Préréglage") : "Ma texture";
+      const libelle = t.nom + (t.prereglage && t.enregistree ? " •" : "");
+      const choisie = source && source.nom === t.nom ? " choisie" : "";
+      boutons.push(el("button", { class: "action" + choisie, title: titre, onclick: () => go("charger", t.nom) }, [libelle]));
+    });
+    document.getElementById("bibliotheque").replaceChildren(...boutons);
+  }
+
+  const champNom = document.getElementById("nom");
+  const boutonSupprimer = document.getElementById("supprimer");
+  let sourceVue = null;
+  // La texture en cours : son nom, « modifiée », et le bouton qui la retire.
+  function montrerLaSource(source) {
+    const enCours = document.getElementById("en-cours");
+    enCours.replaceChildren();
+    if (source) {
+      enCours.append("En cours : ", el("b", {}, [source.nom]), source.modifiee ? " (modifiée)" : "");
+    } else {
+      enCours.append("En cours : texture sans nom");
+    }
+    // Le champ prend le nom d'une texture CHARGÉE — jamais sous la frappe.
+    const nom = source ? source.nom : null;
+    if (nom !== sourceVue) {
+      sourceVue = nom;
+      if (document.activeElement !== champNom && nom) champNom.value = nom;
+    }
+    const retirable = source && source.enregistree;
+    boutonSupprimer.classList.toggle("masque", !retirable);
+    if (retirable) {
+      boutonSupprimer.textContent = source.prereglage ? "Restaurer l'original" : "Supprimer";
+      boutonSupprimer.title = source.prereglage ? "Oublier les modifications de ce préréglage" : "Retirer cette texture de la bibliothèque";
+    }
+  }
+  function enregistrer() {
+    const nom = champNom.value.trim();
+    if (!nom) { champNom.focus(); return; }
+    go("enregistrer", nom);
+  }
+  document.getElementById("enregistrer").addEventListener("click", enregistrer);
+  champNom.addEventListener("keydown", (ev) => { if (ev.key === "Enter") enregistrer(); });
+  document.getElementById("exporter").addEventListener("click", () => go("exporter", champNom.value.trim() || "Texture"));
+  document.getElementById("importer").addEventListener("click", () => go("importer"));
+  boutonSupprimer.addEventListener("click", () => { if (sourceVue) go("supprimer", sourceVue); });
+  document.getElementById("cible-interface").addEventListener("click", () => go("cible", 0));
+  document.getElementById("cible-terminaux").addEventListener("click", () => go("cible", 1));
+
+  const applique = document.getElementById("applique");
+  applique.addEventListener("change", () => go("appliquer", applique.checked ? 1 : 0));
+  document.getElementById("reinitialiser").addEventListener("click", () => go("reinitialiser"));
+  document.getElementById("fermer").addEventListener("click", () => go("fermer"));
+
+  // L'APERÇU D'UN TERMINAL : quelques lignes d'une session, dans les couleurs
+  // que `themeDesTerminaux` donne aux vrais terminaux (elles suivent le thème).
+  const LIGNES_APERCU = [
+    [["green", "utilisateur@neuradesk"], ["foreground", ":"], ["blue", "~/projets"], ["foreground", "$ ls"]],
+    [["blue", "assets  "], ["blue", "src  "], ["foreground", "Cargo.toml  README.md"]],
+    [["green", "utilisateur@neuradesk"], ["foreground", ":"], ["blue", "~/projets"], ["foreground", "$ cargo build"]],
+    [["green", "   Compiling "], ["foreground", "neuradesk v0.1.0"]],
+    [["yellow", "warning"], ["foreground", ": variable inutilisée"]],
+    [["green", "    Finished "], ["foreground", "release en 42 s"]],
+    [["green", "utilisateur@neuradesk"], ["foreground", ":"], ["blue", "~/projets"], ["foreground", "$ "], ["cursor", "█"]],
+  ];
+  let apercuVu = "";
+  function peindreLApercu() {
+    const theme = window.themeDesTerminaux ? themeDesTerminaux() : { foreground: "#fff" };
+    const cle = JSON.stringify(theme);
+    if (cle === apercuVu) return;
+    apercuVu = cle;
+    const lignes = LIGNES_APERCU.map((morceaux) => el("div", {}, morceaux.map(([couleur, texte]) => {
+      const span = el("span", {}, [texte]);
+      span.style.color = theme[couleur] || theme.foreground;
+      return span;
+    })));
+    document.getElementById("apercu-terminal").replaceChildren(...lignes);
+  }
+  // Le thème peut changer sans que l'état change : on relit ses couleurs.
+  setInterval(() => {
+    if (!document.getElementById("bloc-apercu").classList.contains("masque")) peindreLApercu();
+  }, 1000);
+
+  window.setState = function (state) {
+    document.getElementById("bloc-apercu").classList.toggle("masque", !state.terminaux);
+    if (state.terminaux) peindreLApercu();
+    document.documentElement.style.setProperty("--text-scale", state.contentScale || 1);
+    applique.checked = !!state.applique;
+    document.getElementById("cible-interface").classList.toggle("choisie", !state.terminaux);
+    document.getElementById("cible-terminaux").classList.toggle("choisie", !!state.terminaux);
+    document.getElementById("applique-libelle").textContent = state.terminaux ? "Appliquer aux terminaux" : "Appliquer à l'interface";
+    document.getElementById("avis-cible").textContent = state.terminaux
+      ? "La texture se voit sur le fond du Terminal et des serveurs SSH, un instant après le dernier réglage. Le texte n'en reçoit pas."
+      : "La texture se voit en direct sous ce panneau et sur les barres. Les icônes et le texte n'en reçoivent pas.";
+    const echelle = communs.echelle.ligne.querySelector("input");
+    echelle.min = state.echelleMin;
+    echelle.max = state.echelleMax;
+    communs.force.maj(state.force);
+    communs.echelle.maj(state.echelle);
+    communs.clarte.maj(state.clarte);
+    communs.teinte.maj(state.teinte);
+    construireLaBibliotheque(state.bibliotheque, state.source);
+    montrerLaSource(state.source);
+    construireLeMotif(state.reglages);
+    const valeurs = {};
+    for (const r of state.reglages) valeurs[r.id] = r.valeur;
+    for (const r of state.reglages) {
+      const c = controles[r.id];
+      c.maj(r.valeur);
+      // Grisé tant que sa case est décochée.
+      const ligne = c.ligne;
+      if (ligne) ligne.classList.toggle("inactif", !!r.depend && !(valeurs[r.depend] >= 0.5));
+    }
+  };
+</script>
+</body>
+</html>

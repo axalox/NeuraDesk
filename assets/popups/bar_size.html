@@ -1,0 +1,143 @@
+<!doctype html>
+<!--
+  win32::cef_bar_size (clic droit sur une zone libre d'une barre) —
+  reproduit en CSS le contenu de win32::popup_menu::render_bar_size. Même
+  principe que assets/popups/spacer_size.html (curseur natif, événement
+  `input` à chaque pas, PAS seulement au relâchement) — voir sa doc d'en-tête
+  pour le détail, non répété ici.
+
+  Contrairement à spacer_size.html (une seule quantité possible, la taille),
+  ce popup est réutilisé pour TROIS choses différentes (barre du haut/
+  gauche/droite, voir win32::popup_menu::BarKind) : le libellé affiché
+  dépend de LAQUELLE, poussée par Rust (voir win32::cef_bar_size::
+  push_state) via `window.setState({kind, size})`. Comme spacer_size.html,
+  QUELLE barre reste connue CÔTÉ RUST (fixée à l'ouverture) — l'action
+  envoyée ("neuradesk://bar/size/<px>") n'a besoin de porter que la valeur.
+
+  PAS de `background` sur `<html>`/`<body>` : transparent par défaut en
+  rendu hors-écran CEF.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<script src="menu_contextuel.js"></script>
+<link rel="stylesheet" href="menu.css">
+<style>
+  .menu {
+    padding: 14px;
+    box-sizing: border-box;
+    height: auto;
+    width: fit-content;
+    max-width: 100vw;
+    max-height: 100vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .title {
+    font-weight: 600;
+    font-size: 15px;
+    opacity: calc(0.9 * max(1, var(--popup-alpha, 1)));
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  input[type="range"] {
+    flex: 1;
+    /* Aplat plein — voir menu.css, `--menu-accent-rgb` (même choix que
+       spacer_size.html). */
+    accent-color: rgba(var(--menu-accent-rgb, 255, 255, 255), calc(0.85 * var(--popup-fond-alpha, 1)));
+  }
+  .value {
+    min-width: 56px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+</head>
+<body>
+  <div class="menu">
+    <div class="title" id="title">…</div>
+    <div class="row">
+      <!-- `min`/`max` : valeurs de REPLI seulement. Les vraies bornes sont
+           POUSSÉES par Rust (voir `win32::cef_bar_size::push_state` et
+           `ui::dock::bar_thickness_bounds`, qui en est la seule autorité) —
+           DEMANDE EXPLICITE : « il faudrait que l'on puisse aller à 250 dans
+           les 2 cas ». Ce fichier n'en décide plus rien : c'est précisément
+           parce que les deux pages portaient chacune son littéral (160 ici,
+           500 dans settings.html) que les deux ont divergé.
+           PIÈGE : la borne est ce que le curseur peut ATTEINDRE, pas ce qu'une
+           barre peut valoir — une barre déjà plus épaisse s'afficherait
+           rognée, et le premier glissement l'y ramènerait. -->
+      <input type="range" id="slider" min="40" max="250" step="1">
+      <span class="value" id="value">— px</span>
+    </div>
+  </div>
+  <script>
+    // Voir win32::popup_menu::render_bar_size — mêmes libellés. `bottom` est en
+    // FIN, comme partout : `app::run` envoie la clé de `win32::menu::Bar`, et
+    // l'ordre n'a pas d'importance ici, mais l'habitude si.
+    const LABELS = {
+      top: "Épaisseur de la barre du haut",
+      left: "Largeur de la barre de gauche",
+      right: "Largeur de la barre de droite",
+      bottom: "Épaisseur de la barre du bas",
+    };
+    const slider = document.getElementById("slider");
+    const value = document.getElementById("value");
+    const title = document.getElementById("title");
+
+    function updateLabel() {
+      value.textContent = slider.value + " px";
+    }
+
+    slider.addEventListener("input", () => {
+      updateLabel();
+      location.href = "neuradesk://bar/size/" + slider.value;
+    });
+    // Relâchement : Rust dégèle les panneaux figés pendant le glissement (voir
+    // win32::cef_bar_size::glissement_en_cours).
+    slider.addEventListener("change", () => {
+      location.href = "neuradesk://bar/commit";
+    });
+
+    // Numéro d'ouverture DÉJÀ APPLIQUÉ — voir win32::cef_bar_size, doc de
+    // `OPEN_COUNT`, et spacer_size.html, qui porte le même remède : Rust
+    // repousse l'état à CHAQUE frame (nécessaire, la poussée faite à
+    // l'ouverture pouvant arriver avant que ce <script> n'ait tourné), mais un
+    // état ne s'applique qu'UNE fois par ouverture, sinon chaque frame
+    // réécrirait la poignée que l'utilisateur est en train de glisser.
+    let appliedOpen = null;
+
+    // Appelée depuis Rust (win32::cef_bar_size::push_state) — voir le
+    // commentaire d'en-tête : `kind` ("top"/"left"/"right") choisit le
+    // libellé, `size` est la taille ACTUELLE de CETTE barre.
+    window.setState = function (next) {
+      if (next.open === appliedOpen) {
+        return;
+      }
+      appliedOpen = next.open;
+      if (next.kind && LABELS[next.kind]) {
+        title.textContent = LABELS[next.kind];
+      }
+      // LES BORNES VIENNENT DE RUST (voir `ui::dock::bar_thickness_bounds`) :
+      // elles dépendent de QUELLE barre, que seul `kind` désigne.
+      if (typeof next.min === "number") {
+        slider.min = String(next.min);
+      }
+      if (typeof next.max === "number" && next.max > 0) {
+        slider.max = String(next.max);
+      }
+      if (typeof next.size === "number") {
+        slider.value = Math.round(next.size);
+        updateLabel();
+      }
+    };
+  </script>
+<script src="menu.js"></script>
+</body>
+</html>

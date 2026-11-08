@@ -1,0 +1,3 @@
+# Les artefacts de construction ne rentrent pas au dépôt — même raison que pour
+# le paquet principal, et ici le binaire pèse d'autant plus qu'il est INJECTABLE.
+target/

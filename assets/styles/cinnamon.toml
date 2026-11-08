@@ -1,0 +1,25 @@
+# Style « Cinnamon » — DEMANDE EXPLICITE (2026-10-12), avec COSMIC et
+# elementary.
+#
+# Le bureau de Linux Mint, thème Mint-Y : classique et sobre, des coins PETITS
+# (3 px sur les boutons), des contours VISIBLES, la police Ubuntu que Mint
+# installe par défaut, et l'élément actif d'une liste signalé par une BARRE
+# d'accent, comme le menu de Mint. Les couleurs vont avec la famille « Mint-Y ».
+
+nom = "Cinnamon"
+
+[formes]
+rayon_petit = 2
+rayon_controle = 3
+rayon_surface = 4
+rayon_grand = 6
+rayon_icone = 6
+
+[traits]
+bordure_alpha = 0.2
+
+[texte]
+police = "Ubuntu"
+
+[structure]
+indicateur = "barre"
