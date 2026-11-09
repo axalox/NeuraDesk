@@ -160,6 +160,13 @@ thread_local! {
     /// pas besoin d'attendre une prochaine ouverture comme Dash/
     /// Presse-papiers — pris en compte immédiatement, curseur en main.
     static CONTENT_SCALE: Cell<f32> = const { Cell::new(1.0) };
+    /// **LARGEUR DE LA COLONNE DES RÉGLAGES**, en fraction de la place qu'elle a
+    /// (la largeur du panneau moins la colonne des catégories) — DEMANDE
+    /// EXPLICITE (2026-11-09) : « régler la largeur de la zone principale dans le
+    /// dash réglages et que son contenu s'adapte ». Le panneau reste pleine
+    /// largeur ; la colonne est CENTRÉE dans sa place (voir `.scroll` dans
+    /// assets/popups/settings.html). `1.0` = comportement d'origine.
+    static CONTENT_WIDTH: Cell<f32> = const { Cell::new(1.0) };
     /// Réglage MANUEL par écran secondaire — voir `win32::cef_dash::
     /// SCREEN_SCALE_OVERRIDE`, doc de champ, même mécanisme exact. Relu à
     /// CHAQUE frame par `push_state` (comme `CONTENT_SCALE` ci-dessus,
@@ -192,6 +199,21 @@ pub fn content_scale() -> f32 {
 /// élément ne se chevauche.
 pub fn set_content_scale(scale: f32) {
     CONTENT_SCALE.with(|s| s.set(scale.clamp(0.25, 2.0)));
+}
+
+/// Bornes de `CONTENT_WIDTH` : en dessous de 30 %, une colonne de réglages sur
+/// un écran 1920 px ne tient plus un curseur avec son étiquette.
+const LARGEUR_MIN: f32 = 0.3;
+const LARGEUR_MAX: f32 = 1.0;
+
+/// Voir `CONTENT_WIDTH`.
+pub fn content_width() -> f32 {
+    CONTENT_WIDTH.with(Cell::get)
+}
+
+/// Voir `CONTENT_WIDTH` — bornée à [`LARGEUR_MIN`, `LARGEUR_MAX`].
+pub fn set_content_width(fraction: f32) {
+    CONTENT_WIDTH.with(|s| s.set(fraction.clamp(LARGEUR_MIN, LARGEUR_MAX)));
 }
 
 /// Fixe/efface le réglage MANUEL d'échelle de l'écran sur lequel ce
@@ -2802,6 +2824,12 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
                     let scale = percent as f32 / 100.0;
                     set_content_scale(scale);
                     config::save_settings_content_scale(scale);
+                }
+            }
+            ["settings-content-width", percent] => {
+                if let Ok(percent) = percent.parse::<u32>() {
+                    set_content_width(percent as f32 / 100.0);
+                    config::save_settings_content_width(content_width());
                 }
             }
             ["notes-text-scale", percent] => {
@@ -5683,6 +5711,8 @@ fn push_state(refs: &SettingsRefs) {
         );
         // Toute la page suit la taille des textes (voir `.root` de settings.html).
         objet.insert("pageScale".into(), json!(taille_panneaux::global(taille_panneaux::TEXTES)));
+        // Hors du grand `json!` : il est à la limite de récursion du compilateur.
+        objet.insert("settingsContentWidthPercent".into(), json!((content_width() * 100.0).round() as i32));
     }
     cef_popup::execute_js(&SLOT, &format!("window.setState({payload})"));
 }

@@ -195,8 +195,16 @@
   .category-nav button:hover {
     background: rgba(var(--popup-accent-rgb), calc(0.2 * var(--popup-fond-alpha, 1)));
   }
+  /* LARGEUR DE LA COLONNE DES RÉGLAGES — curseur « Largeur de la zone des
+     réglages » (`--zone-largeur`, fraction posée par `window.setState`).
+     Le pourcentage porte sur la place de la colonne : la rangée moins la
+     colonne des catégories (180 px) et l'écart (12 px). Les deux marges
+     `auto` la CENTRENT dans cette place (demande explicite, 2026-11-09). Les
+     grilles en `auto-fill` du contenu se réorganisent d'elles-mêmes. */
   .scroll {
-    flex: 1;
+    flex: none;
+    width: calc((100% - 192px) * var(--zone-largeur, 1));
+    margin-inline: auto;
     min-height: 0;
     overflow-y: auto;
     display: flex;
@@ -5102,6 +5110,9 @@
         // suivre le curseur en direct (mise à jour inconditionnelle dans
         // `slider()`, indépendante de `onInput`/`onChange`).
         slider(box, { label: "Contenu", min: 25, max: 200, value: state.settingsContentScalePercent, valueLabel: (v) => v + "%", dataKey: "settings-content-scale", onChange: (v) => go("settings-content-scale", v) });
+        // Largeur de la colonne des réglages, centrée — appliquée au relâchement,
+        // comme « Contenu » juste au-dessus : la page se réorganise à chaque pas.
+        slider(box, { label: "Largeur de la zone des réglages", min: 30, max: 100, value: state.settingsContentWidthPercent ?? 100, valueLabel: (v) => v + "%", dataKey: "settings-content-width", onChange: (v) => go("settings-content-width", v) });
         box.appendChild(el("p", { class: "hint" }, ["Icônes/miniatures et texte réglables séparément. Chaque réglage s'applique au relâchement du curseur."]));
       });
 
@@ -5967,6 +5978,7 @@
       updateSlider("notes-text-scale", state.notesTextScalePercent, (v) => v + "%");
       updateSlider("notes-image-scale", state.notesImageScalePercent, (v) => v + "%");
       updateSlider("settings-content-scale", state.settingsContentScalePercent, (v) => v + "%");
+      updateSlider("settings-content-width", state.settingsContentWidthPercent ?? 100, (v) => v + "%");
       updateSlider("taille-textes", state.tailleTextesPercent, (v) => v + "%");
       updateSlider("taille-notifications", state.tailleNotificationsPercent, (v) => v + "%");
       for (const [, panneau] of PANEL_SCALE_TARGETS) {
@@ -6141,6 +6153,8 @@
       const effectiveScalePercent = next.settingsContentScaleEffectivePercent ?? next.settingsContentScalePercent;
       document.documentElement.style.setProperty("--content-scale", effectiveScalePercent / 100);
       document.documentElement.style.setProperty("--page-scale", next.pageScale ?? 1);
+      // Le repli `?? 100` : même raison que celui de l'échelle juste au-dessus.
+      document.documentElement.style.setProperty("--zone-largeur", (next.settingsContentWidthPercent ?? 100) / 100);
       render();
     };
   </script>

@@ -5015,6 +5015,18 @@ pub fn save_settings_content_scale(scale: f32) {
     write_config("settings_content_scale.txt", scale.to_string());
 }
 
+/// Largeur de la colonne des réglages du panneau Réglages, en fraction de sa
+/// place (voir `win32::cef_settings::CONTENT_WIDTH`). `None` → pleine largeur.
+pub fn load_settings_content_width() -> Option<f32> {
+    read_config_floats("settings_content_width.txt")?.first().copied()
+}
+
+/// Voir `load_settings_content_width`. Mêmes garanties (best-effort) que
+/// `save_settings_content_scale`.
+pub fn save_settings_content_width(fraction: f32) {
+    write_config("settings_content_width.txt", fraction.to_string());
+}
+
 /// Active/désactive la mini-barre d'horloge affichée par-dessus une
 /// application plein écran (voir `win32::fullscreen_clock`) — DEMANDE
 /// EXPLICITE "laisser la possibilité à l'utilisateur d'activer cette

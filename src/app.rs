@@ -4357,6 +4357,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     if let Some(scale) = config::load_settings_content_scale() {
         crate::win32::cef_settings::set_content_scale(scale);
     }
+    if let Some(fraction) = config::load_settings_content_width() {
+        crate::win32::cef_settings::set_content_width(fraction);
+    }
     // Échelle du texte/des images du dash "Notes" (voir `win32::cef_notes::
     // set_text_scale`/`set_image_scale`) — même convention, DEMANDE
     // EXPLICITE ("ajoutes la possibilité de modification des réglages du
@@ -7154,15 +7157,6 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // `DockLayout` valides.
             bottom_thickness,
         };
-        // Largeur occupée par d'éventuelles icônes du dock déposées dans
-        // chaque moitié de la barre du haut (voir `ui::dock::Dock::
-        // top_zone_widths`, demande explicite : "déplacer les icônes des
-        // barres de gauche et de droite dans la barre supérieure... [selon]
-        // le côté où elles sont déposées") — décale d'autant tout ce qui
-        // s'ancre normalement aux coins de la barre du haut, pour ne jamais
-        // les chevaucher.
-        let top_left_offset = dock.top_zone_widths(&layout).0;
-
         // Ouvre la fenêtre demandée par `NEURADESK_DEBUG_OPEN` (voir
         // `win32::debug_capture`, doc de module) — un appel de fonction
         // DIRECT, exactement celui que produirait le clic réel sur l'icône
@@ -8188,9 +8182,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         None => (&mut dock, &layout),
                     };
                     // Décalage de la moitié GAUCHE de LA BONNE barre du haut
-                    // (voir `top_left_offset` plus haut, calculé une fois par
-                    // frame pour la barre PRIMAIRE seulement) — nécessaire
-                    // pour ancrer correctement média/pastilles sur un écran
+                    // (voir `ui::dock::Dock::top_zone_widths`) — calculé sur la
+                    // barre CLIQUÉE, pour ancrer correctement média/pastilles sur un écran
                     // SECONDAIRE, dont les icônes déposées dans sa propre
                     // barre du haut peuvent occuper une largeur différente.
                     let active_top_left_offset = active_dock.top_zone_widths(active_layout).0;
@@ -9982,8 +9975,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             //
                             // Ce qui n'est ni latéral ni hors barre, et tombe dans
                             // la BANDE du haut, est donc la barre du haut. Le test
-                            // est la bande seule, sans exclure les widgets
-                            // (`topbar_free_zone`) : eux aussi sont posés SUR la
+                            // est la bande seule, sans exclure les widgets :
+                            // eux aussi sont posés SUR la
                             // barre, et un clic droit n'y ouvre rien d'autre — les
                             // exclure rendrait muettes les zones qu'ils occupent,
                             // y compris celle des boutons média quand aucune
@@ -10820,8 +10813,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             // l'infobulle (voir `topbar_widget_under`, quelques
                             // centaines de lignes plus bas) : reprendre CE résultat
                             // garantit que le geste et l'infobulle désignent la même
-                            // zone — le même souci que `topbar_free_zone` résout en
-                            // testant les zones avec les fonctions du DESSIN. Le
+                            // zone, testée avec les fonctions du DESSIN. Le
                             // recalculer ici avec d'autres valeurs (celles par écran
                             // de la boucle d'affichage) pourrait désigner un autre
                             // élément.
@@ -10855,100 +10847,15 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                         } else {
-                            // Clic droit SIMPLE (sans Ctrl, sur aucune icône)
-                            // dans une zone LIBRE d'une barre — demande
-                            // explicite : "un curseur de dimensionnement des
-                            // barres qui apparaît avec un clic droit sur une
-                            // zone libre d'une barre pour modifier sa taille
-                            // directement". Ancré au point de clic lui-même
-                            // (pas d'icône de référence ici, contrairement à
-                            // `SpacerSize`/`Context` ci-dessus).
-                            let anchor = anchor_i32(origin.0 as f32 + x, origin.1 as f32 + y);
-                            // `topbar_hover` et `clock_hover` restent ceux de la
-                            // PRIMAIRE — sans conséquence : `topbar_hit_scales`
-                            // reçoit `secondary_index.is_none()` et rend
-                            // `[1.0; 4]` sur un écran SECONDAIRE, qui ne magnifie
-                            // ni ses boutons média ni son horloge (voir
-                            // `dock_instance`). Les
-                            // pastilles de bureaux virtuels ont désormais, elles,
-                            // leur PROPRE taille par écran (voir
-                            // `ui::dock::Dock::desktop_dot_size`, demande
-                            // explicite) — `active_dock.desktop_dot_size()`
-                            // ci-dessous, jamais celle de la PRIMAIRE.
-                            let bar_kind = match active_dock.side_at(x, y, active_layout) {
-                                Some(dock::Side::Left) => Some(Bar::Left),
-                                Some(dock::Side::Right) => Some(Bar::Right),
-                                // Les deux moitiés de la barre du haut (voir
-                                // `ui::dock::Side`, zones de dépôt pour les
-                                // icônes désormais déplaçables jusque là) ne
-                                // font qu'une seule barre redimensionnable
-                                // (`Bar::Top`) — pas de distinction
-                                // gauche/droite pour ÇA.
-                                Some(dock::Side::TopLeft) | Some(dock::Side::TopRight) | Some(dock::Side::TopMiddle) => Some(Bar::Top),
-                                Some(dock::Side::Bottom) => Some(Bar::Bottom),
-                                None if topbar_free_zone(
-                                    x,
-                                    y,
-                                    active_layout,
-                                    &clock_texture,
-                                    &virtual_desktops,
-                                    // `active_features` ET NON `features` : cette
-                                    // fonction branche sur `show_desktop`/`media`/
-                                    // `desktop_dots`, qui sont PAR ÉCRAN — les
-                                    // mélanger ferait dire à la barre d'un écran
-                                    // qu'une zone est libre là où celle de l'autre a
-                                    // un widget (même piège que le marqueur, voir
-                                    // `active_features` en tête de ce bras).
-                                    &active_features,
-                                    top_left_offset,
-                                    active_dock.slot_widths(),
-                                    active_dock.desktop_dot_size(),
-                                    topbar_hit_scales(&topbar_hover, &clock_hover, &bell_hover, &note_hover, &minuteur_hover, &masque_hover, &reglages_hover, &rec_hover, secondary_index.is_none()),
-                                    &dot_hover_scales(&dots_hover, &active_features, &virtual_desktops),
-                                ) =>
-                                {
-                                    Some(Bar::Top)
-                                }
-                                None => None,
-                            };
-                            if let Some(bar_kind) = bar_kind {
-                                // Trace (voir `diag`) : c'est CE chemin qui s'ouvre
-                                // quand le curseur n'a atteint aucun élément — le
-                                // menu parle alors de la BARRE, pas d'un espace, et
-                                // c'est exactement ce qu'on veut distinguer.
-                                crate::diag!("clic droit : curseur de TAILLE DE BARRE (rien sous le curseur)");
-                                // Phase 2 de docs/plans/cef-web-ui-migration.md
-                                // — voir `win32::cef_bar_size`, doc de
-                                // module : remplace `PopupKind::BarSize`.
-                                // `PopupKind::BarSize`/`render_bar_size`
-                                // restent dans le code, INUTILISÉS.
-                                let current = match bar_kind {
-                                    Bar::Top => active_layout.top_thickness,
-                                    Bar::Left => active_layout.left_width,
-                                    Bar::Right => active_layout.right_width,
-                                    Bar::Bottom => active_layout.bottom_thickness,
-                                };
-                            // VERROU — même règle que pour les espaces : une barre verrouillée
-                            // ne se redimensionne pas (DEMANDE EXPLICITE : « eux aussi bloqués »).
-                            let bar_side = match bar_kind {
-                                Bar::Top => Side::TopLeft,
-                                Bar::Left => Side::Left,
-                                Bar::Right => Side::Right,
-                                Bar::Bottom => Side::Bottom,
-                            };
-                            if !active_dock.is_bar_locked(bar_side) {
-                                    let room = menu_room(origin, active_layout, screen);
-                                    let s = menu_scale_qui_tient(840, 330, content_scale, room);
-                                    crate::win32::cef_bar_size::toggle(
-                                        menu_rect(anchor, 840, 330, s, room),
-                                        &gfx,
-                                        s,
-                                        bar_kind,
-                                        current,
-                                        target_device_name.as_deref(),
-                                    );
-                            }
-                            }
+                            // Clic droit dans une zone LIBRE d'une barre : RIEN.
+                            //
+                            // ⛔ **LE CURSEUR DE TAILLE DE BARRE N'Y EST PLUS** — DEMANDE
+                            // EXPLICITE (2026-11-09) : « retirer la possibilité de redimensionner
+                            // les barres depuis un clic droit sur les barres ». L'épaisseur se
+                            // règle dans le panneau Réglages (actions `bar-size` de
+                            // `cef_settings`, inchangées). `cef_bar_size` reste ouvrable par le
+                            // harnais (`NEURADESK_DEBUG_OPEN=cef-bar-size`).
+                            crate::diag!("clic droit dans une zone libre d'une barre : sans effet");
                         }
                     }
                 }
@@ -18827,8 +18734,7 @@ fn topbar_widget_label(widget: TopbarWidget) -> String {
 /// `presented_media_rect`, `desktop_dot_rect`, `presented_clock_rect`,
 /// `sys_monitor_rect`, `refresh_rate_rect`. L'infobulle ne peut donc pas
 /// désigner un élément là où il n'est pas, ni ignorer une marge (magnification
-/// comprise) que le clic, lui, prend déjà en compte — voir `topbar_free_zone`,
-/// qui teste les mêmes zones avec les mêmes fonctions.
+/// comprise) que le clic, lui, prend déjà en compte.
 ///
 /// L'ORDRE des tests n'a d'importance que si deux éléments se recouvrent, ce que
 /// les dispositions interdisent ; il suit celui de la barre, de gauche à droite.
@@ -18837,7 +18743,7 @@ fn topbar_widget_label(widget: TopbarWidget) -> String {
 /// par un réglage, une horloge sans texture, des boutons média sans session
 /// multimédia active (voir `media_shown`, que l'appelant lit sur la texture du
 /// titre). Une infobulle ne doit jamais expliquer ce qui n'est pas dessiné.
-#[allow(clippy::too_many_arguments)] // un paramètre par état de widget, comme `topbar_free_zone`
+#[allow(clippy::too_many_arguments)] // un paramètre par état de widget
 fn topbar_widget_under(
     x: f32,
     y: f32,
@@ -18873,7 +18779,7 @@ fn topbar_widget_under(
     }
     let dots_left = dots_left_offset(slots, layout, features, top_left_offset);
     // Afficher le bureau — l'icône d'extrémité gauche, testée en premier comme
-    // elle est dessinée (et comme `topbar_free_zone` la teste).
+    // elle est dessinée.
     if features.show_desktop && topbar::show_desktop_hit(x, y, layout, top_left_offset, topbar_scales[topbar::HOVER_SHOW_DESKTOP_INDEX]) {
         // Le rectangle rendu est le PRÉSENTÉ, comme pour les trois boutons média
         // juste en dessous : ce que l'appelant en fait doit viser l'icône telle
@@ -19052,102 +18958,6 @@ fn topbar_widget_under(
         }
     }
     None
-}
-
-fn topbar_free_zone(
-    x: f32,
-    y: f32,
-    layout: &DockLayout,
-    clock_texture: &Option<(Texture, f32, f32)>,
-    virtual_desktops: &Option<desktops::VirtualDesktops>,
-    features: &Features,
-    top_left_offset: f32,
-    slots: topbar::SlotWidths,
-    desktop_dot_size: f32,
-    topbar_scales: [f32; 11],
-    // Échelles de survol des PASTILLES de bureaux virtuels, dans leur ordre — elles
-    // ont leur propre animateur (`dots_hover`) parce que leur NOMBRE est variable,
-    // donc un tableau de taille fixe ne peut pas les porter. Voir
-    // `dot_hover_scales`, qui les matérialise pour que `ui::topbar` reste pur.
-    dot_scales: &[f32],
-) -> bool {
-    if y >= layout.top_thickness {
-        return false;
-    }
-    // L'horloge est testée AVEC son échelle, comme les boutons média juste en
-    // dessous et pour la même raison : une horloge grossie et ramenée vers le bas
-    // (voir `topbar::presented_clock_rect`) reste cliquable là où elle est
-    // DESSINÉE, et n'est donc pas prise pour une zone libre — sinon un clic droit
-    // sur sa marge ouvrirait le menu du dock au lieu de ne rien faire.
-    let on_clock = features.clock
-        && clock_texture
-            .as_ref()
-            .is_some_and(|(_, w, h)| topbar::clock_hit(x, y, layout, *w, *h, topbar_scales[topbar::HOVER_CLOCK_INDEX]));
-    // La CLOCHE est un ÉLÉMENT de la barre, comme l'horloge — sans ce test, un clic
-    // droit dessus ouvrirait le curseur de taille de barre au lieu de ne rien faire.
-    let on_bell = features.bell
-        && clock_texture
-            .as_ref()
-            .is_some_and(|(_, w, h)| topbar::bell_hit(x, y, layout, *w, *h, topbar_scales[topbar::HOVER_BELL_INDEX]));
-    // Et l'icône de note, pour la MÊME raison que la cloche : c'est un ÉLÉMENT
-    // de la barre, pas une zone libre.
-    let on_note = features.rappel_notes
-        && clock_texture
-            .as_ref()
-            .is_some_and(|(_, w, h)| topbar::note_hit(x, y, layout, *w, *h, topbar_scales[topbar::HOVER_NOTE_INDEX]));
-    // L'icône du minuteur, tant qu'elle est là : un ÉLÉMENT de la barre aussi.
-    let on_minuteur = crate::win32::minuteur::sonne()
-        && clock_texture
-            .as_ref()
-            .is_some_and(|(_, w, h)| topbar::minuteur_hit(x, y, layout, *w, *h, topbar_scales[topbar::HOVER_MINUTEUR_INDEX]));
-    // L'applet de masquage : un ÉLÉMENT de la barre, toujours là.
-    let on_masque = features.masque
-        && clock_texture
-        .as_ref()
-        .is_some_and(|(_, w, h)| topbar::masque_hit(x, y, layout, *w, *h, topbar_scales[topbar::HOVER_MASQUE_INDEX]));
-    let on_reglages = features.reglages_secours
-        && clock_texture
-            .as_ref()
-            .is_some_and(|(_, w, h)| topbar::reglages_hit(x, y, layout, *w, *h, topbar_scales[topbar::HOVER_REGLAGES_INDEX]));
-    // Le voyant d'enregistrement, tant qu'il est là : un ÉLÉMENT de la barre.
-    let on_rec = crate::win32::enregistreur::en_cours()
-        && clock_texture
-            .as_ref()
-            .is_some_and(|(_, w, h)| topbar::rec_hit(x, y, layout, *w, *h, topbar_scales[topbar::HOVER_REC_INDEX]));
-    let on_desktop_dot = features.desktop_dots
-        && virtual_desktops.as_ref().is_some_and(|vd| {
-            topbar::desktop_dot_at(
-                x,
-                y,
-                layout,
-                vd.count,
-                dots_left_offset(slots, layout, features, top_left_offset),
-                desktop_dot_size,
-                dot_scales,
-            )
-            .is_some()
-        });
-    // L'icône « afficher le bureau » est un ÉLÉMENT de la barre, pas une zone
-    // libre : sans ce test, un clic droit dessus ouvrirait le curseur de taille
-    // de barre au lieu de ne rien faire (même raison que `on_clock` ci-dessus).
-    let on_show_desktop = features.show_desktop && topbar::show_desktop_hit(x, y, layout, top_left_offset, topbar_scales[topbar::HOVER_SHOW_DESKTOP_INDEX]);
-    // Les boutons média sont testés AVEC leur échelle de survol : un bouton
-    // grossi et décalé vers le bas (voir `ui::topbar::presented_media_rect`)
-    // reste cliquable là où il est dessiné, et n'est donc pas pris pour une zone
-    // libre — sinon un clic droit sur sa marge ouvrirait le curseur de taille de
-    // barre au lieu de ne rien faire.
-    !(features.media && topbar::media_previous_hit(x, y, layout, media_left_offset(slots, top_left_offset), topbar_scales[0]))
-        && !(features.media && topbar::media_play_pause_hit(x, y, layout, media_left_offset(slots, top_left_offset), topbar_scales[1]))
-        && !(features.media && topbar::media_next_hit(x, y, layout, media_left_offset(slots, top_left_offset), topbar_scales[2]))
-        && !on_clock
-        && !on_bell
-        && !on_note
-        && !on_minuteur
-        && !on_masque
-        && !on_reglages
-        && !on_rec
-        && !on_desktop_dot
-        && !on_show_desktop
 }
 
 /// Convertit une ancre `f32` (calculée en coordonnées de layout, souvent
