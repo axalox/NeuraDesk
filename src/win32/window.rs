@@ -57,7 +57,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWL_STYLE, HWND_TOPMOST, IDC_ARROW, MSG, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN,
     SPI_GETWORKAREA, SPI_SETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
     SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, WS_CAPTION,
-    SW_SHOWNORMAL, WM_CLIPBOARDUPDATE, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND,
+    WM_CLIPBOARDUPDATE, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND,
     SendMessageW, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_SHARED, LoadImageW, SM_CXICON, SM_CYICON, SM_CXSMICON,
     SM_CYSMICON, WM_SETICON, SYSTEM_METRICS_INDEX,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MBUTTONDOWN, WM_QUIT, WM_RBUTTONDOWN, WM_SETTINGCHANGE, WM_SIZE,
@@ -1756,9 +1756,15 @@ impl SecondaryWindow {
         crate::gfx::capture_visibility::apply_to_window(hwnd);
         // Icône de FENÊTRE (barre des tâches + Alt-Tab) — voir `apply_exe_icon`.
         apply_exe_icon(hwnd);
-            // Match primary dock behavior: can be activated normally but WS_EX_NOACTIVATE
-            // prevents focus stealing when clicking on the dock background.
-            let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
+            // ⛔ **`SW_SHOWNOACTIVATE`, JAMAIS `SW_SHOWNORMAL`** — DÉFAUT SIGNALÉ
+            // (2026-11-09) : « le dash réglage se ferme tout seul à la fin d'un
+            // réglage ». `WS_EX_NOACTIVATE` n'empêche que l'activation par CLIC :
+            // `SW_SHOWNORMAL` active la fenêtre qu'il montre. Or chaque réglage qui
+            // change la géométrie d'un écran secondaire (épaisseur…) RECRÉE cette
+            // fenêtre (`app::rebuild_secondary_docks`) : elle prenait le premier
+            // plan, et `cef_popup::hide_if_focus_elsewhere` masquait les Réglages
+            // (journal : « popup … masque » 0,85 s après l'action).
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
 
             let helper = create_appbar_helper(w!("NeuraDeskAppBarHelperTop"))?;
             // Voir la doc du champ `auto_hide` : en mode auto-masquage, on
@@ -2998,6 +3004,16 @@ mod tests {
         );
         assert_ne!(style & WS_EX_NOACTIVATE.0, 0, "une barre ne doit jamais voler le focus");
         assert_ne!(style & WS_EX_TOPMOST.0, 0, "une barre reste au-dessus de tout");
+    }
+
+    /// `NOACTIVATE` ne protège que du CLIC : montrer une barre par
+    /// `SW_SHOWNORMAL` l'active quand même — et une barre secondaire recréée par
+    /// un réglage refermait ainsi le panneau Réglages (2026-11-09).
+    #[test]
+    fn aucune_barre_n_est_montree_en_l_activant() {
+        let source = include_str!("window.rs");
+        let interdit = ["ShowWindow(hwnd, SW_SHOW", "NORMAL)"].concat();
+        assert!(!source.contains(&interdit), "une barre montrée par SW_SHOWNORMAL vole le premier plan");
     }
 
     /// `apply_exe_icon` pose l'icône aux DEUX emplacements que le shell

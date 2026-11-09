@@ -63,6 +63,12 @@ pub const BASES: &[&str] = &[
     "Valeur", "Perlin", "Cellules", "Ondes",
     "Grain", "Papier", "Toile", "Lin", "Trame", "Sable", "Nuages",
     "Brouillage RVB", "Simplexe", "Fissures", "Vitrail", "Damier", "Rayures", "Pois", "Hexagones", "Briques", "Ondulations", "Moiré", "Écailles",
+    // ⭐ DEMANDE EXPLICITE (2026-11-08) : « ajouter d'autres textures modifiables ».
+    // Des matières (bois, marbre, granit, métal, carbone, cuir), de l'eau, un
+    // plasma (en couleur, comme le brouillage) et deux pavages.
+    "Bois", "Marbre", "Granit", "Métal brossé", "Fibre de carbone", "Cuir", "Eau", "Plasma", "Tissage", "Truchet",
+    // ⭐ DEMANDE EXPLICITE (2026-11-08) : « ajoutes des motifs de bruit de base » (voir `TexMotif`).
+    "Topographie", "Zébrures", "Labyrinthe", "Chevrons", "Spirales", "Étoiles", "Bulles", "Circuit", "Papier millimétré", "Losanges",
 ];
 
 /// L'index, dans `BASES`, de la première nature de `texture_interface::NATURES`
@@ -71,7 +77,7 @@ pub const BASES: &[&str] = &[
 pub const DECALAGE_NATURES: usize = 3;
 
 /// ⚠️ L'ORDRE EST CELUI DU `cbuffer` — ajouter EN FIN (voir l'en-tête).
-pub const REGLAGES: [Reglage; 22] = [
+pub const REGLAGES: [Reglage; 32] = [
     Reglage { id: "base", libelle: "Bruit de base", sorte: Sorte::Choix(BASES), min: 0.0, max: (BASES.len() - 1) as f32, pas: 1.0, defaut: 1.0, depend: None },
     curseur("frequence", "Fréquence", 0.002, 0.1, 0.001, 0.02, None),
     case("fractal", "Fractal (plusieurs octaves)", 1.0),
@@ -96,11 +102,30 @@ pub const REGLAGES: [Reglage; 22] = [
     // ⭐ DEMANDE EXPLICITE (2026-10-16) : « un réglage du flou ». En pixels : le
     // rayon du disque sur lequel le motif est moyenné (voir `TexPersoFond`).
     curseur("flou", "Flou", 0.0, 20.0, 0.5, 0.0, None),
+    // ⭐ DEMANDE EXPLICITE (2026-11-08) : de nouveaux réglages, communs à toutes les
+    // bases (voir `TexPersoFond`).
+    // Bicolore : les parties claires prennent une seconde teinte (en degrés).
+    case("bicolore", "Bicolore", 0.0),
+    curseur("seconde_teinte", "Seconde teinte", 0.0, 360.0, 1.0, 200.0, Some("bicolore")),
+    curseur("bicolore_force", "Force de la seconde teinte", 0.0, 2.0, 0.05, 1.0, Some("bicolore")),
+    // Relief : le motif comme gravé, éclairé d'en haut à gauche. Il prend les deux
+    // premières prises du flou, qu'il remplace.
+    case("relief", "Relief (embossage)", 0.0),
+    curseur("relief_force", "Force du relief", 0.0, 3.0, 0.05, 1.5, Some("relief")),
+    curseur("relief_distance", "Épaisseur du relief", 0.5, 6.0, 0.25, 1.5, Some("relief")),
+    // Pixeliser : des carrés d'une seule valeur, en pixels d'écran.
+    case("pixeliser", "Pixeliser", 0.0),
+    curseur("pixel_taille", "Taille des pixels", 2.0, 40.0, 1.0, 8.0, Some("pixeliser")),
+    // Kaléidoscope : le motif replié en branches autour du centre de l'écran.
+    case("symetrie", "Kaléidoscope", 0.0),
+    curseur("branches", "Branches", 2.0, 12.0, 1.0, 6.0, Some("symetrie")),
 ];
 
-/// Les registres du `cbuffer` (`float4 TexPerso[6]`) : les réglages, puis la
-/// PHASE de l'animation dans la toute dernière composante.
-pub const REGISTRES: usize = 6;
+/// Les registres du `cbuffer` (`float4 TexPerso[9]`) : les réglages, puis la
+/// PHASE de l'animation dans la toute dernière composante. Passés de 6 à 9 le
+/// 2026-11-08, avec les dix réglages du bicolore, du relief, de la pixelisation
+/// et du kaléidoscope.
+pub const REGISTRES: usize = 9;
 const PHASE: usize = REGISTRES * 4 - 1;
 const _: () = assert!(REGLAGES.len() <= PHASE, "les réglages débordent sur la phase");
 
@@ -241,6 +266,13 @@ pub const PREREGLAGES: &[(&str, &str, &[(&str, f32)])] = &[
     ("eau", "Eau", &[("base", 3.0), ("frequence", 0.05), ("distorsion", 1.0), ("distorsion_force", 1.5), ("distorsion_frequence", 0.4), ("evoluer", 1.0), ("vitesse", 0.5)]),
     ("montagnes", "Montagnes", &[("base", 1.0), ("frequence", 0.015), ("octaves", 6.0), ("cretes", 1.0), ("contraste", 1.3)]),
     ("affiche", "Affiche", &[("base", 1.0), ("frequence", 0.02), ("octaves", 3.0), ("posterisation", 1.0), ("niveaux", 4.0), ("contraste", 1.5)]),
+    // ⭐ 2026-11-08 : de quoi voir les nouvelles bases et les nouveaux réglages.
+    ("carbone", "Carbone", &[("base", 27.0), ("frequence", 0.03), ("fractal", 0.0), ("relief", 1.0), ("relief_force", 1.0)]),
+    ("caustiques", "Caustiques", &[("base", 29.0), ("frequence", 0.012), ("fractal", 0.0), ("distorsion", 1.0), ("distorsion_force", 0.4), ("evoluer", 1.0), ("vitesse", 0.4), ("bicolore", 1.0), ("seconde_teinte", 190.0)]),
+    ("mosaique", "Mosaïque", &[("base", 30.0), ("frequence", 0.01), ("fractal", 0.0), ("pixeliser", 1.0), ("pixel_taille", 14.0)]),
+    ("rosace", "Rosace", &[("base", 31.0), ("frequence", 0.02), ("fractal", 0.0), ("symetrie", 1.0), ("branches", 8.0), ("relief", 1.0)]),
+    ("carte", "Carte", &[("base", 33.0), ("frequence", 0.02), ("fractal", 0.0), ("bicolore", 1.0), ("seconde_teinte", 30.0)]),
+    ("ciel_etoile", "Ciel étoilé", &[("base", 38.0), ("frequence", 0.02), ("fractal", 0.0), ("evoluer", 1.0), ("vitesse", 0.5)]),
 ];
 
 /// Le motif d'un préréglage : les valeurs par défaut, puis les siennes.
@@ -416,10 +448,12 @@ mod tests {
             assert_eq!(BASES[n + DECALAGE_NATURES], *libelle, "nature {n}");
         }
         assert_eq!(BASES[..4], ["Valeur", "Perlin", "Cellules", "Ondes"], "les index enregistrés ne bougent pas");
-        assert_eq!(BASES.len(), 23, "quatre, sept natures, douze nouveaux");
+        assert_eq!(BASES.len(), 43, "quatre, sept natures, douze nouveaux, dix matières, dix motifs");
+        assert_eq!(BASES[32], "Truchet", "les index enregistrés ne bougent pas");
+        assert_eq!(BASES[22], "Écailles", "les index enregistrés ne bougent pas");
         let c = Composition::new();
         c.set("base", 99.0);
-        assert_eq!(c.valeur("base"), Some(22.0), "borné au dernier");
+        assert_eq!(c.valeur("base"), Some(42.0), "borné au dernier");
         assert_eq!(c.valeur("flou"), Some(0.0), "pas de flou par défaut");
     }
 

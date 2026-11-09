@@ -2942,6 +2942,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         crate::win32::debug_capture::guard_single_instance();
     }
 
+    // ⛔ **AVANT TOUTE LECTURE D'UN RÉGLAGE PAR ÉCRAN** : Windows peut avoir
+    // renommé un moniteur (`DISPLAY18` → `DISPLAY2`, mesuré le 2026-11-09), et ses
+    // réglages doivent le suivre avant que quiconque ne les charge. Voir
+    // `ecrans_identites`.
+    crate::ecrans_identites::suivre_les_renommages();
+
     // "Visible dans les captures d'écran" (voir `gfx::capture_visibility`,
     // DEMANDE EXPLICITE) — DOIT être chargé avant `Window::create_dock()`
     // juste en dessous : cette fenêtre lit `capture_visibility::is_enabled`
@@ -3464,6 +3470,18 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     }
     if let Some(contenu) = config::load_texture_perso_terminaux().or(perso_interface) {
         crate::gfx::texture_perso::TERMINAUX.charger(&contenu);
+    }
+    // Harnais : `NEURADESK_DEBUG_TEXTURE=base=27,relief=1` pose une composition
+    // « Personnalisée » sur l'interface, À FORCE PLEINE, EN MÉMOIRE SEULEMENT (rien
+    // n'est enregistré) — de quoi photographier une base ou un réglage sans toucher
+    // la configuration. Seulement sous `NEURADESK_CAPTURE`.
+    if std::env::var_os("NEURADESK_CAPTURE").is_some() {
+        if let Ok(composition) = std::env::var("NEURADESK_DEBUG_TEXTURE") {
+            crate::gfx::texture_perso::INTERFACE.reinitialiser();
+            crate::gfx::texture_perso::INTERFACE.charger(&composition);
+            crate::gfx::texture_interface::set_nature_id("perso");
+            crate::gfx::texture_interface::set_force(1.0);
+        }
     }
     // Taille et zoom du logo (voir `ui::dock::logo_draw_scale`).
     if let Some(size) = config::load_logo_size() {
@@ -11319,6 +11337,16 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         if let Some(deadline) = pending_display_rebuild {
             if Instant::now() >= deadline && phase_capture.is_none() && !interface_masquee {
                 pending_display_rebuild = None;
+                // Un moniteur RENOMMÉ en cours de session (voir `ecrans_identites`) :
+                // ses réglages viennent d'être déplacés sur le disque, mais ceux
+                // chargés en mémoire (une vingtaine de tables, ici et dans les
+                // modules) portent encore l'ancien nom. Recharger est le seul moyen
+                // de tout relire d'un coup ; le lancement suivant ne trouve plus
+                // rien à renommer, donc pas de boucle.
+                if crate::ecrans_identites::suivre_les_renommages() {
+                    crate::diag!("[ecrans] un ecran a change de nom : rechargement");
+                    request_reload();
+                }
                 // ⛔ **LES QUATRE VRAIES FENÊTRES NE SE FERMENT PAS TOUTES SEULES.**
                 // Les panneaux et les menus cèdent à la perte du focus (et
                 // `hide_overlay_windows` les couvre) ; les vraies fenêtres, non —

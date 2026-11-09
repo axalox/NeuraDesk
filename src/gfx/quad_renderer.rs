@@ -367,7 +367,7 @@ cbuffer Viewport : register(b0) {
     float3 TexChroma;
     float TexRemplissage;
     // La texture personnalisée — voir `gfx::texture_perso::REGLAGES`, même ordre.
-    float4 TexPerso[6];
+    float4 TexPerso[9];
     // Les ombres des barres : `x` à 1 quand leur calque (`OmbresTex`) est lié —
     // voir `ViewportConstants::ombre`.
     float4 Ombres;
@@ -2605,6 +2605,137 @@ float TexGeometrie(float2 p, int base, float phase) {
     float d = length(f) * 2.0;
     return saturate(1.0 - d) * 0.8 + smoothstep(0.08, 0.0, abs(d - 1.0)) * 0.6;
 }
+// Les MATIÈRES (bases 23 à 32, sauf le cuir et l'eau, tirés des cellules), dans
+// [0, 1] — le plasma est en COULEUR, comme le brouillage RVB.
+float3 TexMatiere(float2 p, int base, float phase) {
+    // Bois : des cernes serrés, tordus par un bruit étiré dans le fil.
+    if (base == 23) {
+        float cerne = frac(p.y * 2.0 + TexValeur(p * float2(0.35, 1.4)) * 2.5);
+        return (0.35 + 0.65 * cerne * cerne * (3.0 - 2.0 * cerne) * (0.8 + 0.2 * TexValeur(p * float2(0.2, 9.0)))).xxx;
+    }
+    // Marbre : des veines fines et sombres, tordues par plusieurs octaves.
+    if (base == 24) return (0.2 + 0.8 * sqrt(abs(sin(p.x * 2.0 + TexFbm(p * 0.7) * 8.0)))).xxx;
+    // Granit : des grains clairs et sombres serrés sur une nappe.
+    if (base == 25) {
+        float g = TexHash(floor(p * 14.0));
+        float tache = g > 0.88 ? 1.0 : (g < 0.18 ? 0.0 : 0.5);
+        return (tache * 0.65 + TexValeur(p * 2.5) * 0.35).xxx;
+    }
+    // Métal brossé : de longues stries horizontales et un grain fin.
+    if (base == 26) {
+        float strie = TexValeur(float2(p.x * 0.08, p.y * 24.0));
+        return saturate(0.5 + (strie - 0.5) * 0.9 + (TexHash(floor(p * float2(3.0, 60.0))) - 0.5) * 0.25).xxx;
+    }
+    // Fibre de carbone : des mèches croisées, un carré sur deux dans l'autre sens.
+    if (base == 27) {
+        // Sergé 2/2 : les mèches changent de sens par paires décalées, d'où les diagonales.
+        float2 q = p * 6.0;
+        float2 f = frac(q);
+        bool trame = TexMod(floor(q.x) + floor(q.y), 4.0) < 1.5;
+        float meche = trame ? f.y : f.x;
+        float reflet = trame ? f.x : f.y;
+        return (0.08 + 0.55 * sin(3.14159 * meche) * (0.55 + 0.45 * sin(3.14159 * reflet))).xxx;
+    }
+    // Plasma : des sinus mêlés, colorés en arc-en-ciel.
+    if (base == 30) {
+        float v = sin(p.x * 1.3 + phase) + sin((p.y + phase) * 0.9) + sin((p.x + p.y) * 0.7 + phase * 0.5)
+                + sin(length(p - float2(sin(phase * 0.3), cos(phase * 0.5)) * 3.0) * 1.2);
+        return 0.5 + 0.5 * sin(v * 1.6 + float3(0.0, 2.094, 4.189));
+    }
+    // Tissage : des brins larges, alternés comme un panier.
+    if (base == 31) {
+        float2 q = p * 3.0;
+        float2 f = frac(q);
+        bool horizontal = TexMod(floor(q.x) + floor(q.y), 2.0) > 0.5;
+        float travers = horizontal ? f.y : f.x;
+        float long_ = horizontal ? f.x : f.y;
+        return (0.15 + 0.75 * sin(3.14159 * travers) * (0.75 + 0.25 * sin(3.14159 * long_))).xxx;
+    }
+    // Truchet : des quarts de cercle, tournés au hasard dans chaque case.
+    float2 c = floor(p * 2.0);
+    float2 f = frac(p * 2.0);
+    if (TexHash(c + 5.3) > 0.5) f.x = 1.0 - f.x;
+    float d = min(abs(length(f) - 0.5), abs(length(f - 1.0) - 0.5));
+    return (1.0 - smoothstep(0.07, 0.11, d)).xxx;
+}
+// MOTIFS (bases 33 à 42), dans [0, 1]. Pas de `fwidth` ici : la fonction est
+// appelée sous `[branch]`, une dérivée y serait refusée par FXC.
+float3 TexMotif(float2 p, int base, float phase) {
+    // Topographie : les courbes de niveau d'un relief fractal.
+    if (base == 33) {
+        float niveau = abs(frac(TexFbm(p * 0.5) * 12.0 + phase * 0.05) - 0.5);
+        return (0.25 + 0.65 * smoothstep(0.43, 0.49, niveau)).xxx;
+    }
+    // Zébrures : des bandes franches, tordues par un bruit.
+    if (base == 34) {
+        float bande = sin(p.x * 4.0 + TexFbm(p * 0.5) * 5.0 + phase);
+        return (0.1 + 0.8 * smoothstep(-0.2, 0.2, bande)).xxx;
+    }
+    // Labyrinthe : une diagonale tirée au sort par case.
+    if (base == 35) {
+        float2 f = frac(p * 2.0);
+        if (TexHash(floor(p * 2.0) + 11.7) > 0.5) f.x = 1.0 - f.x;
+        return (0.15 + 0.75 * (1.0 - smoothstep(0.08, 0.14, abs(f.x - f.y)))).xxx;
+    }
+    // Chevrons : des bandes en zigzag.
+    if (base == 36) {
+        float2 q = p * 2.0;
+        float bande = abs(frac(q.y + abs(frac(q.x) - 0.5) + phase * 0.1) - 0.5) * 2.0;
+        return (0.2 + 0.65 * smoothstep(0.4, 0.6, bande)).xxx;
+    }
+    // Spirales : une spirale à deux bras par case, fondue sur ses bords.
+    if (base == 37) {
+        float2 f = frac(p * 0.5) - 0.5;
+        float r = length(f);
+        float bras = 0.5 + 0.5 * sin(2.0 * atan2(f.y, f.x) - r * 40.0 + phase * 3.0);
+        return (0.3 + 0.6 * bras * smoothstep(0.5, 0.4, r)).xxx;
+    }
+    // Étoiles : une étoile au hasard dans certaines cases, qui scintille, sur un voile.
+    if (base == 38) {
+        float2 c = floor(p * 1.5);
+        float2 f = frac(p * 1.5);
+        float tirage = TexHash(c);
+        // Centre dans [0,3 ; 0,7] et rayon ≤ 0,3 : l'éclat ne déborde jamais de sa case (sinon des carrés).
+        float2 centre = float2(TexHash(c + 3.1), TexHash(c + 7.7)) * 0.4 + 0.3;
+        float rayon = length(f - centre) / (tirage > 0.85 ? 0.3 : 0.14);
+        float eclat = pow(saturate(1.0 - rayon), 2.5)
+                    * step(0.4, tirage) * (0.6 + 0.4 * sin(phase * 3.0 + tirage * 40.0));
+        return saturate(0.04 + 0.12 * TexFbm(p * 0.3) + eclat).xxx;
+    }
+    // Bulles : deux couches de cercles, de tailles tirées au sort, qui montent.
+    if (base == 39) {
+        float2 q = p * 1.5 + float2(0.0, phase * 0.2);
+        float2 c = floor(q);
+        float d = abs(length(frac(q) - 0.5) - (0.15 + 0.25 * TexHash(c + 2.3)));
+        float2 q2 = p * 3.0 + float2(0.5, phase * 0.35);
+        float2 c2 = floor(q2);
+        float d2 = abs(length(frac(q2) - 0.5) - (0.1 + 0.3 * TexHash(c2 + 8.1)));
+        float bulle = max(1.0 - smoothstep(0.0, 0.04, d), 0.6 * (1.0 - smoothstep(0.0, 0.06, d2)));
+        return (0.15 + 0.75 * bulle).xxx;
+    }
+    // Circuit : des pistes droites et des pastilles, comme une carte électronique.
+    if (base == 40) {
+        float2 c = floor(p * 3.0);
+        float2 f = frac(p * 3.0);
+        float piste = 1.0 - smoothstep(0.05, 0.08, TexHash(c + 1.9) > 0.5 ? abs(f.y - 0.5) : abs(f.x - 0.5));
+        float pastille = step(0.7, TexHash(c + 4.4)) * (1.0 - smoothstep(0.04, 0.07, abs(length(f - 0.5) - 0.15)));
+        return (0.12 + 0.7 * max(piste, pastille)).xxx;
+    }
+    // Papier millimétré : un trait fort par case, quatre fins entre deux.
+    if (base == 41) {
+        float2 f = frac(p);
+        float2 g = frac(p * 5.0);
+        float fort = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y));
+        float fin = min(min(g.x, 1.0 - g.x), min(g.y, 1.0 - g.y));
+        return (0.2 + 0.7 * max(1.0 - smoothstep(0.015, 0.03, fort), 0.45 * (1.0 - smoothstep(0.03, 0.07, fin)))).xxx;
+    }
+    // Losanges : un damier tourné d'un quart d'angle droit, rayé en travers (écossais).
+    float2 r = float2(p.x + p.y, p.x - p.y) * 0.7071 * 1.5;
+    float2 f = frac(r);
+    float teinte = TexMod(floor(r.x) + floor(r.y), 2.0) > 0.5 ? 0.35 : 0.6;
+    float trait = 1.0 - smoothstep(0.02, 0.04, min(abs(f.x - 0.5), abs(f.y - 0.5)));
+    return lerp(teinte, 0.9, trait * 0.6).xxx;
+}
 // LE BRUIT DE BASE — l'index est celui de `texture_perso::BASES`. Le brouillage
 // RVB est le SEUL en couleur : un tirage par canal, à un pixel par `cellule`.
 float3 TexBruit(float2 p, int base, float phase, float cellule) {
@@ -2613,8 +2744,13 @@ float3 TexBruit(float2 p, int base, float phase, float cellule) {
         float2 q = p * 50.0 / cellule - 0.5;
         return float3(TexValeur(q), TexValeur(q + 31.7), TexValeur(q + 67.3));
     }
-    [branch] if (base == 2 || base == 13 || base == 14 || base == 20) {
-        float3 w = TexWorley(p, phase);
+    [branch] if (base == 2 || base == 13 || base == 14 || base == 20 || base == 28 || base == 29) {
+        float2 pw = base == 28 ? p * 2.0 : p;
+        float3 w = TexWorley(pw, phase);
+        // Cuir : des sillons entre des bosses arrondies.
+        if (base == 28) return saturate(saturate((w.y - w.x) * 6.0) * 0.7 + 0.3 * (1.0 - w.x)).xxx;
+        // Eau : les caustiques, des filets de lumière là où deux cellules se touchent.
+        if (base == 29) return (0.15 + 0.85 * pow(saturate(1.0 - (w.y - w.x) * 2.5), 6.0)).xxx;
         // Fissures : les arêtes entre cellules.
         if (base == 13) return saturate((w.y - w.x) * 2.5).xxx;
         // Vitrail : chaque cellule d'une seule nuance.
@@ -2625,6 +2761,8 @@ float3 TexBruit(float2 p, int base, float phase, float cellule) {
     }
     [branch] if (base == 1) return TexPerlin(p).xxx;
     [branch] if (base == 12) return TexSimplexe(p).xxx;
+    [branch] if (base >= 33) return TexMotif(p, base, phase);
+    [branch] if (base >= 23) return TexMatiere(p, base, phase);
     [branch] if (base >= 15) return TexGeometrie(p, base, phase).xxx;
     if (base == 3) return (0.5 + 0.25 * (sin(p.x * 1.7 + p.y * 0.3 + phase) + sin(p.y * 1.3 - p.x * 0.6 + 1.7 - phase))).xxx;
     return TexValeur(p).xxx;
@@ -2637,7 +2775,7 @@ float3 TexBruit(float2 p, int base, float phase, float cellule) {
 // moyenne de douze pixels au hasard serait encore un grain, à peine plus faible,
 // alors qu'un bruit flouté est une nappe douce.
 static const int TEX_PRISES_FLOU = 12;
-float3 TexPersoFond(float2 ecran, float4 P[6]) {
+float3 TexPersoFond(float2 ecran, float4 P[9]) {
     float pp_base = P[0].x;
     float pp_frequence = P[0].y;
     float pp_fractal = P[0].z;
@@ -2660,15 +2798,44 @@ float3 TexPersoFond(float2 ecran, float4 P[6]) {
     float pp_evoluer = P[4].w;
     float pp_vitesse = P[5].x;
     float pp_flou = P[5].y;
-    float phase = P[5].w;
+    float pp_bicolore = P[5].z;
+    float pp_seconde_teinte = P[5].w;
+    float pp_bicolore_force = P[6].x;
+    float pp_relief = P[6].y;
+    float pp_relief_force = P[6].z;
+    float pp_relief_distance = P[6].w;
+    float pp_pixeliser = P[7].x;
+    float pp_pixel_taille = P[7].y;
+    float pp_symetrie = P[7].z;
+    float pp_branches = P[7].w;
+    float phase = P[8].w;
     int base = (int)(pp_base + 0.5);
     float echelle = max(TexEchelle, 0.1);
     float a = pp_angle * 0.0174533;
     float etirement = max(pp_etirement, 0.05);
-    int prises = pp_flou > 0.25 ? TEX_PRISES_FLOU : 1;
+    // ⭐ LE RELIEF prend DEUX prises — le point, et son voisin vers le bas à
+    // droite — à la place de celles du flou : leur différence est la pente.
+    bool relief = pp_relief > 0.5;
+    int prises = relief ? 2 : (pp_flou > 0.25 ? TEX_PRISES_FLOU : 1);
+    float flou = relief ? 0.0 : pp_flou;
     // Un tirage au pixel ne descend pas sous la taille du flou (voir plus haut),
     // en pixels du MOTIF (fréquence et échelle comprises).
-    float cellule = max(1.0, pp_flou * pp_frequence * 50.0 / echelle);
+    float cellule = max(1.0, flou * pp_frequence * 50.0 / echelle);
+    // ⭐ PIXELISER : tout le carré prend la valeur de son centre.
+    if (pp_pixeliser > 0.5) {
+        float taille = max(pp_pixel_taille, 1.0);
+        ecran = (floor(ecran / taille) + 0.5) * taille;
+    }
+    // ⭐ KALÉIDOSCOPE : l'angle autour du centre de l'écran est replié en
+    // `branches` secteurs, chacun le miroir de son voisin.
+    if (pp_symetrie > 0.5) {
+        float2 centre = ViewportSize * 0.5;
+        float2 d = ecran - centre;
+        float secteur = 6.2831853 / max(round(pp_branches), 2.0);
+        float angle = abs(TexMod(atan2(d.y, d.x), secteur) - secteur * 0.5);
+        ecran = centre + length(d) * float2(cos(angle), sin(angle));
+    }
+    float3 premiere = 0.0;
     float tourne = TexHash(floor(ecran) + 0.31) * 6.2831853;
     // Par prise : les tours 0 et 1 font la DISTORSION (le bruit décale ses
     // propres coordonnées), puis le FRACTAL — des octaves de plus en plus fines,
@@ -2690,9 +2857,11 @@ float3 TexPersoFond(float2 ecran, float4 P[6]) {
         if (o == 0) {
             // Le point de la prise sur le disque, puis angle, étirement, fréquence.
             float2 e = ecran;
-            if (prises > 1) {
+            if (relief) {
+                e += prise * max(pp_relief_distance, 0.25) * float2(0.7071, 0.7071);
+            } else if (prises > 1) {
                 float t = prise * 2.3999632 + tourne;
-                e += pp_flou * sqrt((prise + 0.5) / prises) * float2(cos(t), sin(t));
+                e += flou * sqrt((prise + 0.5) / prises) * float2(cos(t), sin(t));
             }
             p = e / echelle;
             p = float2(cos(a) * p.x + sin(a) * p.y, -sin(a) * p.x + cos(a) * p.y);
@@ -2731,14 +2900,26 @@ float3 TexPersoFond(float2 ecran, float4 P[6]) {
                 float niveaux = max(pp_niveaux, 2.0);
                 v = min(floor(saturate(v) * niveaux), niveaux - 1.0) / (niveaux - 1.0);
             }
+            if (prise == 0) premiere = v;
             cumul += v;
             o = 0;
             prise++;
         }
     }
+    // Le relief : le motif adouci, plus sa pente — clair là où il monte vers la
+    // lumière (en haut à gauche), sombre là où il descend.
+    float3 moyenne = relief ? lerp(premiere, 0.5, 0.6) + (premiere - (cumul - premiere)) * pp_relief_force * 3.0 : cumul / prises;
     // Le contraste est linéaire : l'appliquer après la moyenne revient au même.
-    float3 v = (cumul / prises - 0.5) * 2.0 * pp_contraste;
-    return pp_inverser > 0.5 ? -v : v;
+    float3 v = (moyenne - 0.5) * 2.0 * pp_contraste;
+    v = pp_inverser > 0.5 ? -v : v;
+    // ⭐ BICOLORE : les parties claires prennent la seconde teinte, ramenée à
+    // une couleur SANS luminosité propre (centrée) — elle colore sans éclaircir.
+    if (pp_bicolore > 0.5) {
+        float3 c = saturate(abs(frac(pp_seconde_teinte / 360.0 + float3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0);
+        c -= dot(c, 1.0 / 3.0);
+        v += pp_bicolore_force * c * saturate(0.5 + 0.5 * dot(v, 1.0 / 3.0));
+    }
+    return v;
 }
 
 // LA TEXTURE DU FOND, par canal. « Personnalisée » (8) lit la composition de
@@ -2747,16 +2928,19 @@ float3 TexPersoFond(float2 ecran, float4 P[6]) {
 // 100 % (`TexBruit` la multiplie par 50).
 float3 TextureFond(float2 ecran) {
     int n = (int)(TexNature + 0.5);
-    float4 nature[6] = {
+    float4 nature[9] = {
         float4(3.0 + n, 0.02, 0.0, 4.0),
         float4(2.0, 0.5, 0.0, 0.0),
         float4(0.0, 0.8, 0.5, 0.0),
         float4(1.0, 0.0, 5.0, 0.0),
         float4(4.0, 1.0, 0.0, 0.0),
-        float4(0.3, 0.0, 0.0, 0.0),
+        float4(0.3, 0.0, 0.0, 200.0),
+        float4(1.0, 0.0, 1.5, 1.5),
+        float4(0.0, 8.0, 0.0, 6.0),
+        float4(0.0, 0.0, 0.0, 0.0),
     };
-    float4 P[6];
-    [unroll] for (int i = 0; i < 6; i++) P[i] = n == 8 ? TexPerso[i] : nature[i];
+    float4 P[9];
+    [unroll] for (int i = 0; i < 9; i++) P[i] = n == 8 ? TexPerso[i] : nature[i];
     return TexPersoFond(ecran, P);
 }
 
@@ -3837,14 +4021,22 @@ mod tests {
         use crate::gfx::texture_perso::BASES;
         let bruit = SHADER_SOURCE.split("float3 TexBruit(").nth(1).unwrap().split("\n}\n").next().unwrap();
         let geometrie = SHADER_SOURCE.split("float TexGeometrie(").nth(1).unwrap().split("\n}\n").next().unwrap();
+        let matiere = SHADER_SOURCE.split("float3 TexMatiere(").nth(1).unwrap().split("\n}\n").next().unwrap();
+        let motif = SHADER_SOURCE.split("float3 TexMotif(").nth(1).unwrap().split("\n}\n").next().unwrap();
         for index in 0..BASES.len() {
             let present = match index {
                 // Valeur : le dernier recours de `TexBruit`.
                 0 => bruit.trim_end().ends_with("return TexValeur(p).xxx;"),
                 // Les natures : `base - 3` (voir `TexNatureFond`).
                 4..=10 => bruit.contains("if (base >= 4 && base <= 10)"),
-                // Écailles : la fin de `TexGeometrie`.
-                22 => index == BASES.len() - 1 && bruit.contains("if (base >= 15)"),
+                // Écailles : la fin de `TexGeometrie`, qui prend 15 à 22.
+                22 => bruit.contains("if (base >= 15)") && bruit.find("base >= 23").unwrap() < bruit.find("base >= 15").unwrap(),
+                // Les matières : `TexMatiere` (23 et plus), Truchet en dernier recours.
+                32 => bruit.contains("if (base >= 23) return TexMatiere(") && bruit.find("base >= 33").unwrap() < bruit.find("base >= 23").unwrap() && matiere.trim_end().ends_with("return (1.0 - smoothstep(0.07, 0.11, d)).xxx;"),
+                23..=27 | 30 | 31 => matiere.contains(&format!("if (base == {index})")),
+                // Les motifs : `TexMotif` (33 et plus), les losanges en dernier recours.
+                42 => index == BASES.len() - 1 && bruit.contains("if (base >= 33) return TexMotif(") && motif.trim_end().ends_with("return lerp(teinte, 0.9, trait * 0.6).xxx;"),
+                33..=41 => motif.contains(&format!("if (base == {index})")),
                 15..=21 if index != 20 => geometrie.contains(&format!("if (base == {index})")),
                 _ => bruit.contains(&format!("base == {index}")),
             };

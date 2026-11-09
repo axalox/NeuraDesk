@@ -5,9 +5,12 @@
 //!
 //! Chaque écran est identifié par son `device_name` (ex. `\\.\DISPLAY2`),
 //! PAS par un index : l'ordre renvoyé par `EnumDisplayMonitors` peut changer
-//! au branchement/débranchement d'un moniteur, alors que `device_name` reste
-//! stable pour une même sortie vidéo tant que la config Windows ne change
-//! pas (voir la persistance dans `config.rs`).
+//! au branchement/débranchement d'un moniteur.
+//!
+//! ⛔ **MAIS `device_name` PEUT CHANGER D'UN DÉMARRAGE À L'AUTRE** (mesuré le
+//! 2026-11-09 : `DISPLAY18` puis `DISPLAY2` pour le même écran). Les réglages
+//! restent rangés sous ce nom dans `config.rs` ; c'est `ecrans_identites` qui
+//! les fait suivre, grâce à `identifiant_stable`.
 
 use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
@@ -55,6 +58,34 @@ pub fn enumerate() -> Vec<MonitorInfo> {
             .map(|(rect, _)| *rect);
     }
     monitors
+}
+
+/// **L'IDENTITÉ STABLE D'UN MONITEUR** — son chemin de périphérique
+/// (`\\?\DISPLAY#SAM092D#5&…&UID4352#{e6f07b5f-…}`), lu par
+/// `EnumDisplayDevicesW(device_name, 0, …, EDD_GET_DEVICE_INTERFACE_NAME)`.
+///
+/// ⛔ **`device_name` N'EST PAS STABLE**, contrairement à ce que disait la doc de
+/// module jusqu'au 2026-11-09 : MESURÉ ce jour-là, le même écran physique
+/// (même position, -1920,484) s'appelait `\\.\DISPLAY18` la veille et
+/// `\\.\DISPLAY2` ce jour-là. Ce chemin, lui, porte le modèle (`SAM092D`) et
+/// le connecteur (`UID4352`). Voir `ecrans_identites`, qui s'en sert pour
+/// suivre les renommages. `None` si Windows ne le donne pas.
+pub fn identifiant_stable(device_name: &str) -> Option<String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Graphics::Gdi::{EnumDisplayDevicesW, DISPLAY_DEVICEW};
+    /// `EDD_GET_DEVICE_INTERFACE_NAME` (Microsoft Learn, `EnumDisplayDevicesW`).
+    const EDD_GET_DEVICE_INTERFACE_NAME: u32 = 0x0000_0001;
+    let nom: Vec<u16> = device_name.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut peripherique = DISPLAY_DEVICEW { cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32, ..Default::default() };
+    let trouve = unsafe {
+        EnumDisplayDevicesW(PCWSTR(nom.as_ptr()), 0, &mut peripherique, EDD_GET_DEVICE_INTERFACE_NAME).as_bool()
+    };
+    if !trouve {
+        return None;
+    }
+    let len = peripherique.DeviceID.iter().position(|&c| c == 0).unwrap_or(peripherique.DeviceID.len());
+    let id = String::from_utf16_lossy(&peripherique.DeviceID[..len]);
+    (!id.trim().is_empty()).then_some(id)
 }
 
 /// Associe chaque barre des tâches Windows à l'écran qui la POSSÈDE
