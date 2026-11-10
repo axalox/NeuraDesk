@@ -1065,8 +1065,16 @@ pub fn executer_si_demande() {
     let racine = PathBuf::from(&args[4]);
     let temporaire = PathBuf::from(&args[5]);
     // Le dossier courant ne doit PAS être le dossier à renommer : Windows
-    // verrouille le répertoire de travail d'un processus.
-    let _ = std::env::set_current_dir(dossier_des_travaux().unwrap_or_else(|| temporaire.clone()));
+    // verrouille le répertoire de travail d'un processus. À défaut des travaux
+    // (l'assistant peut être lancé à la main), le TEMPORAIRE du système — et
+    // surtout PAS `temporaire`, que le nettoyage final supprime.
+    let ailleurs = dossier_des_travaux().unwrap_or_else(std::env::temp_dir);
+    let _ = std::env::set_current_dir(&ailleurs);
+    if std::env::current_dir().ok().as_deref() == Some(dossier.as_path()) {
+        if let Some(parent) = dossier.parent() {
+            let _ = std::env::set_current_dir(parent);
+        }
+    }
 
     match appliquer(pid, &dossier, &racine, &temporaire) {
         Ok(()) => std::process::exit(0),
@@ -1117,6 +1125,29 @@ impl Drop for RelanceGarantie<'_> {
 
 /// Le cœur de l'assistant. Tout est réversible jusqu'au renommage du dossier.
 fn appliquer(pid: u32, dossier: &Path, racine: &Path, temporaire: &Path) -> Result<(), String> {
+    appliquer_avec(pid, dossier, racine, temporaire, ATTENTE_VERROU)
+}
+
+/// **COMMENT LE NOUVEAU DOSSIER A ÉTÉ POSÉ — donc aussi comment on revient.**
+enum Placement {
+    /// Le renommage a marché : l'ancien dossier est intact sous `ancien`, et le
+    /// retour en arrière remet tout en place.
+    ParRenommage,
+    /// Le support a REFUSÉ de renommer le dossier : les fichiers ont été écrasés
+    /// sur place, et le seul retour possible est l'exécutable d'avant, gardé
+    /// sous `secours`.
+    SurPlace { secours: PathBuf },
+}
+
+/// Le même, avec le budget de renommage en paramètre : un test ne peut pas
+/// attendre les soixante secondes du terrain (voir `ATTENTE_VERROU`).
+fn appliquer_avec(
+    pid: u32,
+    dossier: &Path,
+    racine: &Path,
+    temporaire: &Path,
+    attente_renommage: Duration,
+) -> Result<(), String> {
     let journal = |texte: &str| journaliser(texte);
 
     if !racine.join(EXECUTABLE).is_file() {
@@ -1140,17 +1171,35 @@ fn appliquer(pid: u32, dossier: &Path, racine: &Path, temporaire: &Path) -> Resu
     let rate = dossier.with_file_name(format!("{nom}.rate-{horodatage}"));
 
     journal(&format!("renommage de {dossier:?} en {ancien:?}"));
-    renommer_avec_attente(dossier, &ancien)?;
-
-    if let Err(erreur) = renommer_avec_attente(racine, dossier) {
-        // Le dossier de l'application n'existe plus : on remet l'ancien en place.
-        let _ = std::fs::rename(&ancien, dossier);
-        if relancer(dossier).is_ok() {
-            garantie.desarmer();
+    let placement = match renommer_avec_attente(dossier, &ancien, attente_renommage) {
+        Ok(()) => {
+            if let Err(erreur) = renommer_avec_attente(racine, dossier, attente_renommage) {
+                // Le dossier de l'application n'existe plus : on remet l'ancien en place.
+                let _ = std::fs::rename(&ancien, dossier);
+                if relancer(dossier).is_ok() {
+                    garantie.desarmer();
+                }
+                return Err(format!("mise en place impossible : {erreur}"));
+            }
+            journal("nouveau dossier en place, lancement de l'application");
+            Placement::ParRenommage
         }
-        return Err(format!("mise en place impossible : {erreur}"));
-    }
-    journal("nouveau dossier en place, lancement de l'application");
+        Err(refus) => {
+            // ⭐ **LE SUPPORT REFUSE DE RENOMMER LE DOSSIER DE L'APPLICATION.**
+            // Constaté le 2026-11-10 sur `Z:\NeuraDesk-portable` : « Accès
+            // refusé. (os error 5) », tenace pendant les soixante secondes de
+            // réessai — ce n'est donc pas un handle qui traîne, c'est le support
+            // qui dit non (montage cloud, dossier en cours d'utilisation par un
+            // autre programme, droits du volume). Renommer n'est qu'un MOYEN :
+            // ce qui compte est que la nouvelle version soit à la place de
+            // l'ancienne, alors on recopie les FICHIERS par-dessus.
+            journal(&format!("{refus} — remplacement des fichiers sur place"));
+            let secours = dossier.with_file_name(format!("{nom}.exe-prec-{horodatage}"));
+            let secours = remplacer_les_fichiers(dossier, racine, &secours)?;
+            journal("fichiers remplacés sur place, lancement de l'application");
+            Placement::SurPlace { secours }
+        }
+    };
 
     let mut enfant = match relancer(dossier) {
         Ok(enfant) => {
@@ -1158,7 +1207,7 @@ fn appliquer(pid: u32, dossier: &Path, racine: &Path, temporaire: &Path) -> Resu
             enfant
         }
         Err(erreur) => {
-            revenir_en_arriere(dossier, &ancien, &rate, &garantie)?;
+            revenir(dossier, &placement, &ancien, &rate, &garantie)?;
             return Err(format!("la nouvelle version ne démarre pas : {erreur}"));
         }
     };
@@ -1168,14 +1217,104 @@ fn appliquer(pid: u32, dossier: &Path, racine: &Path, temporaire: &Path) -> Resu
     // remet l'ancienne en place.
     std::thread::sleep(ESSAI_DE_VIE);
     if let Ok(Some(_)) = enfant.try_wait() {
-        revenir_en_arriere(dossier, &ancien, &rate, &garantie)?;
+        revenir(dossier, &placement, &ancien, &rate, &garantie)?;
         return Err("la nouvelle version s'est arrêtée au démarrage".to_string());
     }
-    journal("la nouvelle version est vivante, suppression de l'ancienne");
-    let _ = std::fs::remove_dir_all(&ancien);
+    journal("la nouvelle version est vivante, nettoyage");
+    match &placement {
+        Placement::ParRenommage => {
+            let _ = std::fs::remove_dir_all(&ancien);
+        }
+        Placement::SurPlace { secours } => {
+            let _ = std::fs::remove_file(secours);
+        }
+    }
     if temporaire != racine {
         let _ = std::fs::remove_dir_all(temporaire);
     }
+    Ok(())
+}
+
+/// Le retour en arrière de chaque façon de poser le dossier.
+fn revenir(
+    dossier: &Path,
+    placement: &Placement,
+    ancien: &Path,
+    rate: &Path,
+    garantie: &RelanceGarantie,
+) -> Result<(), String> {
+    match placement {
+        Placement::ParRenommage => revenir_en_arriere(dossier, ancien, rate, garantie),
+        Placement::SurPlace { secours } => revenir_sur_place(dossier, secours, garantie),
+    }
+}
+
+/// **RECOPIE L'ARBRE PRÉPARÉ PAR-DESSUS L'ANCIEN**, l'exécutable EN DERNIER.
+///
+/// C'est le chemin de secours quand le dossier ne peut pas être renommé. Ce
+/// qu'il ne peut pas faire, et qu'il faut savoir : un fichier de l'ancienne
+/// version ABSENT de la nouvelle reste en place, et un échec au milieu laisse
+/// un arbre mélangé (l'ancien exécutable, lui, est restaurable — voir
+/// `revenir_sur_place`).
+fn remplacer_les_fichiers(dossier: &Path, racine: &Path, secours: &Path) -> Result<PathBuf, String> {
+    std::fs::copy(dossier.join(EXECUTABLE), secours)
+        .map_err(|e| format!("sauvegarde de l'ancien exécutable impossible : {e}"))?;
+    copier_l_arbre(racine, dossier)?;
+    Ok(secours.to_path_buf())
+}
+
+/// Copie récursive, SANS l'exécutable pendant la promenade : il est écrit à la
+/// fin, pour que l'ancien reste lançable tant que le reste n'est pas en place.
+fn copier_l_arbre(source: &Path, cible: &Path) -> Result<(), String> {
+    let mut a_parcourir = vec![source.to_path_buf()];
+    while let Some(repertoire) = a_parcourir.pop() {
+        let entrees = std::fs::read_dir(&repertoire).map_err(|e| format!("lecture de {repertoire:?} : {e}"))?;
+        for entree in entrees {
+            let entree = entree.map_err(|e| format!("lecture de {repertoire:?} : {e}"))?;
+            let chemin = entree.path();
+            let relatif = chemin.strip_prefix(source).map_err(|_| format!("chemin hors de {source:?}"))?.to_path_buf();
+            let vers = cible.join(&relatif);
+            if chemin.is_dir() {
+                std::fs::create_dir_all(&vers).map_err(|e| format!("création de {vers:?} : {e}"))?;
+                a_parcourir.push(chemin);
+                continue;
+            }
+            if relatif == Path::new(EXECUTABLE) {
+                continue;
+            }
+            if let Some(parent) = vers.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("création de {parent:?} : {e}"))?;
+            }
+            // ⚠️ Un fichier extrait d'une archive peut porter l'attribut
+            // « lecture seule », que `copy` refuse d'écraser : on le retire
+            // d'abord (sans se plaindre, le cas est rare).
+            if let Ok(meta) = std::fs::metadata(&vers) {
+                let mut droits = meta.permissions();
+                if droits.readonly() {
+                    droits.set_readonly(false);
+                    let _ = std::fs::set_permissions(&vers, droits);
+                }
+            }
+            std::fs::copy(&chemin, &vers).map_err(|e| format!("copie de {chemin:?} : {e}"))?;
+        }
+    }
+    std::fs::copy(source.join(EXECUTABLE), cible.join(EXECUTABLE))
+        .map_err(|e| format!("copie de l'exécutable : {e}"))?;
+    Ok(())
+}
+
+/// Remet l'exécutable d'avant et relance : c'est tout ce que le remplacement
+/// sur place permet de défaire.
+fn revenir_sur_place(dossier: &Path, secours: &Path, garantie: &RelanceGarantie) -> Result<(), String> {
+    journaliser("retour en arrière (sur place)");
+    garantie.armer();
+    std::fs::copy(secours, dossier.join(EXECUTABLE))
+        .map_err(|e| format!("remise de l'ancien exécutable impossible : {e}"))?;
+    // La copie a réussi : la sauvegarde ne sert plus à rien, même si la
+    // relance échoue (l'ancien exécutable est déjà en place).
+    let _ = std::fs::remove_file(secours);
+    relancer(dossier).map_err(|e| format!("l'ancienne version n'a pas pu être relancée : {e}"))?;
+    garantie.desarmer();
     Ok(())
 }
 
@@ -1207,8 +1346,8 @@ fn relancer(dossier: &Path) -> Result<std::process::Child, String> {
 /// **RENOMME EN RÉESSAYANT** — un fichier encore tenu par un sous-processus CEF
 /// fait échouer `fs::rename` (`ERROR_ACCESS_DENIED`/`SHARING_VIOLATION`) pendant
 /// quelques centaines de millisecondes.
-fn renommer_avec_attente(de: &Path, vers: &Path) -> Result<(), String> {
-    let limite = Instant::now() + ATTENTE_VERROU;
+fn renommer_avec_attente(de: &Path, vers: &Path, attente: Duration) -> Result<(), String> {
+    let limite = Instant::now() + attente;
     loop {
         match std::fs::rename(de, vers) {
             Ok(()) => return Ok(()),
@@ -1578,6 +1717,44 @@ mod tests {
         assert!(app.join("marqueur-ancien.txt").is_file(), "l'ancienne version doit être revenue");
         assert!(!app.join("marqueur-nouveau.txt").exists());
         assert!(!terrain.join("new/NeuraDesk-portable").exists(), "le nouveau dossier a été déplacé");
+        let _ = std::fs::remove_dir_all(&terrain);
+    }
+
+    /// ⭐ **UN DOSSIER IMPOSSIBLE À RENOMMER SE REMPLACE SUR PLACE.**
+    ///
+    /// C'est le défaut signalé le 2026-11-10 : l'assistant échouait sur
+    /// « renommage de "Z:\\NeuraDesk-portable" impossible : Accès refusé. (os
+    /// error 5) ». Le répertoire de travail d'un processus ne peut PAS être
+    /// renommé par Windows : c'est une façon déterministe de reproduire le
+    /// refus, sans toucher aux droits d'un disque ni attendre les soixante
+    /// secondes de réessai.
+    #[test]
+    fn un_dossier_impossible_a_renommer_est_remplace_sur_place() {
+        let terrain = terrain("sur-place");
+        let app = terrain.join("app");
+        let nouveau = terrain.join("new/NeuraDesk-portable");
+        std::fs::create_dir_all(app.join("assets/popups")).unwrap();
+        std::fs::create_dir_all(nouveau.join("assets/popups")).unwrap();
+        std::fs::write(app.join("neuradesk.exe"), b"ancienne").unwrap();
+        std::fs::write(app.join("marqueur-ancien.txt"), b"1").unwrap();
+        std::fs::write(app.join("assets/popups/vieille.html"), b"<html>").unwrap();
+        std::fs::write(nouveau.join("neuradesk.exe"), b"pas un executable").unwrap();
+        std::fs::write(nouveau.join("marqueur-nouveau.txt"), b"1").unwrap();
+        std::fs::write(nouveau.join("assets/popups/neuve.html"), b"<html>").unwrap();
+
+        let avant = std::env::current_dir().expect("dossier courant");
+        std::env::set_current_dir(&app).expect("dossier courant = l'application");
+        let resultat = appliquer_avec(0, &app, &nouveau, &terrain.join("new"), Duration::ZERO);
+        std::env::set_current_dir(&avant).expect("dossier courant rendu");
+
+        // La fausse version ne se lance pas, donc l'assistant signale un échec —
+        // mais les FICHIERS ont été posés, et l'ancien exécutable est revenu.
+        assert!(resultat.is_err(), "lancer un faux exécutable doit échouer");
+        assert!(app.join("marqueur-nouveau.txt").is_file(), "les fichiers doivent être recopiés : {resultat:?}");
+        assert!(app.join("assets/popups/neuve.html").is_file(), "les sous-dossiers aussi");
+        assert_eq!(std::fs::read(app.join("neuradesk.exe")).unwrap(), b"ancienne", "l'ancien exécutable doit revenir");
+        let restes: Vec<_> = std::fs::read_dir(&terrain).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(restes.len(), 2, "ni .ancien ni .rate ni sauvegarde ne doivent rester : {restes:?}");
         let _ = std::fs::remove_dir_all(&terrain);
     }
 
