@@ -5137,6 +5137,8 @@ fn push_state(refs: &SettingsRefs) {
                 "cinq_ou_plus": refs.features.cinq_ou_plus,
                 "quadrapassel": refs.features.quadrapassel,
                 "lightsoff": refs.features.lightsoff,
+                "reversi": refs.features.reversi,
+                "bovo": refs.features.bovo,
                 "display_settings": refs.features.display_settings,
                 "optional_features": refs.features.optional_features,
                 "notifications": refs.features.notifications,

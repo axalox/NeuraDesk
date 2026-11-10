@@ -64,6 +64,10 @@ pub mod cef_cinq_ou_plus;
 pub mod cef_quadrapassel;
 /// La FENÊTRE du jeu « Lights Off » (fork de GNOME Lights Off).
 pub mod cef_lightsoff;
+/// La FENÊTRE du jeu Reversi (Othello, « lagno » / iagno).
+pub mod cef_reversi;
+/// La FENÊTRE du jeu Bovo (Gomoku, cinq pierres alignées).
+pub mod cef_bovo;
 /// La FENÊTRE de l'applet « Capture d'écran » — même présentation que
 /// l'enregistreur, avec la webcam en plus (voir `cef_capture`).
 pub mod cef_capture;

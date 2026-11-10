@@ -269,4 +269,25 @@ mod tests {
         assert_eq!(code_pour_point(rect, (499, 499)), 17, "coin bas-droit");
         assert_eq!(code_pour_point(rect, (300, 350)), 1, "le CLIENT, pas un bord");
     }
+
+    /// ⭐ **« ANNULER » EST CÂBLÉ DE BOUT EN BOUT DANS LA PAGE** — le bouton, son
+    /// écouteur et la fonction qu'il appelle. La règle, elle, se vérifie sans CEF
+    /// par `C:/ndwork/scripts/essai_2048.js` (19 vérifications).
+    ///
+    /// ⚠️ **LE BOUTON VIT DANS LA BARRE, PAS DANS L'EN-TÊTE** : ajouté en texte à
+    /// côté de « Nouvelle partie », il poussait celle-ci HORS de la fenêtre (capture
+    /// du 2026-11-10, `jeu2048_0400.png` — l'en-tête débordait déjà à la taille de
+    /// texte de l'utilisateur). Une icône de 24 px dans la barre ne coûte rien.
+    #[test]
+    fn la_page_porte_le_bouton_annuler_et_son_ecouteur() {
+        let page = include_str!("../../assets/popups/jeu2048.html");
+        assert!(page.contains(r#"<button id="annuler" class="bouton" disabled"#), "aucun bouton Annuler dans la barre, ou allumé au départ");
+        assert!(page.contains(r#"document.getElementById("annuler").addEventListener("click", annuler)"#), "le bouton n'est pas branché");
+        assert!(page.contains("function annuler()"), "aucune fonction `annuler`");
+        assert!(page.contains("historique.push(avant)"), "aucun coup n'entre dans l'historique");
+        // La règle d'or de l'en-tête : il ne reçoit AUCUN contrôle de plus.
+        let tete = &page[page.find(r#"<div id="tete">"#).expect("en-tête absent")..];
+        let tete = &tete[..tete.find("</div>\n  <div id=\"scene\">").unwrap_or(tete.len())];
+        assert_eq!(tete.matches("<button").count(), 1, "l'en-tête doit garder SES DEUX pastilles et UN bouton : {tete}");
+    }
 }

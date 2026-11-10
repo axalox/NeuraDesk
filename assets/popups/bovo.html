@@ -1,0 +1,537 @@
+<!doctype html>
+<!--
+  win32::cef_bovo — le jeu Bovo de KDE (Gomoku), en applet de la zone Intégrés.
+
+  DEMANDE (2026-11-10) : « une applet pour le jeu bovo de kde ». Bovo est un
+  GOMOKU : deux joueurs posent des pierres noires et blanches sur un plateau
+  15×15, et le premier qui aligne CINQ pierres gagne. Les icônes viennent de
+  Breeze (voir `TopbarIcons/SOURCE.md`).
+
+  ⚠️ **LA FACTURE DE `reversi.html`** — bande de titre qui DÉPLACE la fenêtre,
+  punaise, croix, et les MÊMES trois verbes de fenêtre (`deplacer`, `epingler`,
+  `fermer`). Le jeu vit ENTIÈREMENT dans cette page ; le niveau et la partie en
+  cours tiennent dans `localStorage`.
+
+  ⛔ **AUCUN `menu.js`** : c'est une FENÊTRE, sa taille ne se négocie pas.
+
+  ⚠️ **AUCUN `background` sur `<html>`/`<body>`** : le fond est le BUREAU FLOUTÉ que
+  Rust dessine SOUS la page ; les couleurs du thème viennent des variables CSS
+  `--popup-*` posées par la composition.
+
+  ⚠️ **L'IA JOUE DE FAÇON SYNCHRONE**, dans le gestionnaire de clic : ces pages ne
+  sont pas « visibles » pour Blink, donc `setTimeout` et `requestAnimationFrame`
+  y sont étranglés (voir `reversi.html`, et la mémoire du dépôt).
+
+  ⚠️ **LES PIERRES SE POSENT SUR LES INTERSECTIONS** (comme dans Bovo), pas dans
+  les cases : chaque case dessine sa croix au centre par deux dégradés, et la
+  pierre est centrée dessus.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: var(--nd-police);
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    user-select: none;
+  }
+  #barre {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    cursor: default;
+  }
+  #titre { flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bouton {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+  }
+  .bouton:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  .bouton[aria-pressed="true"] {
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1)));
+    opacity: 1;
+  }
+  #tete {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px 0;
+  }
+  #scores { display: flex; align-items: center; gap: 10px; font-variant-numeric: tabular-nums; }
+  #scores b { font-size: 15px; min-width: 18px; text-align: center; }
+  .pastille { width: 15px; height: 15px; border-radius: 50%; display: inline-block; }
+  .pastille.noir { background: radial-gradient(circle at 35% 30%, #555, #111); box-shadow: inset 0 0 0 1px rgba(255,255,255,.18); }
+  .pastille.blanc { background: radial-gradient(circle at 35% 30%, #fff, #cfcfcf); box-shadow: inset 0 0 0 1px rgba(0,0,0,.25); }
+  #tour { font-size: 12px; opacity: .85; min-width: 150px; text-align: center; }
+  #niveaux { display: flex; gap: 4px; }
+  #niveaux button {
+    all: unset;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.10 * var(--popup-fond-alpha, 1)));
+    opacity: .75;
+  }
+  /* ⚠️ LE NIVEAU ACTIF NE SE PEINT PAS AVEC L'ACCENT : sur un thème dont
+     l'accent est BLANC, le libellé disparaîtrait sur la pastille. Fond du texte,
+     et un ANNEAU d'accent qui marque le choix (constaté sur `reversi.html`). */
+  #niveaux button[aria-pressed="true"] {
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1)));
+    box-shadow: inset 0 0 0 1px rgba(var(--popup-accent-rgb, 255, 255, 255), .85);
+    opacity: 1;
+  }
+  #scene {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    box-sizing: border-box;
+  }
+  /* Le plateau de GO : bois clair, et chaque case dessine sa croix au centre. */
+  #plateau {
+    display: grid;
+    grid-template-columns: repeat(15, 1fr);
+    grid-template-rows: repeat(15, 1fr);
+    box-sizing: border-box;
+    border-radius: var(--nd-rayon-grand, 12px);
+    background: #dcb173;
+    box-shadow: inset 0 0 0 1px rgba(90, 61, 30, .55), 0 6px 18px rgba(0, 0, 0, .35);
+  }
+  .case {
+    all: unset;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-image:
+      linear-gradient(#6b4a25, #6b4a25),
+      linear-gradient(#6b4a25, #6b4a25);
+    background-size: 1px 100%, 100% 1px;
+    background-position: center, center;
+    background-repeat: no-repeat;
+    cursor: pointer;
+  }
+  .case:focus-visible { outline: 2px solid rgba(var(--popup-accent-rgb, 255, 255, 255), .95); outline-offset: -2px; }
+  /* Les pierres, posées SUR l'intersection. */
+  .pierre {
+    position: relative;
+    width: 82%;
+    height: 82%;
+    border-radius: 50%;
+  }
+  .pierre.noir { background: radial-gradient(circle at 34% 28%, #4a4a4a, #0b0b0b 72%); box-shadow: 0 2px 4px rgba(0,0,0,.55); }
+  .pierre.blanc { background: radial-gradient(circle at 34% 28%, #ffffff, #c9c9c9 74%); box-shadow: 0 2px 4px rgba(0,0,0,.4); }
+  /* Le dernier coup : un petit anneau d'accent, visible des deux couleurs. */
+  .case.dernier::after {
+    content: "";
+    position: absolute;
+    width: 22%;
+    height: 22%;
+    border-radius: 50%;
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), .95);
+    box-shadow: 0 0 3px rgba(0, 0, 0, .5);
+  }
+  /* Les cinq pierres gagnantes : un halo. */
+  .case.gagnante .pierre { box-shadow: 0 0 0 3px rgba(var(--popup-accent-rgb, 255, 255, 255), .9), 0 2px 6px rgba(0,0,0,.5); }
+  #fini {
+    position: absolute;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: rgba(var(--popup-fond-rgb, 20, 20, 20), calc(0.72 * var(--popup-fond-alpha, 1)));
+    z-index: 2;
+  }
+  #fini.vu { display: flex; }
+  #fini .mot { font-size: 22px; font-weight: 800; }
+  #fini .detail { font-size: 13px; opacity: .85; font-variant-numeric: tabular-nums; }
+  #fini button, #nouvelle {
+    all: unset;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 700;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.50 * var(--popup-fond-alpha, 1)));
+  }
+  #fini button:hover, #nouvelle:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.70 * var(--popup-fond-alpha, 1))); }
+  #pied {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 0 14px 10px;
+  }
+  #coups { font-size: 12px; opacity: .75; font-variant-numeric: tabular-nums; }
+  #nouvelle { padding: 6px 12px; font-size: 12px; font-weight: 600; background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.14 * var(--popup-fond-alpha, 1))); }
+  #nouvelle:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.24 * var(--popup-fond-alpha, 1))); }
+  #aide { flex: 0 0 auto; text-align: center; font-size: 11px; opacity: .6; padding: 0 12px 10px; }
+</style>
+</head>
+<body>
+  <div id="barre">
+    <span id="titre">Bovo</span>
+    <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
+    <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="tete">
+    <div id="scores">
+      <span class="pastille noir"></span><b id="score-noir">0</b>
+      <span id="tour">À vous de jouer</span>
+      <b id="score-blanc">0</b><span class="pastille blanc"></span>
+    </div>
+    <div id="niveaux">
+      <button data-niveau="1">Facile</button>
+      <button data-niveau="2">Moyen</button>
+      <button data-niveau="3">Difficile</button>
+    </div>
+  </div>
+  <div id="scene">
+    <div id="plateau"></div>
+    <div id="fini">
+      <span class="mot" id="fini-mot">Partie terminée</span>
+      <span class="detail" id="fini-detail"></span>
+      <button id="rejouer">Nouvelle partie</button>
+    </div>
+  </div>
+  <div id="pied">
+    <span id="coups">0 coup</span>
+    <button id="nouvelle">Nouvelle partie</button>
+  </div>
+  <div id="aide">Alignez cinq pierres — vous jouez les noirs, et les noirs commencent.</div>
+<script>
+  "use strict";
+  const N = 15;
+  const VIDE = 0, NOIR = 1, BLANC = 2;
+  const AXES = [[-1, -1], [-1, 0], [-1, 1], [0, 1]];
+  const CLE_NIVEAU = "neuradesk-bovo-niveau";
+  const CLE_PARTIE = "neuradesk-bovo-partie";
+  // Le poids donné à la défense (ce que l'adversaire gagnerait en jouant là).
+  const POIDS_DEFENSE = { 1: 0.6, 2: 0.9, 3: 0.95 };
+
+  function go(action) { location.href = "neuradesk://bovo/" + action; }
+  document.getElementById("barre").addEventListener("mousedown", function (e) {
+    if (e.target.closest("button")) return;
+    go("deplacer");
+  });
+  document.getElementById("epingle").addEventListener("click", function () { go("epingler"); });
+  document.getElementById("fermer").addEventListener("click", function () { go("fermer"); });
+
+  let etat, niveau = 1, coups = 0, fini = false, message = "", dernier = -1, gagnantes = [];
+  const plateau = document.getElementById("plateau");
+  const cases = [];
+
+  function dans(r, c) { return r >= 0 && r < N && c >= 0 && c < N; }
+
+  function compte(joueur) {
+    let n = 0;
+    for (let i = 0; i < N * N; i++) if (etat[i] === joueur) n++;
+    return n;
+  }
+
+  // Les pierres alignées qu'un coup en (r, c) vient de former (5 ou plus), ou null.
+  function alignement(tableau, i, joueur) {
+    const r = (i / N) | 0, c = i % N;
+    for (const [dr, dc] of AXES) {
+      const pierres = [i];
+      for (const sens of [1, -1]) {
+        let rr = r + dr * sens, cc = c + dc * sens;
+        while (dans(rr, cc) && tableau[rr * N + cc] === joueur) {
+          pierres.push(rr * N + cc);
+          rr += dr * sens;
+          cc += dc * sens;
+        }
+      }
+      if (pierres.length >= 5) return pierres;
+    }
+    return null;
+  }
+
+  // La valeur d'une suite de `n` pierres à `ouvertes` bouts libres. Les seuils
+  // sont volontairement très écartés : un cinq passe AVANT tout le reste.
+  function valeur_ligne(n, ouvertes) {
+    if (n >= 5) return 100000000;
+    if (n === 4) return ouvertes === 2 ? 10000000 : ouvertes === 1 ? 100000 : 0;
+    if (n === 3) return ouvertes === 2 ? 50000 : ouvertes === 1 ? 1000 : 0;
+    if (n === 2) return ouvertes === 2 ? 500 : ouvertes === 1 ? 50 : 0;
+    if (n === 1) return ouvertes === 2 ? 10 : ouvertes === 1 ? 2 : 0;
+    return 0;
+  }
+
+  // La valeur d'un coup POUR `joueur`, la pierre étant supposée déjà posée en `i`.
+  function valeur_coup(tableau, i, joueur) {
+    const r = (i / N) | 0, c = i % N;
+    let total = 0;
+    for (const [dr, dc] of AXES) {
+      let n = 1, ouvertes = 0;
+      let rr = r + dr, cc = c + dc;
+      while (dans(rr, cc) && tableau[rr * N + cc] === joueur) { n++; rr += dr; cc += dc; }
+      if (dans(rr, cc) && tableau[rr * N + cc] === VIDE) ouvertes++;
+      rr = r - dr; cc = c - dc;
+      while (dans(rr, cc) && tableau[rr * N + cc] === joueur) { n++; rr -= dr; cc -= dc; }
+      if (dans(rr, cc) && tableau[rr * N + cc] === VIDE) ouvertes++;
+      total += valeur_ligne(n, ouvertes);
+    }
+    return total;
+  }
+
+  // Les cases vides à portée (distance 2) d'une pierre — un coup loin de tout
+  // ne peut menacer personne, et les 225 cases coûteraient trop cher.
+  function candidats(tableau) {
+    const vus = new Set(), liste = [];
+    let vide = true;
+    for (let i = 0; i < N * N; i++) {
+      if (tableau[i] === VIDE) continue;
+      vide = false;
+      const r = (i / N) | 0, c = i % N;
+      for (let dr = -2; dr <= 2; dr++) {
+        for (let dc = -2; dc <= 2; dc++) {
+          const rr = r + dr, cc = c + dc;
+          if (!dans(rr, cc)) continue;
+          const j = rr * N + cc;
+          if (tableau[j] !== VIDE || vus.has(j)) continue;
+          vus.add(j);
+          liste.push(j);
+        }
+      }
+    }
+    if (vide) liste.push(7 * N + 7);
+    return liste;
+  }
+
+  // L'adversaire a-t-il un coup gagnant immédiat sur ce plateau ?
+  function gagne_immediatement(tableau, joueur) {
+    for (const i of candidats(tableau)) {
+      tableau[i] = joueur;
+      const gagne = alignement(tableau, i, joueur) !== null;
+      tableau[i] = VIDE;
+      if (gagne) return true;
+    }
+    return false;
+  }
+
+  function choisir_coup(tableau, joueur) {
+    const candidats_ = candidats(tableau);
+    const adverse = 3 - joueur;
+    const poids_defense = POIDS_DEFENSE[niveau] || 0.9;
+    let meilleur = candidats_[0], meilleure = -Infinity;
+    for (const i of candidats_) {
+      tableau[i] = joueur;
+      const attaque = valeur_coup(tableau, i, joueur);
+      tableau[i] = adverse;
+      const defense = valeur_coup(tableau, i, adverse);
+      tableau[i] = VIDE;
+      // Le centre vaut un peu mieux que le bord, à valeur égale.
+      const centre = 14 - Math.abs(((i / N) | 0) - 7) - Math.abs((i % N) - 7);
+      let valeur = attaque + poids_defense * defense + centre * 0.01;
+      // ⭐ AU NIVEAU DIFFICILE, ÉVITER UN COUP QUI OFFRE UN CINQ À L'ADVERSAIRE :
+      // c'est la seule lecture à un coup de plus, et elle suffit contre les
+      // doubles menaces que le score statique ne voit pas.
+      if (niveau === 3 && attaque < 100000000) {
+        tableau[i] = joueur;
+        if (gagne_immediatement(tableau, adverse)) valeur -= 20000000;
+        tableau[i] = VIDE;
+      }
+      if (valeur > meilleure) { meilleure = valeur; meilleur = i; }
+    }
+    return meilleur;
+  }
+
+  function construire() {
+    for (let i = 0; i < N * N; i++) {
+      const bouton = document.createElement("button");
+      bouton.className = "case";
+      bouton.setAttribute("aria-label", "intersection " + (((i / N) | 0) + 1) + ", " + ((i % N) + 1));
+      bouton.addEventListener("click", function () { jouer_humain(i); });
+      plateau.appendChild(bouton);
+      cases.push(bouton);
+    }
+  }
+
+  function afficher() {
+    for (let i = 0; i < N * N; i++) {
+      const case_ = cases[i];
+      const pierre = case_.firstChild;
+      const couleur = etat[i] === NOIR ? "noir" : etat[i] === BLANC ? "blanc" : "";
+      if (pierre) {
+        pierre.className = "pierre" + (couleur ? " " + couleur : "");
+      } else if (couleur) {
+        const p = document.createElement("span");
+        p.className = "pierre " + couleur;
+        case_.appendChild(p);
+      }
+      case_.classList.toggle("dernier", i === dernier);
+      case_.classList.toggle("gagnante", gagnantes.indexOf(i) >= 0);
+    }
+    document.getElementById("score-noir").textContent = String(compte(NOIR));
+    document.getElementById("score-blanc").textContent = String(compte(BLANC));
+    document.getElementById("coups").textContent = coups + (coups > 1 ? " coups" : " coup");
+    document.getElementById("tour").textContent = message || (fini ? "Partie terminée" : "À vous de jouer");
+    for (const b of document.querySelectorAll("#niveaux button")) {
+      b.setAttribute("aria-pressed", String(Number(b.dataset.niveau) === niveau));
+    }
+  }
+
+  function sauver() {
+    try {
+      localStorage.setItem(CLE_NIVEAU, String(niveau));
+      localStorage.setItem(CLE_PARTIE, JSON.stringify({ etat: etat, coups: coups, fini: fini, dernier: dernier }));
+    } catch (e) {}
+  }
+
+  function finir(mot, detail) {
+    fini = true;
+    document.getElementById("fini-mot").textContent = mot;
+    document.getElementById("fini-detail").textContent = detail;
+    document.getElementById("fini").classList.add("vu");
+    message = mot;
+  }
+
+  function pleine() {
+    for (let i = 0; i < N * N; i++) if (etat[i] === VIDE) return false;
+    return true;
+  }
+
+  // LE TOUR DE L'IA — synchrone. Pas de passe au Gomoku : un seul coup.
+  function tour_de_lia() {
+    const i = choisir_coup(etat, BLANC);
+    if (i === undefined || etat[i] !== VIDE) return;
+    etat[i] = BLANC;
+    coups++;
+    dernier = i;
+    const alignees = alignement(etat, i, BLANC);
+    if (alignees) {
+      gagnantes = alignees;
+      afficher();
+      finir("Les blancs gagnent", "Cinq pierres blanches alignées en " + coups + " coups");
+    } else if (pleine()) {
+      afficher();
+      finir("Match nul", "Le plateau est plein");
+    }
+  }
+
+  function jouer_humain(i) {
+    if (fini || etat[i] !== VIDE) return;
+    etat[i] = NOIR;
+    coups++;
+    dernier = i;
+    message = "";
+    const alignees = alignement(etat, i, NOIR);
+    if (alignees) {
+      gagnantes = alignees;
+      afficher();
+      finir("Vous gagnez !", "Cinq pierres noires alignées en " + coups + " coups");
+      sauver();
+      return;
+    }
+    if (pleine()) {
+      afficher();
+      finir("Match nul", "Le plateau est plein");
+      sauver();
+      return;
+    }
+    tour_de_lia();
+    afficher();
+    sauver();
+  }
+
+  function nouvelle_partie() {
+    etat = new Array(N * N).fill(VIDE);
+    coups = 0;
+    fini = false;
+    message = "";
+    dernier = -1;
+    gagnantes = [];
+    document.getElementById("fini").classList.remove("vu");
+    afficher();
+    sauver();
+  }
+
+  // Le plateau prend la plus grande taille CARRÉE qui tient dans la scène.
+  function ajuster() {
+    const scene = document.getElementById("scene");
+    const cote = Math.max(200, Math.min(scene.clientWidth, scene.clientHeight) - 24);
+    plateau.style.width = cote + "px";
+    plateau.style.height = cote + "px";
+  }
+
+  document.getElementById("nouvelle").addEventListener("click", nouvelle_partie);
+  document.getElementById("rejouer").addEventListener("click", nouvelle_partie);
+  for (const b of document.querySelectorAll("#niveaux button")) {
+    b.addEventListener("click", function () {
+      niveau = Number(b.dataset.niveau);
+      message = "";
+      afficher();
+      sauver();
+    });
+  }
+
+  // Clavier : flèches entre les intersections, Entrée/Espace pour poser.
+  window.addEventListener("keydown", function (e) {
+    const i = cases.indexOf(document.activeElement);
+    const pas = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -N, ArrowDown: N }[e.key];
+    if (pas !== undefined) {
+      const suivant = i < 0 ? 7 * N + 7 : Math.min(N * N - 1, Math.max(0, i + pas));
+      cases[suivant].focus();
+      e.preventDefault();
+    }
+  });
+  window.addEventListener("resize", ajuster);
+
+  // L'état de fenêtre que Rust pousse : seulement la punaise.
+  window.setState = function (state) {
+    const epingle = document.getElementById("epingle");
+    epingle.setAttribute("aria-pressed", String(!!state.epingle));
+    epingle.innerHTML = state.epingle ? '<span class="ico ico-push-pin-fill"></span>' : '<span class="ico ico-push-pin"></span>';
+    epingle.title = state.epingle ? "Ne plus rester au premier plan" : "Rester au premier plan";
+  };
+
+  construire();
+  // Le niveau et la partie en cours survivent à la fermeture — une partie
+  // FINIE repart neuve (rousseur de `reversi.html`).
+  try {
+    niveau = Number(localStorage.getItem(CLE_NIVEAU)) || 1;
+    if (!POIDS_DEFENSE[niveau]) niveau = 1;
+  } catch (e) { niveau = 1; }
+  let reprise = null;
+  try { reprise = JSON.parse(localStorage.getItem(CLE_PARTIE) || "null"); } catch (e) { reprise = null; }
+  if (reprise && Array.isArray(reprise.etat) && reprise.etat.length === N * N && !reprise.fini) {
+    etat = reprise.etat.map(function (v) { return v === NOIR || v === BLANC ? v : VIDE; });
+    coups = Number(reprise.coups) || 0;
+    dernier = Number.isInteger(reprise.dernier) ? reprise.dernier : -1;
+    fini = false;
+    afficher();
+  } else {
+    nouvelle_partie();
+  }
+  ajuster();
+</script>
+</body>
+</html>

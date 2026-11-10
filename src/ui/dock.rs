@@ -2650,6 +2650,32 @@ impl Dock {
             hidden: false,
             sorte: SorteEspace::Rond,
         });
+        // ⭐ **REVERSI** (voir `win32::cef_reversi`) — EN DERNIER, même règle.
+        // Sa place par défaut (dans Intégrés, après « Lights Off ») est posée par `app::run`.
+        icons.push(Icon {
+            label: 'r',
+            color: bar_fg,
+            has_texture: false,
+            external_texture: true,
+            is_spacer: false,
+            spacer_size: 0.0,
+            zone_height: 0.0, zone_lead: 0.0, zone_columns: DEFAULT_ZONE_COLUMNS, zone_locked: false, zone_show_name: false, zone_permanent: false,
+            hidden: false,
+            sorte: SorteEspace::Rond,
+        });
+        // ⭐ **BOVO** (voir `win32::cef_bovo`) — EN DERNIER, même règle.
+        // Sa place par défaut (dans Intégrés, après « Reversi ») est posée par `app::run`.
+        icons.push(Icon {
+            label: 'b',
+            color: bar_fg,
+            has_texture: false,
+            external_texture: true,
+            is_spacer: false,
+            spacer_size: 0.0,
+            zone_height: 0.0, zone_lead: 0.0, zone_columns: DEFAULT_ZONE_COLUMNS, zone_locked: false, zone_show_name: false, zone_permanent: false,
+            hidden: false,
+            sorte: SorteEspace::Rond,
+        });
         // Les épingles de la VRAIE barre des tâches Windows (voir
         // `win32::taskbar_pins`) ne sont PAS créées ici — voir
         // `ensure_winpin_capacity`, appelée PLUS TARD par `app::run`, après
@@ -15637,14 +15663,16 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
         // ⚠️ **JUSQU'À 46** — Cinq ou plus (2026-11-07), même raison.
         // ⚠️ **JUSQU'À 47** — Quadrapassel (2026-11-07), même raison.
         // ⚠️ **JUSQU'À 48** — Lights Off (2026-11-08), même raison.
-        let avant = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 92, 93];
+        // ⚠️ **JUSQU'À 49** — Reversi (2026-11-10), même raison.
+        // ⚠️ **JUSQU'À 50** — Bovo (2026-11-10), même raison.
+        let avant = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 92, 93];
         dock.set_icon_order(avant.clone(), vec![], vec![], vec![]);
 
         // --- RETRAIT de l'épingle 5 ---
         dock.decaler_le_bloc_des_epingles(5, limite, true);
         assert_eq!(
             barre(&dock),
-            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 92, 93],
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 92, 93],
             "sa citation part, celles de ]5, 92[ reculent d'un cran, et RIEN au-dessus ne bouge"
         );
 
@@ -15652,7 +15680,7 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
         dock.decaler_le_bloc_des_epingles(5, limite, false);
         assert_eq!(
             barre(&dock),
-            vec![0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 92, 93],
+            vec![0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 92, 93],
             "l'ajout est l'inverse du retrait — la citation de 5, elle, est reposée par l'APPELANT"
         );
     }

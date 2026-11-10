@@ -622,3 +622,36 @@ DEMANDE (2026-11-08) : « une applet dans Intégrés pour le jeu Lights Off de g
   `data/icons/hicolor/scalable/apps/org.gnome.LightsOff.svg` (couleur → `fluent_couleur/`
   et `fluent_3d/`). Rastérisés par `resvg` à 1024 px puis mis au gabarit (128 px, encre 116
   centrée, symbolique repeint en blanc). Glyphe Segoe Fluent : `E7FA` (générique, distinct).
+
+### Reversi (ajouté le 2026-11-10)
+
+DEMANDE (2026-11-10) : « une applet pour le jeu lagno de kde » — « lagno » est **iagno**,
+le Reversi de GNOME (KDE a KReversi, même jeu) : `win32::cef_reversi`. Même démarche :
+
+- **iagno** — https://gitlab.gnome.org/GNOME/iagno (branche `main`), projet sous
+  **GPL-3.0-or-later** : `data/icons/hicolor/symbolic/org.gnome.Reversi-symbolic.svg`
+  (symbolique → `reversi.png` et `energy/`) et
+  `data/icons/hicolor/scalable/org.gnome.Reversi.svg` (couleur → `fluent_couleur/` et
+  `fluent_3d/`). Rastérisés par `resvg` à 1024 px puis mis au gabarit (128 px, encre 116
+  centrée, symbolique repeint en blanc). Glyphe Segoe Fluent : `E7F9` (générique, distinct).
+  ⚠️ **LE LISSAGE D'« au_gabarit » RAMÈNE LE RGB À ZÉRO** dans les pixels d'alpha nul
+  (chemin prémultiplié de Pillow) : reconstruire l'encre blanche par l'alpha APRÈS le
+  gabarit, sinon le test `les_icones_energy_sont_blanches_et_au_gabarit` le refuse.
+
+### Bovo (ajouté le 2026-11-10)
+
+DEMANDE (2026-11-10) : « une applet pour le jeu bovo de kde » — **Bovo** (Gomoku, cinq
+pierres alignées sur 15×15), le jeu de KDE : `win32::cef_bovo`. L'icône vient du thème
+**Breeze** (KDE) :
+
+- **Breeze** — https://invent.kde.org/frameworks/breeze-icons (LGPL-3.0-or-later) :
+  `icons/apps/48/bovo.svg` (vérifié à l'octet près, 3883 octets). Version COULEUR → `fluent_couleur/`
+  et `fluent_3d/` ; `resvg` à 1024 px puis `rasteriser_fluent_emoji.au_gabarit`.
+  Aucune variante symbolique n'étant fournie, l'encre des thèmes MONOCHROMES (`bovo.png`
+  et `energy/`) est tirée de la **LUMINOSITÉ** de la même icône : le fond clair devient
+  transparent, le trait reste, puis l'encre est peinte en blanc et la barre la teinte.
+- Glyphe Segoe Fluent : `E7F7` (générique, distinct).
+  ⚠️ **LE MASQUE DE LUMINOSITÉ EST BINAIRE**, pas un alpha continu : un dégradé laisse une
+  frange d'alpha 1–3 que le `bbox` du test compte, et l'encre mesurée paraît décalée de 4 px.
+  Mettre les miettes à zéro (`α < 8`), puis RECENTRER sur la boîte réelle — et reconstruire
+  le blanc par l'alpha APRÈS `au_gabarit`, comme pour Reversi.

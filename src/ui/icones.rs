@@ -178,6 +178,8 @@ macro_rules! jeu_couleur {
         pub const CINQ_OU_PLUS: &[u8] = include_bytes!(concat!("../../TopbarIcons/", $dossier, "/cinq_ou_plus.png"));
         pub const QUADRAPASSEL: &[u8] = include_bytes!(concat!("../../TopbarIcons/", $dossier, "/quadrapassel.png"));
         pub const LIGHTSOFF: &[u8] = include_bytes!(concat!("../../TopbarIcons/", $dossier, "/lightsoff.png"));
+        pub const REVERSI: &[u8] = include_bytes!(concat!("../../TopbarIcons/", $dossier, "/reversi.png"));
+        pub const BOVO: &[u8] = include_bytes!(concat!("../../TopbarIcons/", $dossier, "/bovo.png"));
         }
     };
 }
@@ -233,6 +235,12 @@ const QUADRAPASSEL: Icone = Icone { png: texture::QUADRAPASSEL_ICON_PNG, fluent:
 /// ⭐ **LIGHTS OFF** — art d'origine GNOME (interrupteur symbolique → thèmes
 /// monochromes ; icône couleur → thèmes Fluent), glyphe Segoe Fluent distinct (E7FA).
 const LIGHTSOFF: Icone = Icone { png: texture::LIGHTSOFF_ICON_PNG, fluent: char::from_u32(0xE7FA).unwrap(), fluent_couleur: fluent_couleur::LIGHTSOFF, fluent_3d: fluent_3d::LIGHTSOFF, energy: energy::LIGHTSOFF };
+/// ⭐ **REVERSI** — art d'origine iagno (GNOME Reversi : symbolique → thèmes
+/// monochromes ; icône couleur → thèmes Fluent), glyphe Segoe Fluent distinct (E7F9).
+const REVERSI: Icone = Icone { png: texture::REVERSI_ICON_PNG, fluent: char::from_u32(0xE7F9).unwrap(), fluent_couleur: fluent_couleur::REVERSI, fluent_3d: fluent_3d::REVERSI, energy: energy::REVERSI };
+/// ⭐ **BOVO** — art d'origine Breeze (KDE), encre tirée de sa luminosité pour
+/// les thèmes monochromes, glyphe Segoe Fluent distinct (E7F7).
+const BOVO: Icone = Icone { png: texture::BOVO_ICON_PNG, fluent: char::from_u32(0xE7F7).unwrap(), fluent_couleur: fluent_couleur::BOVO, fluent_3d: fluent_3d::BOVO, energy: energy::BOVO };
 const PERIPHERIQUES: Icone = Icone { png: texture::DEVICE_MANAGER_ICON_PNG, fluent: '\u{EEA1}', fluent_couleur: fluent_couleur::PERIPHERIQUES, fluent_3d: fluent_3d::PERIPHERIQUES, energy: energy::PERIPHERIQUES };
 const REGLAGES_ECRAN: Icone = Icone { png: texture::DISPLAY_SETTINGS_ICON_PNG, fluent: '\u{E7F4}', fluent_couleur: fluent_couleur::REGLAGES_ECRAN, fluent_3d: fluent_3d::REGLAGES_ECRAN, energy: energy::REGLAGES_ECRAN };
 const CALCULATRICE: Icone = Icone { png: texture::CALCULATRICE_ICON_PNG, fluent: '\u{E8EF}', fluent_couleur: fluent_couleur::CALCULATRICE, fluent_3d: fluent_3d::CALCULATRICE, energy: energy::CALCULATRICE };
@@ -332,9 +340,9 @@ const LOUPE: Icone = Icone { png: texture::LOUPE_ICON_PNG, fluent: '\u{E8A3}', f
 /// `E9D9` (« Diagnostic ») : un écran traversé d'un tracé de pouls — VU au rendu.
 const MONITEUR: Icone = Icone { png: texture::MONITEUR_ICON_PNG, fluent: '\u{E9D9}', fluent_couleur: fluent_couleur::MONITEUR, fluent_3d: fluent_3d::MONITEUR, energy: energy::MONITEUR };
 
-/// Les quarante-neuf icônes, pour les tests qui les parcourent toutes.
+/// Les cinquante-deux icônes, pour les tests qui les parcourent toutes.
 #[cfg(test)]
-const TOUTES: [Icone; 50] = [
+const TOUTES: [Icone; 52] = [
     REGLAGES,
     PRESSE_PAPIERS,
     SON,
@@ -359,6 +367,8 @@ const TOUTES: [Icone; 50] = [
     CINQ_OU_PLUS,
     QUADRAPASSEL,
     LIGHTSOFF,
+    REVERSI,
+    BOVO,
     REGLAGES_ECRAN,
     CALCULATRICE,
     SSH,
@@ -415,6 +425,8 @@ pub struct JeuIcones {
     pub cinq_ou_plus: Texture,
     pub quadrapassel: Texture,
     pub lightsoff: Texture,
+    pub reversi: Texture,
+    pub bovo: Texture,
     pub display_settings: Texture,
     pub calculatrice: Texture,
     pub ssh: Texture,
@@ -477,6 +489,8 @@ impl JeuIcones {
             cinq_ou_plus: charger(CINQ_OU_PLUS)?,
             quadrapassel: charger(QUADRAPASSEL)?,
             lightsoff: charger(LIGHTSOFF)?,
+            reversi: charger(REVERSI)?,
+            bovo: charger(BOVO)?,
             display_settings: charger(REGLAGES_ECRAN)?,
             calculatrice: charger(CALCULATRICE)?,
             ssh: charger(SSH)?,

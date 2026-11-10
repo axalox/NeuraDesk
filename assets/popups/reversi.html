@@ -1,0 +1,531 @@
+<!doctype html>
+<!--
+  win32::cef_reversi — le jeu Reversi (Othello), en applet de la zone Intégrés.
+
+  DEMANDE (2026-11-10) : « ajoutons une applet pour le jeu lagno de kde » —
+  « lagno » est iagno, le Reversi de GNOME (KDE a KReversi, même jeu). Les icônes
+  viennent d'iagno (voir `TopbarIcons/SOURCE.md`).
+
+  LA RÈGLE : un plateau 8×8 ; un coup pose un pion et RETOURNE tous les pions
+  adverses encadrés. On joue les NOIRS contre l'ordinateur (les BLANCS). Un joueur
+  sans coup valide passe son tour ; la partie s'arrête quand les deux passent ou
+  que le plateau est plein — le plus grand nombre de pions gagne.
+
+  ⚠️ **LA FACTURE DE `lightsoff.html`** — bande de titre qui DÉPLACE la fenêtre,
+  punaise, croix, et les MÊMES trois verbes de fenêtre (`deplacer`, `epingler`,
+  `fermer`). Le jeu vit ENTIÈREMENT dans cette page ; le niveau et la partie en
+  cours tiennent dans `localStorage`.
+
+  ⛔ **AUCUN `menu.js`** : c'est une FENÊTRE, sa taille ne se négocie pas.
+
+  ⚠️ **AUCUN `background` sur `<html>`/`<body>`** : le fond est le BUREAU FLOUTÉ que
+  Rust dessine SOUS la page ; les couleurs du thème viennent des variables CSS
+  `--popup-*` posées par la composition.
+
+  ⚠️ **L'IA JOUE DE FAÇON SYNCHRONE**, dans le gestionnaire de clic : ces pages ne
+  sont pas « visibles » pour Blink, donc `setTimeout` et `requestAnimationFrame`
+  y sont étranglés — un coup différé pourrait ne jamais arriver (mesuré sur
+  `aide.html`, voir la mémoire du dépôt).
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: var(--nd-police);
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    user-select: none;
+  }
+  #barre {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    cursor: default;
+  }
+  #titre { flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bouton {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+  }
+  .bouton:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  .bouton[aria-pressed="true"] {
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1)));
+    opacity: 1;
+  }
+  /* Les deux scores, la ligne de tour, et les trois niveaux. */
+  #tete {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px 0;
+  }
+  #scores { display: flex; align-items: center; gap: 10px; font-variant-numeric: tabular-nums; }
+  #scores b { font-size: 16px; min-width: 20px; text-align: center; }
+  .pastille { width: 16px; height: 16px; border-radius: 50%; display: inline-block; }
+  .pastille.noir { background: radial-gradient(circle at 35% 30%, #555, #111); box-shadow: inset 0 0 0 1px rgba(255,255,255,.18); }
+  .pastille.blanc { background: radial-gradient(circle at 35% 30%, #fff, #cfcfcf); box-shadow: inset 0 0 0 1px rgba(0,0,0,.25); }
+  #tour { font-size: 12px; opacity: .85; min-width: 130px; text-align: center; }
+  #niveaux { display: flex; gap: 4px; }
+  #niveaux button {
+    all: unset;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.10 * var(--popup-fond-alpha, 1)));
+    opacity: .75;
+  }
+  /* ⚠️ LE NIVEAU ACTIF NE SE PEINT PAS AVEC L'ACCENT : sur un thème dont
+     l'accent est BLANC, le libellé blanc disparaîtrait sur la pastille
+     (constaté à la capture du 2026-11-10). Le fond reste celui du texte, et
+     c'est un ANNEAU d'accent qui marque le choix. */
+  #niveaux button[aria-pressed="true"] {
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1)));
+    box-shadow: inset 0 0 0 1px rgba(var(--popup-accent-rgb, 255, 255, 255), .85);
+    opacity: 1;
+  }
+  #scene {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    box-sizing: border-box;
+  }
+  /* Le plateau : 8×8 cases carrées, à la plus grande taille qui tient. Le vert
+     est celui de l'icône d'iagno — un plateau de Reversi se reconnaît à ça. */
+  #plateau {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(8, 1fr);
+    gap: 2px;
+    padding: 8px;
+    box-sizing: border-box;
+    border-radius: var(--nd-rayon-grand, 12px);
+    background: #23603c;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12), 0 6px 18px rgba(0, 0, 0, .35);
+  }
+  .case {
+    all: unset;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #2f7d4e;
+    cursor: default;
+    transition: background-color .12s ease;
+  }
+  .case:focus-visible { outline: 2px solid rgba(var(--popup-accent-rgb, 255, 255, 255), .95); outline-offset: -2px; }
+  /* Le disque : l'ombre porte l'épaisseur, le reflet le bombé. */
+  .pion {
+    position: relative;
+    width: 78%;
+    height: 78%;
+    border-radius: 50%;
+    transform: scale(.86);
+    transition: transform .18s ease, background-color .18s ease, box-shadow .18s ease;
+  }
+  .pion.noir { background: radial-gradient(circle at 34% 28%, #4a4a4a, #0b0b0b 72%); box-shadow: 0 3px 6px rgba(0,0,0,.55), inset 0 -2px 4px rgba(255,255,255,.06); }
+  .pion.blanc { background: radial-gradient(circle at 34% 28%, #ffffff, #c9c9c9 74%); box-shadow: 0 3px 6px rgba(0,0,0,.45), inset 0 -2px 4px rgba(0,0,0,.12); }
+  .pion.noir, .pion.blanc { transform: scale(1); }
+  /* Le point des coups permis : discret, il ne masque pas le pion. */
+  .case.jouable::after {
+    content: "";
+    position: absolute;
+    width: 20%;
+    height: 20%;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, .55);
+    box-shadow: 0 0 4px rgba(0, 0, 0, .35);
+  }
+  .case.jouable:hover { background: #37925c; }
+  #fini {
+    position: absolute;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: rgba(var(--popup-fond-rgb, 20, 20, 20), calc(0.72 * var(--popup-fond-alpha, 1)));
+    z-index: 2;
+  }
+  #fini.vu { display: flex; }
+  #fini .mot { font-size: 22px; font-weight: 800; }
+  #fini .detail { font-size: 13px; opacity: .85; font-variant-numeric: tabular-nums; }
+  #fini button, #nouvelle {
+    all: unset;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 700;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.50 * var(--popup-fond-alpha, 1)));
+  }
+  #fini button:hover, #nouvelle:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.70 * var(--popup-fond-alpha, 1))); }
+  #pied {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 0 14px 10px;
+  }
+  #coups { font-size: 12px; opacity: .75; font-variant-numeric: tabular-nums; }
+  #nouvelle { padding: 6px 12px; font-size: 12px; font-weight: 600; background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.14 * var(--popup-fond-alpha, 1))); }
+  #nouvelle:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.24 * var(--popup-fond-alpha, 1))); }
+  #aide { flex: 0 0 auto; text-align: center; font-size: 11px; opacity: .6; padding: 0 12px 10px; }
+</style>
+</head>
+<body>
+  <div id="barre">
+    <span id="titre">Reversi</span>
+    <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
+    <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="tete">
+    <div id="scores">
+      <span class="pastille noir"></span><b id="score-noir">2</b>
+      <span id="tour">À vous de jouer</span>
+      <b id="score-blanc">2</b><span class="pastille blanc"></span>
+    </div>
+    <div id="niveaux">
+      <button data-niveau="1">Facile</button>
+      <button data-niveau="2">Moyen</button>
+      <button data-niveau="3">Difficile</button>
+    </div>
+  </div>
+  <div id="scene">
+    <div id="plateau"></div>
+    <div id="fini">
+      <span class="mot" id="fini-mot">Partie terminée</span>
+      <span class="detail" id="fini-detail"></span>
+      <button id="rejouer">Nouvelle partie</button>
+    </div>
+  </div>
+  <div id="pied">
+    <span id="coups">0 coup</span>
+    <button id="nouvelle">Nouvelle partie</button>
+  </div>
+  <div id="aide">Cliquez une case marquée : les pions adverses encadrés sont retournés.</div>
+<script>
+  "use strict";
+  const N = 8;
+  const VIDE = 0, NOIR = 1, BLANC = 2;
+  const DIRS = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]];
+  const CLE_NIVEAU = "neuradesk-reversi-niveau";
+  const CLE_PARTIE = "neuradesk-reversi-partie";
+  // Les profondeurs de l'IA par niveau — voir `choisir_coup`.
+  const PROFONDEUR = { 1: 1, 2: 3, 3: 5 };
+  // Le poids d'une case, angles et bords valorisés (table classique du Reversi).
+  const POIDS = [
+    100, -20, 10, 5, 5, 10, -20, 100,
+    -20, -50, -2, -2, -2, -2, -50, -20,
+     10, -2, 1, 1, 1, 1, -2, 10,
+      5, -2, 1, 0, 0, 1, -2, 5,
+      5, -2, 1, 0, 0, 1, -2, 5,
+     10, -2, 1, 1, 1, 1, -2, 10,
+    -20, -50, -2, -2, -2, -2, -50, -20,
+    100, -20, 10, 5, 5, 10, -20, 100,
+  ];
+
+  function go(action) { location.href = "neuradesk://reversi/" + action; }
+  document.getElementById("barre").addEventListener("mousedown", function (e) {
+    if (e.target.closest("button")) return;
+    go("deplacer");
+  });
+  document.getElementById("epingle").addEventListener("click", function () { go("epingler"); });
+  document.getElementById("fermer").addEventListener("click", function () { go("fermer"); });
+
+  let etat, niveau = 1, coups = 0, fini = false, message = "";
+  const plateau = document.getElementById("plateau");
+  const cases = [];
+
+  // Les pions adverses que le coup (r, c) RETOURNERAIT — vide si le coup est illégal.
+  function retours(tableau, r, c, joueur) {
+    if (tableau[r * N + c] !== VIDE) return [];
+    const adverse = 3 - joueur;
+    const sortie = [];
+    for (const [dr, dc] of DIRS) {
+      let rr = r + dr, cc = c + dc;
+      const ligne = [];
+      while (rr >= 0 && rr < N && cc >= 0 && cc < N && tableau[rr * N + cc] === adverse) {
+        ligne.push(rr * N + cc);
+        rr += dr;
+        cc += dc;
+      }
+      if (ligne.length && rr >= 0 && rr < N && cc >= 0 && cc < N && tableau[rr * N + cc] === joueur) {
+        sortie.push.apply(sortie, ligne);
+      }
+    }
+    return sortie;
+  }
+
+  function coups_valides(tableau, joueur) {
+    const liste = [];
+    for (let i = 0; i < N * N; i++) {
+      if (retours(tableau, (i / N) | 0, i % N, joueur).length) liste.push(i);
+    }
+    return liste;
+  }
+
+  function appliquer(tableau, i, joueur) {
+    // ⚠️ LES RETOURS SE CALCULENT AVANT DE POSER LE PION : `retours` refuse une
+    // case occupée, donc après la pose il ne retournerait plus rien.
+    const a_retourner = retours(tableau, (i / N) | 0, i % N, joueur);
+    tableau[i] = joueur;
+    for (const j of a_retourner) tableau[j] = joueur;
+  }
+
+  function compte(joueur) {
+    let n = 0;
+    for (let i = 0; i < N * N; i++) if (etat[i] === joueur) n++;
+    return n;
+  }
+
+  // L'ÉVALUATION, du point de vue de `joueur` : les poids des cases, la mobilité
+  // (les coups qu'on garde à l'adversaire) et, en fin de partie, la différence.
+  function evaluer(tableau, joueur) {
+    const adverse = 3 - joueur;
+    let score = 0;
+    for (let i = 0; i < N * N; i++) {
+      if (tableau[i] === joueur) score += POIDS[i];
+      else if (tableau[i] === adverse) score -= POIDS[i];
+    }
+    const miens = coups_valides(tableau, joueur).length;
+    const siens = coups_valides(tableau, adverse).length;
+    if (!miens && !siens) {
+      const diff = compte_plateau(tableau, joueur) - compte_plateau(tableau, adverse);
+      return diff > 0 ? 100000 + diff : diff < 0 ? -100000 + diff : 0;
+    }
+    return score + 8 * (miens - siens);
+  }
+
+  function compte_plateau(tableau, joueur) {
+    let n = 0;
+    for (let i = 0; i < N * N; i++) if (tableau[i] === joueur) n++;
+    return n;
+  }
+
+  // Négamax avec élagage alpha-bêta. Un joueur qui n'a pas de coup PASSE ; si les
+  // deux passent, la partie est finie et l'évaluation devient décisive.
+  function negamax(tableau, joueur, profondeur, alpha, beta) {
+    const siens = coups_valides(tableau, joueur);
+    if (!siens.length) {
+      if (!coups_valides(tableau, 3 - joueur).length) return evaluer(tableau, joueur);
+      return -negamax(tableau, 3 - joueur, profondeur, -beta, -alpha);
+    }
+    if (profondeur <= 0) return evaluer(tableau, joueur);
+    let meilleur = -Infinity;
+    for (const coup of siens) {
+      const suite = tableau.slice();
+      appliquer(suite, coup, joueur);
+      const valeur = -negamax(suite, 3 - joueur, profondeur - 1, -beta, -alpha);
+      if (valeur > meilleur) meilleur = valeur;
+      if (meilleur > alpha) alpha = meilleur;
+      if (alpha >= beta) break;
+    }
+    return meilleur;
+  }
+
+  function choisir_coup(tableau, joueur) {
+    const siens = coups_valides(tableau, joueur);
+    if (!siens.length) return -1;
+    const profondeur = PROFONDEUR[niveau] || 1;
+    let meilleur = siens[0], meilleure_valeur = -Infinity;
+    for (const coup of siens) {
+      const suite = tableau.slice();
+      appliquer(suite, coup, joueur);
+      const valeur = -negamax(suite, 3 - joueur, profondeur - 1, -Infinity, Infinity);
+      if (valeur > meilleure_valeur) { meilleure_valeur = valeur; meilleur = coup; }
+    }
+    return meilleur;
+  }
+
+  function construire() {
+    for (let i = 0; i < N * N; i++) {
+      const bouton = document.createElement("button");
+      bouton.className = "case";
+      bouton.setAttribute("aria-label", "case " + (((i / N) | 0) + 1) + ", " + ((i % N) + 1));
+      bouton.addEventListener("click", function () { jouer_humain(i); });
+      plateau.appendChild(bouton);
+      cases.push(bouton);
+    }
+  }
+
+  function afficher() {
+    const permis = fini ? [] : coups_valides(etat, NOIR);
+    for (let i = 0; i < N * N; i++) {
+      const case_ = cases[i];
+      const pion = case_.firstChild;
+      const couleur = etat[i] === NOIR ? "noir" : etat[i] === BLANC ? "blanc" : "";
+      if (pion) {
+        pion.className = "pion" + (couleur ? " " + couleur : "");
+      } else if (couleur) {
+        const d = document.createElement("span");
+        d.className = "pion " + couleur;
+        case_.appendChild(d);
+      }
+      case_.classList.toggle("jouable", permis.indexOf(i) >= 0);
+    }
+    document.getElementById("score-noir").textContent = String(compte(NOIR));
+    document.getElementById("score-blanc").textContent = String(compte(BLANC));
+    document.getElementById("coups").textContent = coups + (coups > 1 ? " coups" : " coup");
+    document.getElementById("tour").textContent = message || (fini ? "Partie terminée" : "À vous de jouer");
+    for (const b of document.querySelectorAll("#niveaux button")) {
+      b.setAttribute("aria-pressed", String(Number(b.dataset.niveau) === niveau));
+    }
+  }
+
+  function sauver() {
+    try {
+      localStorage.setItem(CLE_NIVEAU, String(niveau));
+      localStorage.setItem(CLE_PARTIE, JSON.stringify({ etat: etat, coups: coups, fini: fini }));
+    } catch (e) {}
+  }
+
+  function finir() {
+    fini = true;
+    const noirs = compte(NOIR), blancs = compte(BLANC);
+    const mot = noirs > blancs ? "Vous gagnez !" : noirs < blancs ? "Les blancs gagnent" : "Match nul";
+    document.getElementById("fini-mot").textContent = mot;
+    document.getElementById("fini-detail").textContent = noirs + " noirs — " + blancs + " blancs en " + coups + " coups";
+    document.getElementById("fini").classList.add("vu");
+    message = mot;
+    sauver();
+  }
+
+  function partie_bloquee() {
+    return !coups_valides(etat, NOIR).length && !coups_valides(etat, BLANC).length;
+  }
+
+  // LE TOUR DE L'IA — synchrone, et il enchaîne tant que l'humain doit passer.
+  //
+  // ⚠️ LA BOUCLE S'ARRÊTE QUAND L'HUMAIN PEUT JOUER, elle ne démarre pas pour
+  // cette raison : la première version testait `!coups_valides(NOIR)` en tête de
+  // boucle, donc l'IA ne jouait QUE si l'humain était bloqué — c'est-à-dire
+  // jamais au premier coup (défaut signalé : « l'ordinateur ne joue pas »).
+  function tour_de_lia() {
+    let messageIA = "";
+    let garde = 0;
+    while (!fini && garde++ < N * N) {
+      const ia = coups_valides(etat, BLANC);
+      if (!ia.length) { messageIA = "Les blancs passent"; break; }
+      appliquer(etat, choisir_coup(etat, BLANC), BLANC);
+      coups++;
+      if (coups_valides(etat, NOIR).length) { messageIA = ""; break; }
+      // L'humain n'a pas de coup : il passe, et l'IA rejoue.
+      messageIA = "Vous passez — les blancs rejouent";
+    }
+    message = messageIA;
+    if (partie_bloquee()) finir();
+  }
+
+  function jouer_humain(i) {
+    if (fini || !retours(etat, (i / N) | 0, i % N, NOIR).length) return;
+    appliquer(etat, i, NOIR);
+    coups++;
+    message = "";
+    if (partie_bloquee()) { afficher(); finir(); return; }
+    tour_de_lia();
+    afficher();
+    sauver();
+  }
+
+  function nouvelle_partie() {
+    etat = new Array(N * N).fill(VIDE);
+    etat[3 * N + 3] = BLANC;
+    etat[3 * N + 4] = NOIR;
+    etat[4 * N + 3] = NOIR;
+    etat[4 * N + 4] = BLANC;
+    coups = 0;
+    fini = false;
+    message = "";
+    document.getElementById("fini").classList.remove("vu");
+    afficher();
+    sauver();
+  }
+
+  // Le plateau prend la plus grande taille CARRÉE qui tient dans la scène.
+  function ajuster() {
+    const scene = document.getElementById("scene");
+    const cote = Math.max(160, Math.min(scene.clientWidth, scene.clientHeight) - 24);
+    plateau.style.width = cote + "px";
+    plateau.style.height = cote + "px";
+  }
+
+  document.getElementById("nouvelle").addEventListener("click", nouvelle_partie);
+  document.getElementById("rejouer").addEventListener("click", nouvelle_partie);
+  for (const b of document.querySelectorAll("#niveaux button")) {
+    b.addEventListener("click", function () {
+      niveau = Number(b.dataset.niveau);
+      message = "";
+      afficher();
+      sauver();
+    });
+  }
+
+  // Clavier : flèches entre les cases, Entrée/Espace pour jouer (natif des boutons).
+  window.addEventListener("keydown", function (e) {
+    const i = cases.indexOf(document.activeElement);
+    const pas = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -N, ArrowDown: N }[e.key];
+    if (pas !== undefined) {
+      const suivant = i < 0 ? 27 : Math.min(N * N - 1, Math.max(0, i + pas));
+      cases[suivant].focus();
+      e.preventDefault();
+    }
+  });
+  window.addEventListener("resize", ajuster);
+
+  // L'état de fenêtre que Rust pousse : seulement la punaise.
+  window.setState = function (state) {
+    const epingle = document.getElementById("epingle");
+    epingle.setAttribute("aria-pressed", String(!!state.epingle));
+    epingle.innerHTML = state.epingle ? '<span class="ico ico-push-pin-fill"></span>' : '<span class="ico ico-push-pin"></span>';
+    epingle.title = state.epingle ? "Ne plus rester au premier plan" : "Rester au premier plan";
+  };
+
+  construire();
+  // Le niveau et la partie en cours survivent à la fermeture — mais une partie
+  // FINIE repart neuve : rouvrir la fenêtre pour retomber sur un résultat
+  // n'intéresse personne.
+  try {
+    niveau = Number(localStorage.getItem(CLE_NIVEAU)) || 1;
+    if (!PROFONDEUR[niveau]) niveau = 1;
+  } catch (e) { niveau = 1; }
+  let reprise = null;
+  try { reprise = JSON.parse(localStorage.getItem(CLE_PARTIE) || "null"); } catch (e) { reprise = null; }
+  if (reprise && Array.isArray(reprise.etat) && reprise.etat.length === N * N && !reprise.fini) {
+    etat = reprise.etat.map(function (v) { return v === NOIR || v === BLANC ? v : VIDE; });
+    coups = Number(reprise.coups) || 0;
+    fini = false;
+    afficher();
+  } else {
+    nouvelle_partie();
+  }
+  ajuster();
+</script>
+</body>
+</html>

@@ -128,6 +128,10 @@ pub(crate) const CINQ_OU_PLUS_ICON_PNG: &[u8] = include_bytes!("../../TopbarIcon
 pub(crate) const QUADRAPASSEL_ICON_PNG: &[u8] = include_bytes!("../../TopbarIcons/quadrapassel.png");
 /// Icône « Lights Off » — le symbolique de GNOME Lights Off (l'interrupteur). Monochrome.
 pub(crate) const LIGHTSOFF_ICON_PNG: &[u8] = include_bytes!("../../TopbarIcons/lightsoff.png");
+/// Icône « Reversi » — le symbolique d'iagno (GNOME Reversi). Monochrome.
+pub(crate) const REVERSI_ICON_PNG: &[u8] = include_bytes!("../../TopbarIcons/reversi.png");
+/// Icône « Bovo » — l'icône Breeze de KDE (monochrome tiré de sa luminosité).
+pub(crate) const BOVO_ICON_PNG: &[u8] = include_bytes!("../../TopbarIcons/bovo.png");
 /// Icône « minuteur » — comptes à rebours et alarmes (voir `win32::minuteur`).
 /// RASTÉRISÉE depuis Keyline Icons (MIT), comme la capture d'écran (voir
 /// `TopbarIcons/SOURCE.md`).

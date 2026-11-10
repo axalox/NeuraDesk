@@ -11,6 +11,10 @@
   ni logique côté Rust), piloté au clavier (flèches / ZQSD) et à la souris
   (glisser). Le meilleur score tient dans `localStorage`.
 
+  ⭐ **« ANNULER »** (DEMANDE 2026-11-10) défait le dernier coup : une photo
+  `{grille, score, gagne}` est prise AVANT chaque coup qui bouge, et rendue au
+  clic — y compris après « Partie terminée », qui rouvre alors la partie.
+
   ⛔ **AUCUN `menu.js`** : c'est une FENÊTRE, sa taille ne se négocie pas.
 
   ⚠️ **AUCUN `background` sur `<html>`/`<body>`** : le fond est le BUREAU FLOUTÉ que
@@ -61,7 +65,9 @@
     cursor: pointer;
     opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
   }
-  .bouton:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  .bouton:hover:not(:disabled) { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  /* Rien à annuler : le bouton le DIT, au lieu de ne rien faire en silence. */
+  .bouton:disabled { opacity: calc(.3 * max(1, var(--popup-alpha, 1))); cursor: default; }
   .bouton[aria-pressed="true"] {
     background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1)));
     opacity: 1;
@@ -185,6 +191,11 @@
 <body>
   <div id="barre">
     <span id="titre">2048</span>
+    <!-- ⭐ ANNULER le coup précédent — dans la BARRE, pas dans l'en-tête : les
+         deux scores et « Nouvelle partie » y tiennent déjà tout juste, et un
+         troisième contrôle en texte poussait « Nouvelle partie » hors de la
+         fenêtre (constaté à la capture). Éteint tant qu'il n'y a rien à défaire. -->
+    <button id="annuler" class="bouton" disabled title="Annuler le coup précédent" aria-label="Annuler le coup précédent"><span class="ico ico-arrow-u-up-left"></span></button>
     <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
     <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
   </div>
@@ -234,15 +245,20 @@
   }
 
   let grille, score, record, fini, gagne;
+  // ⭐ **L'HISTORIQUE DE « ANNULER »** : une photo `{grille, score, gagne}` par
+  // coup qui a RÉELLEMENT bougé, la plus récente en fin de liste.
+  let historique = [];
 
   function neuf() {
     grille = Array.from({ length: N }, () => Array(N).fill(0));
     score = 0;
     fini = false;
     gagne = false;
+    historique = [];
     ajouter(); ajouter();
     document.getElementById("fin").classList.remove("vu");
     dessiner();
+    maj_annuler();
   }
 
   function cases_vides() {
@@ -284,6 +300,9 @@
   // dir : 0=gauche, 1=haut, 2=droite, 3=bas. Rend true si quelque chose a bougé.
   function jouer(dir) {
     if (fini) return;
+    // ⚠️ **LA PHOTO SE PREND TOUT EN HAUT** : `compacter` pose `gagne` en effet
+    // de bord, et `score` ne doit pas déjà avoir bougé quand on la relit.
+    const avant = { grille: grille.map((l) => l.slice()), score, gagne };
     let g = grille.map((l) => l.slice());
     for (let k = 0; k < dir; k++) g = tourner(g);
     let bouge = false;
@@ -295,12 +314,34 @@
     }
     for (let k = 0; k < (4 - dir) % 4; k++) g = tourner(g);
     if (!bouge) return;
+    historique.push(avant);
     grille = g;
     ajouter();
     if (score > record) { record = score; try { localStorage.setItem(CLE_RECORD, String(record)); } catch (e) {} }
     if (!coup_possible()) fini = true;
     dessiner();
+    maj_annuler();
     if (gagne || fini) terminer();
+  }
+
+  // ⭐ **ANNULER LE COUP PRÉCÉDENT** (DEMANDE 2026-11-10) : rend le plateau, le
+  // score et l'état de victoire d'AVANT le dernier coup, et ROUVRE la partie si
+  // elle était finie. Le record, lui, ne redescend pas : il a été gagné.
+  function annuler() {
+    if (!historique.length) return;
+    const etat = historique.pop();
+    grille = etat.grille;
+    score = etat.score;
+    gagne = etat.gagne;
+    fini = false;
+    document.getElementById("fin").classList.remove("vu");
+    dessiner();
+    maj_annuler();
+  }
+
+  // L'état du bouton : allumé dès qu'il y a un coup à défaire.
+  function maj_annuler() {
+    document.getElementById("annuler").disabled = historique.length === 0;
   }
 
   function coup_possible() {
@@ -368,6 +409,7 @@
   });
 
   document.getElementById("nouvelle").addEventListener("click", neuf);
+  document.getElementById("annuler").addEventListener("click", annuler);
   document.getElementById("rejouer").addEventListener("click", neuf);
 
   // L'état de fenêtre que Rust pousse : seulement la punaise.

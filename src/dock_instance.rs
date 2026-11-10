@@ -990,6 +990,18 @@ impl DockInstance {
         if let Some(instance) = &lightsoff_instance {
             push_icon_batch(&mut batches, &textures.lightsoff, instance, clipped_for(lightsoff_icon_index));
         }
+        // REVERSI (voir `win32::cef_reversi`) — même règle, `+ 1`.
+        let reversi_icon_index = lightsoff_icon_index + 1;
+        let reversi_instance = self.dock.external_glyph_instance(reversi_icon_index, &layout, effective_topbar_text_color);
+        if let Some(instance) = &reversi_instance {
+            push_icon_batch(&mut batches, &textures.reversi, instance, clipped_for(reversi_icon_index));
+        }
+        // BOVO (voir `win32::cef_bovo`) — même règle, `+ 1`.
+        let bovo_icon_index = reversi_icon_index + 1;
+        let bovo_instance = self.dock.external_glyph_instance(bovo_icon_index, &layout, effective_topbar_text_color);
+        if let Some(instance) = &bovo_instance {
+            push_icon_batch(&mut batches, &textures.bovo, instance, clipped_for(bovo_icon_index));
+        }
         let moniteur_instance = self.dock.external_glyph_instance(moniteur_icon_index, &layout, effective_topbar_text_color);
         if let Some(instance) = &moniteur_instance {
             push_icon_batch(&mut batches, &textures.moniteur, instance, clipped_for(moniteur_icon_index));
@@ -1625,6 +1637,8 @@ pub struct DockTextures {
     pub cinq_ou_plus: Texture,
     pub quadrapassel: Texture,
     pub lightsoff: Texture,
+    pub reversi: Texture,
+    pub bovo: Texture,
 }
 
 /// Bundle of rendered bar background textures.
@@ -1656,7 +1670,7 @@ mod tests {
 
     /// Les applets, DANS L'ORDRE de `Dock::new` — c'est la table de
     /// résolution de tout ce fichier, et de `apply_topbar_features`.
-    const APPLETS: [&str; 46] = [
+    const APPLETS: [&str; 48] = [
         "alimentation",
         "terminal",
         "son",
@@ -1723,6 +1737,10 @@ mod tests {
         "quadrapassel",
         // LIGHTSOFF (2026-11-08) — même règle, EN FIN.
         "lightsoff",
+        // REVERSI (2026-11-10) — même règle, EN FIN.
+        "reversi",
+        // BOVO (2026-11-10) — même règle, EN FIN.
+        "bovo",
     ];
 
     /// **LE TEST QUI AURAIT ATTRAPÉ LE DÉFAUT DE DISPLAY2 (2026-09-23).**
@@ -1843,6 +1861,8 @@ mod tests {
             cinq_ou_plus: true,
             quadrapassel: true,
             lightsoff: true,
+            reversi: true,
+            bovo: true,
         };
         crate::app::apply_topbar_features(&mut instance.dock, PINS, &features);
 

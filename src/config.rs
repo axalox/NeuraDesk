@@ -3543,6 +3543,12 @@ pub const QUADRAPASSEL_INTEGRES: &str = "quadrapassel_integres";
 /// **DRAPEAU DE MIGRATION DE « LIGHTS OFF »** posé par `app::run` la première
 /// fois qu'il range l'applet dans Intégrés, juste après « Quadrapassel ». Le nom porte la ZONE.
 pub const LIGHTSOFF_INTEGRES: &str = "lightsoff_integres";
+/// **DRAPEAU DE MIGRATION DE « REVERSI »** posé par `app::run` la première
+/// fois qu'il range l'applet dans Intégrés, juste après « Lights Off ». Le nom porte la ZONE.
+pub const REVERSI_INTEGRES: &str = "reversi_integres";
+/// **DRAPEAU DE MIGRATION DE « BOVO »** posé par `app::run` la première
+/// fois qu'il range l'applet dans Intégrés, juste après « Reversi ». Le nom porte la ZONE.
+pub const BOVO_INTEGRES: &str = "bovo_integres";
 
 /// **DRAPEAU DE MIGRATION DU MONITEUR SYSTÈME** — posé par `app::run` la première
 /// fois qu'il range l'applet dans Intégrés, juste après l'éditeur des textures.

@@ -1177,7 +1177,13 @@ mod tests {
         // ⚠️ **REMONTÉES UNE QUATORZIÈME FOIS le 2026-11-08** (Lights Off, 50ᵉ applet) :
         // **54 est redevenu une APPLET**, les trois remplisseurs sont **57, 55 et 56**.
         // Le test a rendu `[168, 56, 54, 148, 147, 146, 55]` contre `[168, 56, 148, 147, 146, 55]`.
-        let haut_droite = vec![9, 11, 10, 57, 2, 55, 12, 1, 8, 148, 147, 146, 56];
+        // ⚠️ **REMONTÉES UNE QUINZIÈME FOIS le 2026-11-10** (Reversi, 51ᵉ applet) :
+        // **55 est redevenu une APPLET**, les trois remplisseurs sont **58, 56 et 57**.
+        // Le test a rendu `[168, 57, 55, 148, 147, 146, 56]` contre `[168, 57, 148, 147, 146, 56]`.
+        // ⚠️ **REMONTÉES UNE SEIZIÈME FOIS le 2026-11-10** (Bovo, 52ᵉ applet) :
+        // **56 est redevenu une APPLET**, les trois remplisseurs sont **59, 57 et 58**.
+        // Le test a rendu `[168, 58, 56, 148, 147, 146, 57]` contre `[168, 58, 148, 147, 146, 57]`.
+        let haut_droite = vec![9, 11, 10, 59, 2, 57, 12, 1, 8, 148, 147, 146, 58];
         (gauche, droite, haut_gauche, haut_droite)
     }
 
@@ -1582,7 +1588,9 @@ mod tests {
         // ⚠️ Puis **54** le 2026-11-07 (Cinq ou plus), avec la fixture.
         // ⚠️ Puis **55** le 2026-11-07 (Quadrapassel), avec la fixture.
         // ⚠️ Puis **56** le 2026-11-08 (Lights Off), avec la fixture.
-        assert_eq!(dock.spacer_index_at_rank(ordres, ZoneKey::new(BarLetter::Haut, 7).unwrap()), Some(56));
+        // ⚠️ Puis **57** le 2026-11-10 (Reversi), avec la fixture.
+        // ⚠️ Puis **58** le 2026-11-10 (Bovo), avec la fixture.
+        assert_eq!(dock.spacer_index_at_rank(ordres, ZoneKey::new(BarLetter::Haut, 7).unwrap()), Some(58));
         // Au-dela du dernier rang, aucun espace.
         assert_eq!(dock.spacer_index_at_rank(ordres, cle(4)), None);
     }
@@ -1614,7 +1622,10 @@ mod tests {
         // les cree ainsi), mais aucune liste ne les cite : ils ne prennent donc aucun rang.
         // ⚠️ 53 → 57 le 2026-11-08 (Lights Off) : un remplisseur que la fixture CITE,
         // donc qui suit chaque applet ajoutée au lieu de redevenir une applet.
-        assert!(dock.is_spacer(57), "premisse : un remplisseur est bien un espace");
+        // ⚠️ 57 → 58 le 2026-11-10 (Reversi) : c'est le PLUS HAUT des trois
+        // remplisseurs de `haut_droite`, donc celui qui reste un espace le plus longtemps.
+        // ⚠️ 58 → 59 le 2026-11-10 (Bovo), même raison.
+        assert!(dock.is_spacer(59), "premisse : un remplisseur est bien un espace");
         // ⚠️ Les remplisseurs SONT des espaces, mais seuls ceux qu'une liste cite prennent un
         // rang. La barre de gauche en cite 3 (116..118) et non les 77 remplisseurs ; celle du
         // haut en cite 3 d'entre eux (35, 33, 34) en plus de ses 4 espaces « vrais ».
