@@ -5139,6 +5139,7 @@ fn push_state(refs: &SettingsRefs) {
                 "lightsoff": refs.features.lightsoff,
                 "reversi": refs.features.reversi,
                 "bovo": refs.features.bovo,
+                "patience": refs.features.patience,
                 "display_settings": refs.features.display_settings,
                 "optional_features": refs.features.optional_features,
                 "notifications": refs.features.notifications,

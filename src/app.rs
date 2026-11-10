@@ -347,6 +347,10 @@ pub(crate) struct Features {
     /// « une applet pour le jeu bovo de kde ». Une FENÊTRE de jeu posée dans
     /// Intégrés après « Reversi » (voir `BOVO_INTEGRES`), index EN FIN DE CHAÎNE.
     pub bovo: bool,
+    /// **PATIENCE** (voir `win32::cef_patience`) — DEMANDE (2026-11-10) :
+    /// « une applet pour kpatience de kde ». Une FENÊTRE de jeu posée dans
+    /// Intégrés après « Bovo » (voir `PATIENCE_INTEGRES`), index EN FIN DE CHAÎNE.
+    pub patience: bool,
     /// Applet « Réglages de l'écran » (voir `win32::reglages_ecran`) — DEMANDE
     /// EXPLICITE : « une applet dans la zone réglages pour ouvrir les réglages
     /// écran dans les paramètres windows ». Une ACTION.
@@ -524,6 +528,7 @@ impl Features {
         lightsoff: config::load_feature_enabled("lightsoff"),
         reversi: config::load_feature_enabled("reversi"),
         bovo: config::load_feature_enabled("bovo"),
+        patience: config::load_feature_enabled("patience"),
         display_settings: config::load_feature_enabled("display_settings"),
         calculatrice: config::load_feature_enabled("calculatrice"),
         ssh: config::load_feature_enabled("ssh"),
@@ -648,6 +653,7 @@ pub(crate) fn set_feature_by_name(features: &mut Features, name: &str, enabled: 
         "lightsoff" => &mut features.lightsoff,
         "reversi" => &mut features.reversi,
         "bovo" => &mut features.bovo,
+        "patience" => &mut features.patience,
         "display_settings" => &mut features.display_settings,
         "calculatrice" => &mut features.calculatrice,
         "ssh" => &mut features.ssh,
@@ -721,6 +727,7 @@ fn get_feature_by_name(features: &Features, name: &str) -> Option<bool> {
         "lightsoff" => features.lightsoff,
         "reversi" => features.reversi,
         "bovo" => features.bovo,
+        "patience" => features.patience,
         "display_settings" => features.display_settings,
         "calculatrice" => features.calculatrice,
         "ssh" => features.ssh,
@@ -864,6 +871,7 @@ pub(crate) fn apply_topbar_features(dock: &mut Dock, pinned_apps_count: usize, f
     let lightsoff_icon_index = quadrapassel_icon_index + 1;
     let reversi_icon_index = lightsoff_icon_index + 1;
     let bovo_icon_index = reversi_icon_index + 1;
+    let patience_icon_index = bovo_icon_index + 1;
     // ⭐ LA TABLE DES NOMS DU NOYAU (2026-10-29, étape 1 du plan
     // `docs/plans/disposition-barres-zones-icones.md`) : chaque applet reçoit SON
     // nom au moment où son index est calculé — la connaissance reste ici, le dock
@@ -920,6 +928,7 @@ pub(crate) fn apply_topbar_features(dock: &mut Dock, pinned_apps_count: usize, f
         (lightsoff_icon_index, "lightsoff"),
         (reversi_icon_index, "reversi"),
         (bovo_icon_index, "bovo"),
+        (patience_icon_index, "patience"),
     ]);
     // ⛔ **UNE SEULE LIGNE PAR CHANGEMENT, PAS UNE PAR FRAME.** `apply_topbar_features`
     // tourne à CHAQUE tour de boucle : ce `diag!` écrivait donc 50 lignes par seconde
@@ -1000,6 +1009,7 @@ pub(crate) fn apply_topbar_features(dock: &mut Dock, pinned_apps_count: usize, f
     set_icon_feature_enabled(dock, lightsoff_icon_index, features.lightsoff);
     set_icon_feature_enabled(dock, reversi_icon_index, features.reversi);
     set_icon_feature_enabled(dock, bovo_icon_index, features.bovo);
+    set_icon_feature_enabled(dock, patience_icon_index, features.patience);
 }
 
 /// Icônes DÉSACTIVÉES PAR DÉFAUT sur un écran secondaire, en plus d'une
@@ -1032,7 +1042,7 @@ pub(crate) fn apply_topbar_features(dock: &mut Dock, pinned_apps_count: usize, f
 /// chose sans mentir. Même traitement que `terminal` : la case disparaît aussi des
 /// Réglages (voir `assets/popups/settings.html`, `SECONDARY_TOPBAR_FEATURES`).
 const SECONDARY_DEFAULT_DISABLED_FEATURES: &[&str] =
-    &["terminal", "network", "clipboard_viewer", "notes", "dash", "theme_toggle", "night_light", "printer", "calendar", "image_editor", "screen_capture", "minuteur", "surveillance", "windows_update", "device_manager", "observateur_evenements", "display_settings", "calculatrice", "ssh", "couleurs", "optional_features", "notifications", "recherche", "automatisations", "meteo", "verrouillage", "caracteres", "kaomoji", "aide", "proprietes_systeme", "scanner", "shaders", "phonetique", "maths", "lueurs", "textures", "narrateur", "loupe", "moniteur", "enregistrer", "clavier", "jeu2048", "cinq_ou_plus", "quadrapassel", "lightsoff", "reversi", "bovo"];
+    &["terminal", "network", "clipboard_viewer", "notes", "dash", "theme_toggle", "night_light", "printer", "calendar", "image_editor", "screen_capture", "minuteur", "surveillance", "windows_update", "device_manager", "observateur_evenements", "display_settings", "calculatrice", "ssh", "couleurs", "optional_features", "notifications", "recherche", "automatisations", "meteo", "verrouillage", "caracteres", "kaomoji", "aide", "proprietes_systeme", "scanner", "shaders", "phonetique", "maths", "lueurs", "textures", "narrateur", "loupe", "moniteur", "enregistrer", "clavier", "jeu2048", "cinq_ou_plus", "quadrapassel", "lightsoff", "reversi", "bovo", "patience"];
 
 /// `Features` effectif pour l'écran secondaire `device_name` : `Features`
 /// PRIMAIRE, moins `SECONDARY_DEFAULT_DISABLED_FEATURES` ci-dessus, PUIS
@@ -2346,6 +2356,7 @@ fn tooltip_label_for_icon(
     lightsoff_icon_index: usize,
     reversi_icon_index: usize,
     bovo_icon_index: usize,
+    patience_icon_index: usize,
     pinned_apps: &[config::PinnedApp],
 ) -> Option<String> {
     Some(match index {
@@ -2405,6 +2416,7 @@ fn tooltip_label_for_icon(
         i if i == lightsoff_icon_index => "Jouer à Lights Off".to_string(),
         i if i == reversi_icon_index => "Jouer à Reversi".to_string(),
         i if i == bovo_icon_index => "Jouer à Bovo".to_string(),
+        i if i == patience_icon_index => "Jouer à Patience".to_string(),
         i if i == verrouillage_icon_index => "Verrouiller la session".to_string(),
         // Le libellé donne des EXEMPLES : « caractères accentués » seul ne dirait
         // pas que la ponctuation française et la ligature y sont aussi.
@@ -2492,6 +2504,7 @@ fn zone_row_for_icon(
     lightsoff_icon_index: usize,
     reversi_icon_index: usize,
     bovo_icon_index: usize,
+    patience_icon_index: usize,
     pinned_apps: &[config::PinnedApp],
 ) -> crate::win32::cef_settings::ZoneRow {
     let label = tooltip_label_for_icon(
@@ -2544,6 +2557,7 @@ fn zone_row_for_icon(
         lightsoff_icon_index,
         reversi_icon_index,
         bovo_icon_index,
+        patience_icon_index,
         pinned_apps,
     )
     .unwrap_or_else(|| format!("Icône {index}"));
@@ -2596,6 +2610,7 @@ fn zone_row_for_icon(
         i if i == lightsoff_icon_index => Some("lightsoff"),
         i if i == reversi_icon_index => Some("reversi"),
         i if i == bovo_icon_index => Some("bovo"),
+        i if i == patience_icon_index => Some("patience"),
         i if i == verrouillage_icon_index => Some("verrouillage"),
         i if i == caracteres_icon_index => Some("caracteres"),
         i if i == kaomoji_icon_index => Some("kaomoji"),
@@ -3969,6 +3984,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let lightsoff_icon_index = quadrapassel_icon_index + 1;
     let reversi_icon_index = lightsoff_icon_index + 1;
     let bovo_icon_index = reversi_icon_index + 1;
+    let patience_icon_index = bovo_icon_index + 1;
     // **LES SEPT APPLETS, EN CLAIR DANS LE JOURNAL — C'EST LA TABLE DE RÉSOLUTION
     // DE LA SONDE.** `Dock::external_glyph_instance` signale un glyphe dessiné
     // dans la case d'un ESPACE en donnant un INDEX (défaut non élucidé du
@@ -5471,6 +5487,20 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 config::save_icon_order(&left, &right, &top_left, &top_right);
                 config::save_bool_setting(config::BOVO_INTEGRES, true);
             }
+            // ⭐ **PATIENCE** (voir `win32::cef_patience`) — DEMANDE
+            // (2026-11-10) : « une applet pour kpatience de kde ». Même
+            // migration à drapeau, ANCRÉE SUR « Bovo » ; sinon en fin
+            // d'Intégrés (le 2ᵉ séparateur).
+            if !config::load_bool_setting(config::PATIENCE_INTEGRES) {
+                ceder_la_place([&mut left, &mut right, &mut top_left, &mut top_right], patience_icon_index, &est_espace, &nouvelles);
+                let place = match right.iter().position(|&index| index == bovo_icon_index) {
+                    Some(position) => position + 1,
+                    None => separateur(&right, 1),
+                };
+                right.insert(place, patience_icon_index);
+                config::save_icon_order(&left, &right, &top_left, &top_right);
+                config::save_bool_setting(config::PATIENCE_INTEGRES, true);
+            }
             // VERROUILLER LA SESSION, dans la zone « Réglages » — DEMANDE EXPLICITE
             // (2026-10-05) : « une applet dans Réglages pour verrouiller la
             // session ». Même migration à drapeau, même place rendue.
@@ -5735,6 +5765,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 config::LIGHTSOFF_INTEGRES,
                 config::REVERSI_INTEGRES,
                 config::BOVO_INTEGRES,
+                config::PATIENCE_INTEGRES,
             ] {
                 config::save_bool_setting(drapeau, true);
             }
@@ -5787,7 +5818,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     // ⛔ **LA PLACE SE DONNE PAR IDENTITÉ** : `icon_order.txt` range des index, qui peuvent
     // désigner une autre icône d'une version à l'autre (mesuré sur la même VM). Une applet
     // nouvelle qui a une place voulue s'ajoute ICI, à côté de sa pose par défaut.
-    const PLACES_DES_APPLETS: &[(&str, &str)] = &[("noyau:observateur_evenements", "noyau:reglages_affichage"), ("noyau:enregistrer", "noyau:capture_ecran"), ("noyau:lightsoff", "noyau:quadrapassel"), ("noyau:reversi", "noyau:lightsoff"), ("noyau:bovo", "noyau:reversi")];
+    const PLACES_DES_APPLETS: &[(&str, &str)] = &[("noyau:observateur_evenements", "noyau:reglages_affichage"), ("noyau:enregistrer", "noyau:capture_ecran"), ("noyau:lightsoff", "noyau:quadrapassel"), ("noyau:reversi", "noyau:lightsoff"), ("noyau:bovo", "noyau:reversi"), ("noyau:patience", "noyau:bovo")];
     let applets_ajoutees = dock.ajouter_les_applets_absentes(&mut zones, PLACES_DES_APPLETS);
     if !applets_ajoutees.is_empty() {
         let ecrit = ecriture_permise && config::save_zones(&zones);
@@ -6789,6 +6820,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         crate::win32::cef_lightsoff::preload,
         crate::win32::cef_reversi::preload,
         crate::win32::cef_bovo::preload,
+        crate::win32::cef_patience::preload,
         crate::win32::cef_apropos::preload,
         crate::win32::cef_capture::preload,
         crate::win32::cef_lueurs::preload,
@@ -7635,6 +7667,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 ),
                 Some("bovo") => crate::win32::cef_bovo::toggle(
                     crate::win32::cef_bovo::rect_pour_ecran_primaire(),
+                    &gfx,
+                ),
+                Some("patience") => crate::win32::cef_patience::toggle(
+                    crate::win32::cef_patience::rect_pour_ecran_primaire(),
                     &gfx,
                 ),
                 Some("apropos") => crate::win32::cef_apropos::toggle(
@@ -9450,6 +9486,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 // BOVO (DEMANDE, 2026-11-10) — une FENÊTRE de jeu.
                                 let rect = crate::win32::cef_bovo::rect_pour_ecran_primaire();
                                 crate::win32::cef_bovo::toggle(rect, &gfx);
+                            }
+                            _ if index == patience_icon_index => {
+                                // PATIENCE (DEMANDE, 2026-11-10) — une FENÊTRE de jeu.
+                                let rect = crate::win32::cef_patience::rect_pour_ecran_primaire();
+                                crate::win32::cef_patience::toggle(rect, &gfx);
                             }
                             _ if index == windows_update_icon_index => {
                                 // WINDOWS UPDATE — une ACTION, comme la file
@@ -11353,6 +11394,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 crate::win32::cef_lightsoff::recaler_si_il_ne_tient_plus();
                 crate::win32::cef_reversi::recaler_si_il_ne_tient_plus();
                 crate::win32::cef_bovo::recaler_si_il_ne_tient_plus();
+                crate::win32::cef_patience::recaler_si_il_ne_tient_plus();
                 crate::win32::cef_apropos::recaler_si_il_ne_tient_plus();
                 crate::win32::cef_capture::recaler_si_il_ne_tient_plus();
                 crate::win32::cef_visionneuse::recaler_si_il_ne_tient_plus();
@@ -11793,6 +11835,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     lightsoff_icon_index,
                     reversi_icon_index,
                     bovo_icon_index,
+                    patience_icon_index,
                     &pinned_apps,
                 )
             };
@@ -13103,6 +13146,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             crate::win32::cef_bovo::dispatch_actions();
             crate::win32::cef_bovo::refresh_if_visible();
             crate::win32::cef_bovo::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_patience::dispatch_actions();
+            crate::win32::cef_patience::refresh_if_visible();
+            crate::win32::cef_patience::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
             // « À PROPOS DE NEURADESK » (voir `win32::cef_apropos`).
             crate::win32::cef_apropos::dispatch_actions();
             crate::win32::cef_apropos::refresh_if_visible();
@@ -14353,6 +14399,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             lightsoff_icon_index,
                             reversi_icon_index,
                             bovo_icon_index,
+                            patience_icon_index,
                             &pinned_apps,
                         )
                     })
@@ -16318,6 +16365,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             let lightsoff_instance = dock.external_glyph_instance(lightsoff_icon_index, &layout, effective_topbar_text_color);
             let reversi_instance = dock.external_glyph_instance(reversi_icon_index, &layout, effective_topbar_text_color);
             let bovo_instance = dock.external_glyph_instance(bovo_icon_index, &layout, effective_topbar_text_color);
+            let patience_instance = dock.external_glyph_instance(patience_icon_index, &layout, effective_topbar_text_color);
             let proprietes_systeme_instance = dock.external_glyph_instance(proprietes_systeme_icon_index, &layout, effective_topbar_text_color);
             // Échelle de survol de l'horloge — son PROPRE animateur, donc son
             // propre réglage (voir `clock_hover`, et `dock::clock_hover_scale`).
@@ -17033,6 +17081,18 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     &icones.bovo,
                     instance,
                     clipped_for(bovo_icon_index),
+                );
+            }
+            if let Some(instance) = &patience_instance {
+                push_dock_icon(
+                    &mut batches,
+                    &mut differes,
+                    &mut hover_icon,
+                    magnified,
+                    patience_icon_index,
+                    &icones.patience,
+                    instance,
+                    clipped_for(patience_icon_index),
                 );
             }
             if let Some(instance) = &moniteur_instance {
@@ -17997,6 +18057,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     lightsoff: icones.lightsoff.clone(),
                     reversi: icones.reversi.clone(),
                     bovo: icones.bovo.clone(),
+                    patience: icones.patience.clone(),
                 };
                 render_secondary_docks(
                     &gfx.device,
@@ -18103,6 +18164,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 Some("lightsoff") => Some(crate::win32::cef_lightsoff::debug_dump_backbuffer),
                 Some("reversi") => Some(crate::win32::cef_reversi::debug_dump_backbuffer),
                 Some("bovo") => Some(crate::win32::cef_bovo::debug_dump_backbuffer),
+                Some("patience") => Some(crate::win32::cef_patience::debug_dump_backbuffer),
                 Some("apropos") => Some(crate::win32::cef_apropos::debug_dump_backbuffer),
                 Some("capture") => Some(crate::win32::cef_capture::debug_dump_backbuffer),
                 Some("lueurs") => Some(crate::win32::cef_lueurs::debug_dump_backbuffer),
@@ -23167,7 +23229,7 @@ fn a_zone_row_offers_the_action_its_nature_allows() {
     // `proprietes_systeme_icon_index`, en fin de chaîne). C'est ce qui fait que les
     // rangs ci-dessous ne bougent PAS : une applet insérée au milieu aurait décalé
     // tous les suivants.
-    let row = |index: usize| zone_row_for_icon(index, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, &apps);
+    let row = |index: usize| zone_row_for_icon(index, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, &apps);
 
     // 1. Une APPLET : « Cacher », et l'identifiant est le NOM DE LA FONCTIONNALITÉ
     //    (voir `set_feature_by_name`) — c'est le même interrupteur que la section
@@ -23630,6 +23692,7 @@ mod top_slot_tests {
             lightsoff: false,
             reversi: false,
             bovo: false,
+            patience: false,
             display_settings: false,
             calculatrice: false,
             ssh: false,

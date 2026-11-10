@@ -1766,6 +1766,9 @@
       ["reversi", "Reversi"],
       // DEMANDE (2026-11-10) : un fork web du jeu KDE « Bovo » (Gomoku).
       ["bovo", "Bovo"],
+      // DEMANDE (2026-11-10) : la PATIENCE — les QUATRE réussites de KDE
+      // (KPatience : Klondike, FreeCell, Spider, Yukon), page `patience.html`.
+      ["patience", "Patience"],
       ["minuteur", "Minuteur"],
       ["surveillance", "Surveillance de serveurs"],
       // DEMANDE EXPLICITE (2026-09-26) : « dans la zone réglages ajouter une
@@ -1883,7 +1886,7 @@
     // case restait trompeur, et ils sont désactivés d'office côté Rust (voir
     // `app::SECONDARY_DEFAULT_DISABLED_FEATURES`).
     const SECONDARY_TOPBAR_FEATURES =
-      TOPBAR_FEATURES.filter(([name]) => !["terminal", "theme_toggle", "night_light", "printer", "calendar", "image_editor", "screen_capture", "minuteur", "surveillance", "windows_update", "device_manager", "observateur_evenements", "display_settings", "calculatrice", "ssh", "couleurs", "optional_features", "notifications", "recherche", "automatisations", "meteo", "verrouillage", "caracteres", "kaomoji", "aide", "proprietes_systeme", "scanner", "shaders", "phonetique", "maths", "lueurs", "textures", "narrateur", "loupe", "moniteur", "enregistrer", "clavier", "jeu2048", "cinq_ou_plus", "quadrapassel", "lightsoff", "reversi", "bovo"].includes(name));
+      TOPBAR_FEATURES.filter(([name]) => !["terminal", "theme_toggle", "night_light", "printer", "calendar", "image_editor", "screen_capture", "minuteur", "surveillance", "windows_update", "device_manager", "observateur_evenements", "display_settings", "calculatrice", "ssh", "couleurs", "optional_features", "notifications", "recherche", "automatisations", "meteo", "verrouillage", "caracteres", "kaomoji", "aide", "proprietes_systeme", "scanner", "shaders", "phonetique", "maths", "lueurs", "textures", "narrateur", "loupe", "moniteur", "enregistrer", "clavier", "jeu2048", "cinq_ou_plus", "quadrapassel", "lightsoff", "reversi", "bovo", "patience"].includes(name));
     // Noms de `SECONDARY_TOPBAR_FEATURES` dont l'état par défaut (avant tout
     // réglage propre à cet écran) est désactivé, indépendamment du réglage
     // PRIMAIRE — même liste que `app::SECONDARY_DEFAULT_DISABLED_FEATURES`

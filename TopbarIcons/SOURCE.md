@@ -655,3 +655,24 @@ pierres alignées sur 15×15), le jeu de KDE : `win32::cef_bovo`. L'icône vient
   frange d'alpha 1–3 que le `bbox` du test compte, et l'encre mesurée paraît décalée de 4 px.
   Mettre les miettes à zéro (`α < 8`), puis RECENTRER sur la boîte réelle — et reconstruire
   le blanc par l'alpha APRÈS `au_gabarit`, comme pour Reversi.
+
+### Patience (ajoutée le 2026-11-10)
+
+DEMANDE (2026-11-10) : « une applet pour kpatience de kde », puis « kpatience regroupe
+plusieurs styles de parties » — **KPatience** est la suite de réussites de KDE ; le
+**Klondike** en est la plus connue, et `win32::cef_patience` en joue **quatre** (Klondike,
+FreeCell, Spider, Yukon). L'icône vient du thème **Breeze** (KDE) :
+
+- **Breeze** — https://invent.kde.org/frameworks/breeze-icons (LGPL-3.0-or-later) :
+  `icons/apps/48/kpat.svg` (vérifié à l'octet près, 13 037 octets ; l'application s'appelle
+  `patience` en interne, mais le fichier de son icône est `kpat.svg` — `kpatience.svg`
+  rend 404). Version COULEUR → `fluent_couleur/` et `fluent_3d/` ; `resvg` à 1024 px puis
+  `rasteriser_fluent_emoji.au_gabarit`.
+  Aucune variante symbolique n'étant fournie (ni `kpatience-symbolic.svg` ni
+  `apps/16|22|24/kpat.svg`, tous 404), l'encre des thèmes MONOCHROMES (`patience.png` et
+  `energy/`) est tirée de la **LUMINOSITÉ** : les faces claires des cartes (lum ≥ 190)
+  disparaissent, les dos violets, le carreau rouge et les traits restent, puis l'encre est
+  peinte en blanc et la barre la teinte.
+- Glyphe Segoe Fluent : `E8C7` (deux cartes superposées, distinct).
+  ⚠️ Même recette binaire que Bovo : masque `lum < 190`, miettes `α < 8` à zéro, recentrage
+  sur la boîte réelle, blanc reconstruit par l'alpha APRÈS `au_gabarit`.

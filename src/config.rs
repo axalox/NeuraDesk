@@ -3549,6 +3549,9 @@ pub const REVERSI_INTEGRES: &str = "reversi_integres";
 /// **DRAPEAU DE MIGRATION DE « BOVO »** posé par `app::run` la première
 /// fois qu'il range l'applet dans Intégrés, juste après « Reversi ». Le nom porte la ZONE.
 pub const BOVO_INTEGRES: &str = "bovo_integres";
+/// **DRAPEAU DE MIGRATION DE « PATIENCE »** posé par `app::run` la première
+/// fois qu'il range l'applet dans Intégrés, juste après « Bovo ». Le nom porte la ZONE.
+pub const PATIENCE_INTEGRES: &str = "patience_integres";
 
 /// **DRAPEAU DE MIGRATION DU MONITEUR SYSTÈME** — posé par `app::run` la première
 /// fois qu'il range l'applet dans Intégrés, juste après l'éditeur des textures.

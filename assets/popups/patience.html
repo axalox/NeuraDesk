@@ -1,0 +1,1216 @@
+<!doctype html>
+<!--
+  win32::cef_patience — la PATIENCE (KPatience, la suite de réussites de KDE),
+  en applet de la zone Intégrés.
+
+  DEMANDE (2026-11-10) : « une applet pour kpatience de kde », puis
+  « kpatience regroupe plusieurs styles de parties ». KPatience embarque une
+  douzaine de réussites ; cette page en joue QUATRE, les plus classiques, avec
+  le même moteur :
+    - **Klondike** — 7 colonnes, pioche d'une carte, fondations par enseigne.
+    - **FreeCell** — 8 colonnes toutes visibles, 4 cellules libres, pas de pioche.
+    - **Spider** — 2 jeux, 10 colonnes, suites DESCENDANTES de MÊME ENSEIGNE,
+      et les suites Roi→As complètes quittent le plateau (1, 2 ou 4 couleurs).
+    - **Yukon** — 7 colonnes, pas de pioche : toute carte visible emmène avec
+      elle TOUT ce qui la recouvre, même sans suite.
+  L'icône vient de Breeze (voir `TopbarIcons/SOURCE.md`).
+
+  ⚠️ **LA FACTURE DE `bovo.html`** — bande de titre qui DÉPLACE la fenêtre,
+  punaise, croix, et les MÊMES trois verbes de fenêtre (`deplacer`,
+  `epingler`, `fermer`). Le jeu vit ENTIÈREMENT dans cette page ; la partie en
+  cours de CHAQUE jeu tient dans `localStorage` (une clé par jeu).
+
+  ⛔ **AUCUN `menu.js`** : c'est une FENÊTRE, sa taille ne se négocie pas.
+  ⛔ **AUCUN `<select>`** pour le choix du jeu : ces pages n'en veulent pas
+  (voir la mémoire du dépôt) ; c'est une liste de boutons posée sous la barre.
+
+  ⚠️ **AUCUN `background` sur `<html>`/`<body>`** : le fond est le BUREAU FLOUTÉ
+  que Rust dessine SOUS la page ; les couleurs du thème viennent des variables
+  CSS `--popup-*` posées par la composition.
+
+  ⚠️ **LE JEU SE COMMANDE AU CLIC, PAS AU GLISSER** : un clic désigne une carte
+  (et la suite valide qui la suit), un second clic la destination. Le
+  double-clic envoie la carte aux fondations.
+
+  ⚠️ **AUCUN MINUTEUR** : `setTimeout`/`requestAnimationFrame` sont étranglés
+  dans ces pages (voir `bovo.html`) ; le pied compte les COUPS, jamais le
+  temps.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: var(--nd-police);
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    user-select: none;
+  }
+  :root { --lw: 66px; --lh: 92px; --ecart: 8px; }
+  #barre {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    cursor: default;
+    position: relative;
+  }
+  #titre { flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bouton {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+  }
+  .bouton:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  .bouton[aria-pressed="true"] {
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1)));
+    opacity: 1;
+  }
+  /* Le nom du jeu : un bouton TEXTE, qui ouvre la liste des réussites. */
+  #choix {
+    all: unset;
+    padding: 3px 9px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    white-space: nowrap;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.14 * var(--popup-fond-alpha, 1)));
+  }
+  #choix:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.24 * var(--popup-fond-alpha, 1))); }
+  #choix .chev { opacity: .7; font-size: 10px; }
+  #menu-jeux {
+    position: absolute;
+    top: 100%;
+    right: 64px;
+    z-index: 80;
+    display: none;
+    flex-direction: column;
+    min-width: 150px;
+    padding: 4px;
+    box-sizing: border-box;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-fond-rgb, 20, 20, 20), calc(0.94 * var(--popup-fond-alpha, 1)));
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .45), inset 0 0 0 1px rgba(var(--popup-fg-rgb, 255, 255, 255), .16);
+  }
+  #menu-jeux.vu { display: flex; }
+  #menu-jeux button {
+    all: unset;
+    padding: 7px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: var(--nd-rayon-petit);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #menu-jeux button:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.18 * var(--popup-fond-alpha, 1))); }
+  #menu-jeux button[aria-pressed="true"] {
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.35 * var(--popup-fond-alpha, 1)));
+  }
+  #niveaux {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 4px;
+    justify-content: center;
+    padding: 6px 12px 0;
+  }
+  #niveaux[hidden] { display: none; }
+  #niveaux button {
+    all: unset;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.10 * var(--popup-fond-alpha, 1)));
+    opacity: .75;
+  }
+  /* ⚠️ LE NIVEAU ACTIF NE SE PEINT PAS AVEC L'ACCENT : sur un thème dont
+     l'accent est BLANC, le libellé disparaîtrait sur la pastille. */
+  #niveaux button[aria-pressed="true"] {
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1)));
+    box-shadow: inset 0 0 0 1px rgba(var(--popup-accent-rgb, 255, 255, 255), .85);
+    opacity: 1;
+  }
+  #scene {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 12px 6px;
+    box-sizing: border-box;
+  }
+  #haut { flex: 0 0 auto; display: flex; gap: 8px; align-items: flex-start; }
+  #haut .pousse { flex: 1; }
+  #colonnes { flex: 1; min-height: 0; display: flex; gap: var(--ecart); justify-content: center; }
+  .emplacement, .colonne { position: relative; width: var(--lw); height: var(--lh); flex: 0 0 auto; }
+  #colonnes .colonne { height: 100%; min-height: var(--lh); }
+  .vide {
+    border: 1px dashed rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.35 * var(--popup-fond-alpha, 1)));
+    border-radius: calc(var(--nd-rayon-petit) + 2px);
+    box-sizing: border-box;
+  }
+  .emplacement { cursor: pointer; }
+  .emplacement .fantome {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; opacity: .28; pointer-events: none;
+  }
+  #suites {
+    align-self: center;
+    font-size: 12px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    opacity: .85;
+    white-space: nowrap;
+  }
+  /* ---- LES CARTES ---- */
+  .carte {
+    position: absolute;
+    left: 0;
+    width: var(--lw);
+    height: var(--lh);
+    box-sizing: border-box;
+    border-radius: calc(var(--nd-rayon-petit) + 2px);
+    background: #fbfaf7;
+    color: #1b1b1b;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .35), inset 0 0 0 1px rgba(0, 0, 0, .18);
+    cursor: pointer;
+  }
+  .carte.rouge { color: #b3271e; }
+  .carte .coin {
+    position: absolute;
+    top: 2px;
+    left: 4px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    line-height: .95;
+    font-weight: 700;
+  }
+  .carte .coin .rang { font-size: 13px; letter-spacing: -.5px; }
+  .carte .coin .sym { font-size: 12px; }
+  .carte .gros {
+    position: absolute;
+    right: 4px;
+    bottom: 1px;
+    font-size: 26px;
+    line-height: 1;
+    opacity: .85;
+  }
+  /* Le dos : un motif discret, teinté par l'accent du thème. */
+  .carte.dos {
+    background:
+      repeating-linear-gradient(45deg,
+        rgba(var(--popup-accent-rgb, 120, 150, 220), .55) 0 4px,
+        rgba(var(--popup-accent-rgb, 120, 150, 220), .35) 4px 8px);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .4), inset 0 0 0 2px #fbfaf7, inset 0 0 0 3px rgba(0, 0, 0, .18);
+  }
+  /* La carte désignée et sa suite : un anneau d'accent, et un peu de relief. */
+  .carte.choisie {
+    box-shadow: 0 0 0 2px rgba(var(--popup-accent-rgb, 255, 255, 255), .95), 0 3px 8px rgba(0, 0, 0, .45);
+  }
+  .carte:focus-visible { outline: 2px solid rgba(var(--popup-accent-rgb, 255, 255, 255), .95); outline-offset: 1px; }
+  .reste {
+    position: absolute;
+    right: 4px;
+    bottom: 2px;
+    font-size: 11px;
+    font-weight: 700;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), .9);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, .6);
+    pointer-events: none;
+  }
+  #fini {
+    position: absolute;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: rgba(var(--popup-fond-rgb, 20, 20, 20), calc(0.72 * var(--popup-fond-alpha, 1)));
+    z-index: 50;
+  }
+  #fini.vu { display: flex; }
+  #fini .mot { font-size: 22px; font-weight: 800; }
+  #fini .detail { font-size: 13px; opacity: .85; font-variant-numeric: tabular-nums; }
+  #fini button {
+    all: unset;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 700;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.50 * var(--popup-fond-alpha, 1)));
+  }
+  #fini button:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.70 * var(--popup-fond-alpha, 1))); }
+  #pied {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 4px 14px 8px;
+  }
+  #coups { font-size: 12px; opacity: .75; font-variant-numeric: tabular-nums; }
+  #pied .actions { display: flex; gap: 6px; }
+  #pied button {
+    all: unset;
+    padding: 5px 11px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.14 * var(--popup-fond-alpha, 1)));
+  }
+  #pied button:hover:not(:disabled) { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.24 * var(--popup-fond-alpha, 1))); }
+  /* ⚠️ Un bouton ÉTEINT reste lisible : `opacity` seule, jamais `display`. */
+  #pied button:disabled { opacity: calc(.35 * max(1, var(--popup-alpha, 1))); cursor: default; }
+  #aide { flex: 0 0 auto; text-align: center; font-size: 11px; opacity: .6; padding: 0 12px 8px; }
+</style>
+</head>
+<body>
+  <div id="barre">
+    <span id="titre">Patience</span>
+    <button id="choix" title="Changer de réussite"><span id="choix-nom">Klondike</span> <span class="chev">▾</span></button>
+    <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
+    <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
+    <div id="menu-jeux"></div>
+  </div>
+  <div id="niveaux" hidden>
+    <button data-couleurs="1">1 couleur</button>
+    <button data-couleurs="2">2 couleurs</button>
+    <button data-couleurs="4">4 couleurs</button>
+  </div>
+  <div id="scene">
+    <div id="haut">
+      <div id="pioche" class="emplacement" title="Piocher"></div>
+      <div id="defausse" class="emplacement"></div>
+      <div id="c0" class="emplacement" data-cellule="0" title="Cellule libre 1"></div>
+      <div id="c1" class="emplacement" data-cellule="1" title="Cellule libre 2"></div>
+      <div id="c2" class="emplacement" data-cellule="2" title="Cellule libre 3"></div>
+      <div id="c3" class="emplacement" data-cellule="3" title="Cellule libre 4"></div>
+      <div class="pousse"></div>
+      <div id="f0" class="emplacement" data-fondation="0" title="Fondation 1"></div>
+      <div id="f1" class="emplacement" data-fondation="1" title="Fondation 2"></div>
+      <div id="f2" class="emplacement" data-fondation="2" title="Fondation 3"></div>
+      <div id="f3" class="emplacement" data-fondation="3" title="Fondation 4"></div>
+      <span id="suites" hidden>0 / 8 suites</span>
+    </div>
+    <div id="colonnes"></div>
+    <div id="fini">
+      <span class="mot">Partie gagnée !</span>
+      <span class="detail" id="fini-detail"></span>
+      <button id="rejouer">Nouvelle partie</button>
+    </div>
+  </div>
+  <div id="pied">
+    <span id="coups">0 coup</span>
+    <div class="actions">
+      <button id="annuler" disabled title="Annuler le dernier coup">Annuler</button>
+      <button id="nouvelle">Nouvelle partie</button>
+    </div>
+  </div>
+  <div id="aide">Cliquez une carte, puis sa destination — double-clic : aux fondations.</div>
+<script>
+  "use strict";
+  // ⚠️ L'ORDRE DES SYMBOLES EST CELUI DES COULEURS : ♠ ♥ ♦ ♣. Seuls ♥ et ♦ sont ROUGES.
+  const SYMBOLE = ["♠", "♥", "♦", "♣"];
+  const ROUGE = [false, true, true, false];
+  const RANGS = ["", "A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "V", "D", "R"];
+
+  // ⭐ **LES RÉUSSITES DE CETTE PAGE** — chacune dit sa géométrie et son genre.
+  // `fondations` et `cellules` valent 0 quand le jeu n'en a pas ; `suites` est le
+  // nombre de Roi→As à sortir (Spider seulement) ; `couleurs` autorise le choix
+  // de la difficulté du Spider.
+  const JEUX = {
+    klondike: { nom: "Klondike", colonnes: 7, fondations: 4, cellules: 0, pioche: true, defausse: true, suites: 0, couleurs: false },
+    freecell: { nom: "FreeCell", colonnes: 8, fondations: 4, cellules: 4, pioche: false, defausse: false, suites: 0, couleurs: false },
+    spider:   { nom: "Spider", colonnes: 10, fondations: 0, cellules: 0, pioche: true, defausse: false, suites: 8, couleurs: true },
+    yukon:    { nom: "Yukon", colonnes: 7, fondations: 4, cellules: 0, pioche: false, defausse: false, suites: 0, couleurs: false },
+  };
+  const AIDES = {
+    klondike: "Descendante en couleurs alternées — double-clic : aux fondations.",
+    freecell: "Toutes les cartes visibles — quatre cellules libres pour garer une carte.",
+    spider: "Descendante de MÊME enseigne — une suite Roi→As complète quitte le plateau.",
+    yukon: "Toute carte visible emmène celles qui la recouvrent, même sans suite.",
+  };
+  const ORDRE = ["klondike", "freecell", "spider", "yukon"];
+  const CLE_JEU = "neuradesk-patience-jeu";
+  const CLE_COULEURS = "neuradesk-patience-couleurs";
+
+  function go(action) { location.href = "neuradesk://patience/" + action; }
+  document.getElementById("barre").addEventListener("mousedown", function (e) {
+    if (e.target.closest("button")) return;
+    go("deplacer");
+  });
+  document.getElementById("epingle").addEventListener("click", function () { go("epingler"); });
+  document.getElementById("fermer").addEventListener("click", function () { go("fermer"); });
+
+  let jeu = "klondike";
+  let couleurs = 1;      // Spider : 1, 2 ou 4 enseignes
+  let pioche = [];       // face en bas ; la DERNIÈRE est la prochaine tirée
+  let defausse = [];     // face en haut ; la DERNIÈRE est le dessus
+  let fondations = [];
+  let colonnes = [];
+  let cellules = [];     // FreeCell : une carte ou null par cellule
+  let sequences = 0;     // Spider : suites Roi→As déjà sorties
+  let coups = 0;
+  let fini = false;
+  let selection = null;  // { source: "colonne"|"defausse"|"cellule", i?, debut? }
+  let historique = [];   // photos JSON AVANT chaque coup
+
+  const colonnes_el = [];
+  const fondations_el = [];
+  const cellules_el = [];
+  let LW = 66, LH = 92;
+
+  function config() { return JEUX[jeu]; }
+
+  // ---------- LE MODÈLE ----------
+  function melanger(tas) {
+    for (let i = tas.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = tas[i]; tas[i] = tas[j]; tas[j] = t;
+    }
+    return tas;
+  }
+
+  function jeu_de_52() {
+    const t = [];
+    for (let s = 0; s < SYMBOLE.length; s++) {
+      for (let v = 1; v <= 13; v++) t.push({ s: s, v: v, face: false });
+    }
+    return t;
+  }
+
+  // Spider : 104 cartes = 8 / `n` copies de chaque enseigne (1, 2 ou 4).
+  function jeu_de_spider(n) {
+    const copies = 8 / n;
+    const t = [];
+    for (let s = 0; s < n; s++) {
+      for (let c = 0; c < copies; c++) {
+        for (let v = 1; v <= 13; v++) t.push({ s: s, v: v, face: false });
+      }
+    }
+    return t;
+  }
+
+  function dos(c) { return { s: c.s, v: c.v, face: false }; }
+
+  function nouvelle_partie() {
+    const c = config();
+    pioche = []; defausse = []; sequences = 0; coups = 0; fini = false; selection = null; historique = [];
+    fondations = [];
+    for (let k = 0; k < c.fondations; k++) fondations.push([]);
+    colonnes = [];
+    for (let i = 0; i < c.colonnes; i++) colonnes.push([]);
+    cellules = [];
+    for (let k = 0; k < c.cellules; k++) cellules.push(null);
+
+    if (jeu === "klondike") {
+      const t = melanger(jeu_de_52());
+      let k = 0;
+      for (let i = 0; i < 7; i++) {
+        for (let j = 0; j <= i; j++) {
+          colonnes[i].push({ s: t[k].s, v: t[k].v, face: j === i });
+          k++;
+        }
+      }
+      pioche = t.slice(k).map(dos);
+    } else if (jeu === "yukon") {
+      // ⚠️ LA DONNE DU YUKON N'EST PAS CELLE DU KLONDIKE : 1, 6, 7, 8, 9, 10, 11
+      // cartes (52 au total), et les CINQ dernières de chaque colonne sont
+      // visibles — les autres sont un dos.
+      const t = melanger(jeu_de_52());
+      const tailles = [1, 6, 7, 8, 9, 10, 11];
+      let k = 0;
+      for (let i = 0; i < 7; i++) {
+        const n = tailles[i];
+        const visibles = Math.min(5, n);
+        for (let j = 0; j < n; j++) {
+          colonnes[i].push({ s: t[k].s, v: t[k].v, face: j >= n - visibles });
+          k++;
+        }
+      }
+    } else if (jeu === "freecell") {
+      const t = melanger(jeu_de_52());
+      const tailles = [7, 7, 7, 7, 6, 6, 6, 6];
+      let k = 0;
+      for (let i = 0; i < 8; i++) {
+        for (let j = 0; j < tailles[i]; j++) {
+          colonnes[i].push({ s: t[k].s, v: t[k].v, face: true });
+          k++;
+        }
+      }
+    } else if (jeu === "spider") {
+      const t = melanger(jeu_de_spider(couleurs));
+      const tailles = [6, 6, 6, 6, 5, 5, 5, 5, 5, 5];
+      let k = 0;
+      for (let i = 0; i < 10; i++) {
+        for (let j = 0; j < tailles[i]; j++) {
+          colonnes[i].push({ s: t[k].s, v: t[k].v, face: j === tailles[i] - 1 });
+          k++;
+        }
+      }
+      pioche = t.slice(k).map(dos);
+    }
+    document.getElementById("fini").classList.remove("vu");
+    appliquer_les_vues();
+    afficher();
+    sauver();
+  }
+
+  function instantane() {
+    return JSON.stringify({
+      pioche: pioche, defausse: defausse, fondations: fondations,
+      colonnes: colonnes, cellules: cellules, sequences: sequences,
+      coups: coups, fini: fini,
+    });
+  }
+
+  function restaurer(texte) {
+    const e = JSON.parse(texte);
+    pioche = e.pioche; defausse = e.defausse;
+    fondations = e.fondations; colonnes = e.colonnes;
+    cellules = e.cellules; sequences = e.sequences;
+    coups = e.coups; fini = e.fini;
+  }
+
+  // Une suite de cartes qui peut être emmenée d'un bloc.
+  //  - Spider : descendante et de MÊME enseigne ;
+  //  - les autres : descendante en couleurs ALTERNÉES.
+  function suite_valide(cartes) {
+    if (!cartes.length) return false;
+    for (const c of cartes) if (!c.face) return false;
+    for (let k = 1; k < cartes.length; k++) {
+      const a = cartes[k - 1], b = cartes[k];
+      if (b.v !== a.v - 1) return false;
+      if (jeu === "spider") { if (b.s !== a.s) return false; }
+      else if (ROUGE[a.s] === ROUGE[b.s]) return false;
+    }
+    return true;
+  }
+
+  // Les cartes qu'un clic sur `index` emmène. ⭐ **YUKON EST À PART** : toute
+  // carte visible emporte TOUT ce qui la recouvre, l'ordre n'a pas d'importance.
+  function groupe(colonne, index) {
+    if (!colonne[index] || !colonne[index].face) return null;
+    const tas = colonne.slice(index);
+    if (jeu === "yukon") return tas;
+    return suite_valide(tas) ? tas : null;
+  }
+
+  function accepte_colonne(tas, j) {
+    if (!tas || !tas.length) return false;
+    const col = colonnes[j];
+    if (!col) return false;
+    // ⚠️ LA COLONNE VIDE N'ACCUEILLE PAS LA MÊME CHOSE PARTOUT : un Roi seul au
+    // Klondike et au Yukon, N'IMPORTE QUELLE carte au FreeCell et au Spider.
+    if (!col.length) {
+      return jeu === "klondike" || jeu === "yukon" ? tas[0].v === 13 : true;
+    }
+    const dessus = col[col.length - 1];
+    if (!dessus.face || dessus.v !== tas[0].v + 1) return false;
+    if (jeu === "spider") return dessus.s === tas[0].s;
+    return ROUGE[dessus.s] !== ROUGE[tas[0].s];
+  }
+
+  function accepte_fondation(carte, k) {
+    const f = fondations[k];
+    if (!f) return false;
+    if (!f.length) return carte.v === 1;
+    const dessus = f[f.length - 1];
+    return dessus.s === carte.s && carte.v === dessus.v + 1;
+  }
+
+  function cellules_libres() {
+    let n = 0;
+    for (const c of cellules) if (!c) n++;
+    return n;
+  }
+
+  // ⭐ LE « SUPERMOUVEMENT » DU FREECELL : (cellules libres + 1) × 2^(colonnes
+  // vides), la colonne d'arrivée ne comptant pas deux fois quand elle est vide.
+  function peut_deplacer_taille(tas, j) {
+    if (jeu !== "freecell") return true;
+    let vides = 0;
+    for (const col of colonnes) if (!col.length) vides++;
+    if (colonnes[j].length === 0) vides = Math.max(0, vides - 1);
+    const plafond = (1 + cellules_libres()) * Math.pow(2, vides);
+    return tas.length <= plafond;
+  }
+
+  function tas_selectionne() {
+    if (!selection) return null;
+    if (selection.source === "defausse") {
+      if (!defausse.length) return null;
+      return [defausse[defausse.length - 1]];
+    }
+    if (selection.source === "cellule") {
+      return cellules[selection.i] ? [cellules[selection.i]] : null;
+    }
+    const col = colonnes[selection.i];
+    if (!col) return null;
+    const tas = col.slice(selection.debut);
+    return tas.length ? tas : null;
+  }
+
+  // Retire la sélection de sa pile, RETOURNE la carte découverte s'il y en a
+  // une — l'appelant a déjà vérifié que le coup est légal.
+  function retirer() {
+    if (selection.source === "defausse") {
+      const c = defausse.pop();
+      return [{ s: c.s, v: c.v, face: true }];
+    }
+    if (selection.source === "cellule") {
+      const c = cellules[selection.i];
+      cellules[selection.i] = null;
+      return [c];
+    }
+    const col = colonnes[selection.i];
+    const cartes = col.splice(selection.debut);
+    if (col.length && !col[col.length - 1].face) col[col.length - 1].face = true;
+    return cartes;
+  }
+
+  function piocher() {
+    if (fini) return false;
+    const c = config();
+    if (!c.pioche) return false;
+    selection = null;
+    const avant = instantane();
+    if (jeu === "spider") {
+      // ⚠️ ON NE DISTRIBUE PAS TANT QU'UNE COLONNE EST VIDE (règle du Spider).
+      if (pioche.length < colonnes.length) return false;
+      for (const col of colonnes) if (!col.length) return false;
+      for (let i = 0; i < colonnes.length; i++) {
+        const carte = pioche.pop();
+        colonnes[i].push({ s: carte.s, v: carte.v, face: true });
+      }
+      coups++;
+      historique.push(avant);
+      retirer_les_suites();
+    } else {
+      if (!pioche.length) {
+        if (!defausse.length) return false;
+        // La défausse repart, FACE EN BAS, dans l'ordre où elle a été vue.
+        while (defausse.length) {
+          const carte = defausse.pop();
+          pioche.push(dos(carte));
+        }
+      } else {
+        const carte = pioche.pop();
+        defausse.push({ s: carte.s, v: carte.v, face: true });
+      }
+      coups++;
+      historique.push(avant);
+    }
+    verifier_gagne();
+    afficher();
+    sauver();
+    return true;
+  }
+
+  function deplacer_vers_colonne(j) {
+    if (fini || !selection) return false;
+    const tas = tas_selectionne();
+    if (!accepte_colonne(tas, j)) return false;
+    if (!peut_deplacer_taille(tas, j)) return false;
+    const avant = instantane();
+    const cartes = retirer();
+    for (const c of cartes) colonnes[j].push({ s: c.s, v: c.v, face: true });
+    coups++;
+    selection = null;
+    historique.push(avant);
+    retirer_les_suites();
+    verifier_gagne();
+    afficher();
+    sauver();
+    return true;
+  }
+
+  function poser_sur_fondation(k) {
+    if (fini || !selection) return false;
+    if (!config().fondations) return false;
+    const tas = tas_selectionne();
+    // ⚠️ UNE SEULE CARTE À LA FOIS aux fondations, comme dans KPatience.
+    if (!tas || tas.length !== 1) return false;
+    if (!accepte_fondation(tas[0], k)) return false;
+    const avant = instantane();
+    const carte = retirer()[0];
+    fondations[k].push({ s: carte.s, v: carte.v, face: true });
+    coups++;
+    selection = null;
+    historique.push(avant);
+    verifier_gagne();
+    afficher();
+    sauver();
+    return true;
+  }
+
+  function poser_dans_cellule(k) {
+    if (fini || !selection) return false;
+    if (!config().cellules) return false;
+    if (cellules[k]) return false;
+    const tas = tas_selectionne();
+    if (!tas || tas.length !== 1) return false;
+    const avant = instantane();
+    const carte = retirer()[0];
+    cellules[k] = { s: carte.s, v: carte.v, face: true };
+    coups++;
+    selection = null;
+    historique.push(avant);
+    afficher();
+    sauver();
+    return true;
+  }
+
+  // Le double-clic : la carte du dessus s'en va aux fondations, si elle y entre.
+  function double_carte(source, i, index) {
+    if (fini) return false;
+    if (!config().fondations) return false;
+    let carte = null;
+    if (source === "defausse") {
+      if (!defausse.length) return false;
+      carte = defausse[defausse.length - 1];
+    } else if (source === "cellule") {
+      if (!cellules[i]) return false;
+      carte = cellules[i];
+    } else {
+      const col = colonnes[i];
+      if (!col || index !== col.length - 1 || !col[index] || !col[index].face) return false;
+      carte = col[index];
+    }
+    for (let k = 0; k < config().fondations; k++) {
+      if (!accepte_fondation(carte, k)) continue;
+      const avant = instantane();
+      let tiree;
+      if (source === "defausse") {
+        tiree = defausse.pop();
+      } else if (source === "cellule") {
+        tiree = cellules[i];
+        cellules[i] = null;
+      } else {
+        tiree = colonnes[i].pop();
+        if (colonnes[i].length && !colonnes[i][colonnes[i].length - 1].face) {
+          colonnes[i][colonnes[i].length - 1].face = true;
+        }
+      }
+      fondations[k].push({ s: tiree.s, v: tiree.v, face: true });
+      coups++;
+      selection = null;
+      historique.push(avant);
+      verifier_gagne();
+      afficher();
+      sauver();
+      return true;
+    }
+    return false;
+  }
+
+  // ⭐ **SPIDER** : une colonne qui se termine par Roi→As de la MÊME enseigne
+  // rend ses treize cartes (elles ne vont nulle part : elles sont gagnées).
+  function retirer_les_suites() {
+    if (jeu !== "spider") return 0;
+    let sorties = 0;
+    for (const col of colonnes) {
+      if (col.length < 13) continue;
+      const debut = col.length - 13;
+      const tas = col.slice(debut);
+      if (tas[0].v !== 13) continue;
+      if (!tas.every(function (c, k) { return c.face && c.v === 13 - k && c.s === tas[0].s; })) continue;
+      col.splice(debut);
+      sequences++;
+      sorties++;
+      if (col.length && !col[col.length - 1].face) col[col.length - 1].face = true;
+    }
+    return sorties;
+  }
+
+  function verifier_gagne() {
+    if (jeu === "spider") {
+      fini = sequences >= config().suites;
+    } else if (config().fondations) {
+      fini = fondations.length === config().fondations &&
+        fondations.every(function (f) { return f.length === 13; });
+    } else {
+      fini = false;
+    }
+    if (fini) {
+      document.getElementById("fini-detail").textContent = coups + (coups > 1 ? " coups" : " coup");
+      document.getElementById("fini").classList.add("vu");
+      selection = null;
+    }
+    return fini;
+  }
+
+  function annuler() {
+    if (!historique.length) return false;
+    restaurer(historique.pop());
+    selection = null;
+    document.getElementById("fini").classList.remove("vu");
+    afficher();
+    sauver();
+    return true;
+  }
+
+  // ---------- LE CLIC ----------
+  function selectionner(source, i, index) {
+    if (source === "defausse") {
+      if (!defausse.length) { selection = null; return false; }
+      selection = { source: "defausse" };
+      return true;
+    }
+    if (source === "cellule") {
+      if (!cellules[i]) { selection = null; return false; }
+      selection = { source: "cellule", i: i };
+      return true;
+    }
+    const col = colonnes[i];
+    if (!col || !Number.isInteger(index) || index < 0 || index >= col.length) {
+      selection = null;
+      return false;
+    }
+    if (!groupe(col, index)) { selection = null; return false; }
+    selection = { source: "colonne", i: i, debut: index };
+    return true;
+  }
+
+  function clic_carte(source, i, index) {
+    if (fini) return false;
+    if (source === "defausse") {
+      selection = selection && selection.source === "defausse" ? null : { source: "defausse" };
+      afficher();
+      return true;
+    }
+    if (source === "cellule") {
+      if (selection && selection.source === "cellule" && selection.i === i) {
+        selection = null;
+        afficher();
+        return true;
+      }
+      selectionner("cellule", i, index);
+      afficher();
+      return true;
+    }
+    // Une carte DÉJÀ désignée, re-cliquée : on la relâche. Une AUTRE carte de la
+    // même colonne : la désignation s'y déplace.
+    if (selection && selection.source === "colonne" && selection.i === i) {
+      if (selection.debut === index) {
+        selection = null;
+        afficher();
+        return true;
+      }
+      selectionner("colonne", i, index);
+      afficher();
+      return true;
+    }
+    // Une désignation en cours : le clic TENTE D'ABORD le dépôt sur cette
+    // colonne — c'est la destination qu'on vise, pas la carte qu'on voit.
+    if (selection && deplacer_vers_colonne(i)) return true;
+    selectionner("colonne", i, index);
+    afficher();
+    return true;
+  }
+
+  function clic_colonne(j) {
+    if (fini) return false;
+    if (!selection) return false;
+    if (deplacer_vers_colonne(j)) return true;
+    selection = null;
+    afficher();
+    return false;
+  }
+
+  function clic_fondation(k) {
+    if (fini) return false;
+    if (!selection) return false;
+    if (poser_sur_fondation(k)) return true;
+    selection = null;
+    afficher();
+    return false;
+  }
+
+  function clic_cellule(k) {
+    if (fini) return false;
+    if (jeu !== "freecell") return false;
+    if (selection && !(selection.source === "cellule" && selection.i === k)) {
+      if (poser_dans_cellule(k)) return true;
+    }
+    if (selection && selection.source === "cellule" && selection.i === k) {
+      selection = null;
+      afficher();
+      return true;
+    }
+    selectionner("cellule", k, 0);
+    afficher();
+    return true;
+  }
+
+  // ---------- LE DESSIN ----------
+  function vider(el) {
+    while (el.firstChild) el.removeChild(el.firstChild);
+  }
+
+  function montrer(el, visible) {
+    el.hidden = !visible;
+    el.style.display = visible ? "" : "none";
+  }
+
+  function element_carte(carte, choisie) {
+    const d = document.createElement("div");
+    d.className = "carte" + (carte.face ? (ROUGE[carte.s] ? " rouge" : " noir") : " dos") + (choisie ? " choisie" : "");
+    if (carte.face) {
+      const coin = document.createElement("span");
+      coin.className = "coin";
+      const rang = document.createElement("span");
+      rang.className = "rang";
+      rang.textContent = RANGS[carte.v];
+      const sym = document.createElement("span");
+      sym.className = "sym";
+      sym.textContent = SYMBOLE[carte.s];
+      coin.appendChild(rang);
+      coin.appendChild(sym);
+      d.appendChild(coin);
+      const gros = document.createElement("span");
+      gros.className = "gros";
+      gros.textContent = SYMBOLE[carte.s];
+      d.appendChild(gros);
+      d.setAttribute("aria-label", RANGS[carte.v] + " de " + SYMBOLE[carte.s]);
+    } else {
+      d.setAttribute("aria-label", "carte face cachée");
+    }
+    return d;
+  }
+
+  // Les hauteurs des cartes d'une colonne : les dos se serrent, les faces
+  // respirent, et tout se comprime si la colonne dépasse la place disponible.
+  function positions(colonne) {
+    const dispo = Math.max(LH + 10, colonnes_el.length ? colonnes_el[0].clientHeight : 400);
+    const ecarts = [];
+    for (let k = 1; k < colonne.length; k++) {
+      ecarts.push(Math.round(LH * (colonne[k].face ? 0.26 : 0.15)));
+    }
+    let somme = 0;
+    for (const e of ecarts) somme += e;
+    const place = dispo - LH;
+    const f = somme > place && somme > 0 ? Math.max(0.45, place / somme) : 1;
+    const tops = [0];
+    for (let k = 0; k < ecarts.length; k++) tops.push(tops[k] + ecarts[k] * f);
+    return tops;
+  }
+
+  function choisie_carte(source, i, k) {
+    if (!selection || selection.source !== source) return false;
+    if (source === "defausse") return true;
+    if (source === "cellule") return selection.i === i;
+    return selection.i === i && k >= selection.debut;
+  }
+
+  function afficher() {
+    const c = config();
+    // ---- la pioche ----
+    const pioche_el = document.getElementById("pioche");
+    montrer(pioche_el, c.pioche);
+    vider(pioche_el);
+    pioche_el.classList.toggle("vide", pioche.length === 0);
+    if (pioche.length) {
+      pioche_el.appendChild(element_carte({ s: 0, v: 1, face: false }, false));
+      // ⚠️ La carte du dessus est un FRÈRE du dos : le compte se lit dessus.
+      const reste = document.createElement("span");
+      reste.className = "reste";
+      reste.textContent = String(pioche.length);
+      pioche_el.appendChild(reste);
+    } else if (c.pioche) {
+      // Klondike : la défausse revient ; Spider : plus rien à distribuer.
+      const recy = document.createElement("span");
+      recy.className = "fantome";
+      recy.textContent = jeu === "klondike" ? "↻" : "—";
+      pioche_el.appendChild(recy);
+    }
+    // ---- la défausse ----
+    const defausse_el = document.getElementById("defausse");
+    montrer(defausse_el, c.defausse);
+    if (c.defausse) {
+      vider(defausse_el);
+      defausse_el.classList.toggle("vide", defausse.length === 0);
+      if (defausse.length) {
+        const carte = element_carte(defausse[defausse.length - 1], choisie_carte("defausse", 0, 0));
+        carte.addEventListener("click", function (e) { e.stopPropagation(); clic_carte("defausse", 0, 0); });
+        carte.addEventListener("dblclick", function (e) { e.stopPropagation(); double_carte("defausse", 0, 0); });
+        defausse_el.appendChild(carte);
+      }
+    }
+    // ---- les cellules libres ----
+    for (let k = 0; k < cellules_el.length; k++) {
+      const el = cellules_el[k];
+      const active = k < c.cellules;
+      montrer(el, active);
+      if (!active) continue;
+      vider(el);
+      el.classList.toggle("vide", !cellules[k]);
+      if (cellules[k]) {
+        const carte = element_carte(cellules[k], choisie_carte("cellule", k, 0));
+        carte.addEventListener("click", function (e) { e.stopPropagation(); clic_carte("cellule", k, 0); });
+        carte.addEventListener("dblclick", function (e) { e.stopPropagation(); double_carte("cellule", k, 0); });
+        el.appendChild(carte);
+      }
+    }
+    // ---- les fondations ----
+    for (let k = 0; k < fondations_el.length; k++) {
+      const el = fondations_el[k];
+      const active = k < c.fondations;
+      montrer(el, active);
+      if (!active) continue;
+      vider(el);
+      el.classList.toggle("vide", fondations[k].length === 0);
+      if (fondations[k].length) {
+        el.appendChild(element_carte(fondations[k][fondations[k].length - 1], false));
+      } else {
+        const fantome = document.createElement("span");
+        fantome.className = "fantome";
+        fantome.textContent = "A";
+        el.appendChild(fantome);
+      }
+    }
+    // ---- le compteur de suites (Spider) ----
+    const suites_el = document.getElementById("suites");
+    montrer(suites_el, c.suites > 0);
+    if (c.suites > 0) suites_el.textContent = sequences + " / " + c.suites + " suites";
+    // ---- les colonnes ----
+    for (let i = 0; i < colonnes_el.length; i++) {
+      const el = colonnes_el[i];
+      const active = i < c.colonnes;
+      montrer(el, active);
+      if (!active) continue;
+      vider(el);
+      el.classList.toggle("vide", colonnes[i].length === 0);
+      const tops = positions(colonnes[i]);
+      for (let k = 0; k < colonnes[i].length; k++) {
+        const carte = element_carte(colonnes[i][k], choisie_carte("colonne", i, k));
+        carte.style.top = tops[k] + "px";
+        carte.style.zIndex = String(k + 1);
+        carte.addEventListener("click", function (e) { e.stopPropagation(); clic_carte("colonne", i, k); });
+        carte.addEventListener("dblclick", function (e) { e.stopPropagation(); double_carte("colonne", i, k); });
+        el.appendChild(carte);
+      }
+    }
+    // ---- le pied ----
+    document.getElementById("coups").textContent = coups + (coups > 1 ? " coups" : " coup");
+    document.getElementById("annuler").disabled = historique.length === 0;
+  }
+
+  // ---------- LA MÉMOIRE ----------
+  function cle_partie() {
+    return "neuradesk-patience-" + jeu + (jeu === "spider" ? "-" + couleurs : "");
+  }
+
+  function sauver() {
+    try {
+      localStorage.setItem(cle_partie(), instantane());
+      localStorage.setItem(CLE_JEU, jeu);
+      localStorage.setItem(CLE_COULEURS, String(couleurs));
+    } catch (e) {}
+  }
+
+  function carte_valide(c) {
+    return !!c && Number.isInteger(c.s) && c.s >= 0 && c.s < 4 &&
+      Number.isInteger(c.v) && c.v >= 1 && c.v <= 13 && typeof c.face === "boolean";
+  }
+
+  function reprise_valide(r) {
+    const c = config();
+    if (!r || !Array.isArray(r.colonnes) || r.colonnes.length !== c.colonnes) return false;
+    if (!Array.isArray(r.fondations) || r.fondations.length !== c.fondations) return false;
+    if (!Array.isArray(r.cellules) || r.cellules.length !== c.cellules) return false;
+    if (!Array.isArray(r.pioche) || !Array.isArray(r.defausse)) return false;
+    let total = r.pioche.length + r.defausse.length;
+    for (const f of r.fondations) { if (!Array.isArray(f)) return false; total += f.length; }
+    for (const cellule of r.cellules) {
+      if (cellule !== null && !carte_valide(cellule)) return false;
+      if (cellule !== null) total++;
+    }
+    for (const col of r.colonnes) {
+      if (!Array.isArray(col)) return false;
+      // ⚠️ Une colonne NON VIDE se termine toujours par une carte face en haut.
+      if (col.length && !col[col.length - 1].face) return false;
+      total += col.length;
+    }
+    // Spider : les treize cartes de chaque suite sortie ne sont plus nulle part.
+    const attendues = (jeu === "spider" ? 104 : 52) - 13 * (Number(r.sequences) || 0);
+    if (total !== attendues) return false;
+    const toutes = [r.pioche, r.defausse].concat(r.fondations, r.colonnes);
+    for (const tas of toutes) for (const carte of tas) if (!carte_valide(carte)) return false;
+    if (!Number.isInteger(r.sequences) || r.sequences < 0 || r.sequences > c.suites) return false;
+    return true;
+  }
+
+  function charger() {
+    let reprise = null;
+    try { reprise = JSON.parse(localStorage.getItem(cle_partie()) || "null"); } catch (e) { reprise = null; }
+    if (!reprise_valide(reprise) || reprise.fini) { nouvelle_partie(); return; }
+    pioche = reprise.pioche.map(function (c) { return { s: c.s, v: c.v, face: false }; });
+    defausse = reprise.defausse.map(function (c) { return { s: c.s, v: c.v, face: true }; });
+    fondations = reprise.fondations.map(function (f) { return f.map(function (c) { return { s: c.s, v: c.v, face: true }; }); });
+    colonnes = reprise.colonnes.map(function (col) { return col.map(function (c) { return { s: c.s, v: c.v, face: !!c.face }; }); });
+    cellules = reprise.cellules.map(function (c) { return c ? { s: c.s, v: c.v, face: true } : null; });
+    sequences = reprise.sequences;
+    coups = Number(reprise.coups) || 0;
+    fini = false;
+    selection = null;
+    historique = [];
+    appliquer_les_vues();
+    afficher();
+  }
+
+  // ---------- LE CHOIX DU JEU ----------
+  function appliquer_les_vues() {
+    const c = config();
+    document.getElementById("choix-nom").textContent = c.nom;
+    document.getElementById("aide").textContent = AIDES[jeu] || "";
+    const niveaux = document.getElementById("niveaux");
+    montrer(niveaux, c.couleurs);
+    for (const b of document.querySelectorAll("#niveaux button")) {
+      b.setAttribute("aria-pressed", String(Number(b.dataset.couleurs) === couleurs));
+    }
+    for (const b of document.querySelectorAll("#menu-jeux button")) {
+      b.setAttribute("aria-pressed", String(b.dataset.jeu === jeu));
+    }
+  }
+
+  function choisir_jeu(id) {
+    if (!JEUX[id]) return false;
+    fermer_le_menu();
+    if (id === jeu) return false;
+    jeu = id;
+    selection = null;
+    document.getElementById("fini").classList.remove("vu");
+    appliquer_les_vues();
+    charger();
+    return true;
+  }
+
+  function choisir_couleurs(n) {
+    if (!config().couleurs || ![1, 2, 4].includes(n)) return false;
+    if (n === couleurs) return false;
+    couleurs = n;
+    selection = null;
+    document.getElementById("fini").classList.remove("vu");
+    appliquer_les_vues();
+    charger();
+    return true;
+  }
+
+  function ouvrir_le_menu() { document.getElementById("menu-jeux").classList.add("vu"); }
+  function fermer_le_menu() { document.getElementById("menu-jeux").classList.remove("vu"); }
+  function basculer_le_menu() {
+    const el = document.getElementById("menu-jeux");
+    if (el.classList.contains("vu")) fermer_le_menu(); else ouvrir_le_menu();
+  }
+
+  // ---------- LA TAILLE ----------
+  // Les colonnes du jeu prennent la largeur disponible ; la hauteur de carte
+  // suit, et `positions` comprime les piles trop longues.
+  function ajuster() {
+    const scene = document.getElementById("scene");
+    const n = config().colonnes;
+    const ecart = n > 7 ? 6 : 8;
+    const place = Math.max(n * 34 + (n - 1) * ecart, scene.clientWidth - 24 - (n - 1) * ecart);
+    LW = Math.max(34, Math.min(70, Math.floor(place / n)));
+    LH = Math.round(LW * 1.42);
+    document.documentElement.style.setProperty("--lw", LW + "px");
+    document.documentElement.style.setProperty("--lh", LH + "px");
+    document.documentElement.style.setProperty("--ecart", ecart + "px");
+    afficher();
+  }
+
+  // ---------- LE MONTAGE ----------
+  function construire() {
+    for (let k = 0; k < 4; k++) {
+      const el = document.getElementById("f" + k);
+      el.addEventListener("click", function () { clic_fondation(k); });
+      fondations_el.push(el);
+      const cellule = document.getElementById("c" + k);
+      cellule.addEventListener("click", function () { clic_cellule(k); });
+      cellules_el.push(cellule);
+    }
+    const menu = document.getElementById("menu-jeux");
+    for (const id of ORDRE) {
+      const b = document.createElement("button");
+      b.dataset.jeu = id;
+      b.textContent = JEUX[id].nom;
+      b.addEventListener("click", function () { choisir_jeu(id); });
+      menu.appendChild(b);
+    }
+    document.getElementById("choix").addEventListener("click", basculer_le_menu);
+    document.getElementById("pioche").addEventListener("click", function () { piocher(); });
+    const zone = document.getElementById("colonnes");
+    // Dix emplacements : le Spider en a dix, les autres en cachent le reste.
+    for (let i = 0; i < 10; i++) {
+      const el = document.createElement("div");
+      el.className = "colonne";
+      el.setAttribute("data-colonne", String(i));
+      el.addEventListener("click", function (e) { if (e.target === el) clic_colonne(i); });
+      zone.appendChild(el);
+      colonnes_el.push(el);
+    }
+    for (const b of document.querySelectorAll("#niveaux button")) {
+      b.addEventListener("click", function () { choisir_couleurs(Number(b.dataset.couleurs)); });
+    }
+  }
+
+  document.getElementById("nouvelle").addEventListener("click", nouvelle_partie);
+  document.getElementById("rejouer").addEventListener("click", nouvelle_partie);
+  document.getElementById("annuler").addEventListener("click", annuler);
+  window.addEventListener("resize", ajuster);
+  window.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") {
+      if (document.getElementById("menu-jeux").classList.contains("vu")) { fermer_le_menu(); }
+      else if (selection) { selection = null; afficher(); }
+      else return;
+      e.preventDefault();
+    }
+  });
+  document.addEventListener("click", function (e) {
+    // Un clic ailleurs referme la liste des réussites.
+    if (!e.target.closest("#menu-jeux") && !e.target.closest("#choix")) fermer_le_menu();
+  });
+
+  // L'état de fenêtre que Rust pousse : seulement la punaise.
+  window.setState = function (state) {
+    const epingle = document.getElementById("epingle");
+    epingle.setAttribute("aria-pressed", String(!!state.epingle));
+    epingle.innerHTML = state.epingle ? '<span class="ico ico-push-pin-fill"></span>' : '<span class="ico ico-push-pin"></span>';
+    epingle.title = state.epingle ? "Ne plus rester au premier plan" : "Rester au premier plan";
+  };
+
+  construire();
+  try {
+    const enregistre = localStorage.getItem(CLE_JEU);
+    if (enregistre && JEUX[enregistre]) jeu = enregistre;
+    const n = Number(localStorage.getItem(CLE_COULEURS));
+    if (n === 2 || n === 4) couleurs = n;
+  } catch (e) {}
+  appliquer_les_vues();
+  charger();
+  ajuster();
+</script>
+</body>
+</html>

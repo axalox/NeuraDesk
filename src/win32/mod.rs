@@ -68,6 +68,8 @@ pub mod cef_lightsoff;
 pub mod cef_reversi;
 /// La FENÊTRE du jeu Bovo (Gomoku, cinq pierres alignées).
 pub mod cef_bovo;
+/// La FENÊTRE de la Patience (le Klondike de KDE, KPatience).
+pub mod cef_patience;
 /// La FENÊTRE de l'applet « Capture d'écran » — même présentation que
 /// l'enregistreur, avec la webcam en plus (voir `cef_capture`).
 pub mod cef_capture;

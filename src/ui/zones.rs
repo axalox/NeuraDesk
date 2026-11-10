@@ -1183,7 +1183,11 @@ mod tests {
         // ⚠️ **REMONTÉES UNE SEIZIÈME FOIS le 2026-11-10** (Bovo, 52ᵉ applet) :
         // **56 est redevenu une APPLET**, les trois remplisseurs sont **59, 57 et 58**.
         // Le test a rendu `[168, 58, 56, 148, 147, 146, 57]` contre `[168, 58, 148, 147, 146, 57]`.
-        let haut_droite = vec![9, 11, 10, 59, 2, 57, 12, 1, 8, 148, 147, 146, 58];
+        // ⚠️ **REMONTÉES UNE DIX-SEPTIÈME FOIS le 2026-11-10** (la Patience, 53ᵉ
+        // applet) : **57 est redevenu une APPLET**, les trois remplisseurs sont
+        // **60, 58 et 59**. Le test a rendu `[168, 59, 57, 148, 147, 146, 58]` contre
+        // `[168, 59, 148, 147, 146, 58]`.
+        let haut_droite = vec![9, 11, 10, 60, 2, 58, 12, 1, 8, 148, 147, 146, 59];
         (gauche, droite, haut_gauche, haut_droite)
     }
 
@@ -1590,7 +1594,8 @@ mod tests {
         // ⚠️ Puis **56** le 2026-11-08 (Lights Off), avec la fixture.
         // ⚠️ Puis **57** le 2026-11-10 (Reversi), avec la fixture.
         // ⚠️ Puis **58** le 2026-11-10 (Bovo), avec la fixture.
-        assert_eq!(dock.spacer_index_at_rank(ordres, ZoneKey::new(BarLetter::Haut, 7).unwrap()), Some(58));
+        // ⚠️ Puis **59** le 2026-11-10 (la Patience), avec la fixture.
+        assert_eq!(dock.spacer_index_at_rank(ordres, ZoneKey::new(BarLetter::Haut, 7).unwrap()), Some(59));
         // Au-dela du dernier rang, aucun espace.
         assert_eq!(dock.spacer_index_at_rank(ordres, cle(4)), None);
     }
@@ -1625,7 +1630,8 @@ mod tests {
         // ⚠️ 57 → 58 le 2026-11-10 (Reversi) : c'est le PLUS HAUT des trois
         // remplisseurs de `haut_droite`, donc celui qui reste un espace le plus longtemps.
         // ⚠️ 58 → 59 le 2026-11-10 (Bovo), même raison.
-        assert!(dock.is_spacer(59), "premisse : un remplisseur est bien un espace");
+        // ⚠️ 59 → 60 le 2026-11-10 (la Patience), même raison.
+        assert!(dock.is_spacer(60), "premisse : un remplisseur est bien un espace");
         // ⚠️ Les remplisseurs SONT des espaces, mais seuls ceux qu'une liste cite prennent un
         // rang. La barre de gauche en cite 3 (116..118) et non les 77 remplisseurs ; celle du
         // haut en cite 3 d'entre eux (35, 33, 34) en plus de ses 4 espaces « vrais ».
