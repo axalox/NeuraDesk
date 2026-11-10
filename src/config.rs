@@ -1231,6 +1231,54 @@ pub fn save_dossier_zoom(niveau: usize) {
     write_config("dossier_zoom.txt", niveau.to_string());
 }
 
+/// ⭐ **LA TAILLE DERNIÈREMENT DEMANDÉE PAR LA PAGE DE CHAQUE MENU** — une ligne
+/// par popup, `page.html,largeur,hauteur,facteur`.
+///
+/// DEMANDE EXPLICITE (2026-11-10) : « serait-il possible de pré calculer les
+/// menus, je les vois se redimensionner quand je les ouvre ». La page mesure son
+/// contenu APRÈS l'ouverture : sans mémoire, un menu s'ouvre à l'estimation
+/// d'`app::menu_rect` puis saute à sa vraie taille en plein fondu. La table est
+/// donc retenue **d'un lancement à l'autre** (voir `cef_popup::taille_rappelee`),
+/// avec le `content_factor` de l'instant — bouger « Taille des menus » entre deux
+/// lancements applique le rapport au lieu de figer l'ancienne échelle.
+///
+/// **CLÉ = LE NOM DE LA PAGE** (`context.html`…) : chaque module popup a la
+/// sienne, et c'est l'identité la plus stable du dépôt (un titre peut changer).
+/// Un fichier ABSENT ou illisible rend une table vide : les menus s'ouvrent à
+/// leur estimation, exactement comme avant, et rien n'est perdu.
+pub fn load_tailles_menus() -> std::collections::HashMap<String, ([i32; 2], f64)> {
+    let Some(path) = config_path("tailles_menus.txt") else { return Default::default() };
+    let Ok(content) = fs::read_to_string(path) else { return Default::default() };
+    content
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(4, ',');
+            let page = parts.next()?.trim().to_string();
+            let w: i32 = parts.next()?.trim().parse().ok()?;
+            let h: i32 = parts.next()?.trim().parse().ok()?;
+            let facteur: f64 = parts.next()?.trim().parse().ok()?;
+            // Une ligne à moitié écrite (coupure, disque plein) est ignorée EN
+            // ENTIER : une taille nulle ou négative ferait une fenêtre que rien
+            // ne pourrait plus montrer.
+            if page.is_empty() || w <= 0 || h <= 0 || !(facteur > 0.0) {
+                return None;
+            }
+            Some((page, ([w, h], facteur)))
+        })
+        .collect()
+}
+
+/// Écrit la table de `load_tailles_menus` — mêmes garanties best-effort que
+/// `save_secondary_screen_modes`.
+pub fn save_tailles_menus(tailles: &std::collections::HashMap<String, ([i32; 2], f64)>) {
+    let content = tailles
+        .iter()
+        .map(|(page, ([w, h], facteur))| format!("{page},{w},{h},{facteur}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    write_config("tailles_menus.txt", content);
+}
+
 /// La punaise de la fenêtre des symboles phonétiques (voir `win32::cef_phonetique`)
 /// — un réglage PROPRE à elle, comme celui des kaomojis.
 pub fn load_phonetique_premier_plan() -> bool {

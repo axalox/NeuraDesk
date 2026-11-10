@@ -40,6 +40,13 @@
 //! - `NEURADESK_DEBUG_FERMER_FRAME=300` : à cette frame, masquer les panneaux
 //!   ouverts (`app::hide_overlay_windows`) — pour voir l'effet de fermeture
 //!   (`win32::ouverture_fenetres::fermeture`) sans aucun clic.
+//! - `NEURADESK_DEBUG_REOUVRIR_FRAME=400` : à cette frame, ROUVRIR le popup de
+//!   `NEURADESK_DEBUG_OPEN` (même bras de code, une seconde fois). Sert à
+//!   comparer la PREMIÈRE ouverture — qui part de l'estimation d'`app::menu_rect`
+//!   — à la SECONDE, qui part de la taille que la page a demandée (voir
+//!   `cef_popup::taille_rappelee`) : c'est le seul moyen de rendre ce contraste
+//!   photographiable, aucun clic n'étant simulé. À combiner avec
+//!   `NEURADESK_DEBUG_FERMER_FRAME`, placé AVANT.
 //! - `NEURADESK_DEBUG_HOVER=<index>` : survole EN PERMANENCE l'icône du dock de
 //!   cet index, en poussant directement sa position à `Dock::on_mouse_move` —
 //!   même famille d'appel de fonction direct que `NEURADESK_DEBUG_OPEN`, jamais
@@ -189,6 +196,12 @@ pub struct DebugCapture {
     /// `NEURADESK_DEBUG_FERMER_FRAME`, doc de module : le seul moyen de voir
     /// l'effet de fermeture, puisque le harnais ne simule aucun clic.
     pub fermer_frame: Option<u64>,
+    /// Frame à laquelle ROUVRIR le popup de `NEURADESK_DEBUG_OPEN` — voir
+    /// `NEURADESK_DEBUG_REOUVRIR_FRAME`, doc de module. La première ouverture
+    /// part de l'ESTIMATION (aucune mesure antérieure) ; la seconde part de la
+    /// taille que la page a demandée — c'est ce contraste que ce levier existe
+    /// pour rendre capturable.
+    pub reouvrir_frame: Option<u64>,
     /// Frame du clic `NEURADESK_DEBUG_CLICK` — voir la doc de ce levier : les
     /// fenêtres qui s'ouvrent à `open_frame` ont besoin d'un clic APRÈS leur
     /// ouverture, et la frame 70 du bloc générique ne suffit pas.
@@ -242,8 +255,25 @@ impl DebugCapture {
             .unwrap_or(0);
         let maintien = std::env::var("NEURADESK_DEBUG_MAINTIEN").is_ok_and(|v| v.trim() == "1");
         let fermer_frame = std::env::var("NEURADESK_DEBUG_FERMER_FRAME").ok().and_then(|raw| raw.trim().parse::<u64>().ok());
+        let reouvrir_frame = std::env::var("NEURADESK_DEBUG_REOUVRIR_FRAME").ok().and_then(|raw| raw.trim().parse::<u64>().ok());
         let click_frame = std::env::var("NEURADESK_DEBUG_CLICK_FRAME").ok().and_then(|raw| raw.trim().parse::<u64>().ok());
-        Self { dir, frames, open, open_ancre, open_frame, fermer_frame, click_frame, droit, glisse, scroll, click, hover, zone, maintien }
+        Self {
+            dir,
+            frames,
+            open,
+            open_ancre,
+            open_frame,
+            fermer_frame,
+            reouvrir_frame,
+            click_frame,
+            droit,
+            glisse,
+            scroll,
+            click,
+            hover,
+            zone,
+            maintien,
+        }
     }
 
     pub fn active(&self) -> bool {

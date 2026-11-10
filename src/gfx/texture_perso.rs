@@ -207,6 +207,15 @@ impl Composition {
         self.remplacer(defauts());
     }
 
+    /// Cette texture évolue-t-elle toute seule (case « évoluer » cochée) ?
+    /// `app::run` s'en sert pour continuer à PRÉSENTER à chaque image : sans
+    /// cela, la texture se figerait au repos (voir « présenter seulement quand
+    /// l'image change », `app::run`).
+    pub fn anime(&self) -> bool {
+        let valeurs = self.valeurs.lock().unwrap_or_else(|e| e.into_inner());
+        valeurs[index("evoluer").unwrap_or(0)] > 0.5
+    }
+
     /// Avance la phase de `dt × vitesse` si l'animation est cochée.
     fn avancer_phase(&self, valeurs: &[f32; REGLAGES.len()], maintenant: Instant) -> f32 {
         let mut animation = self.animation.lock().unwrap_or_else(|e| e.into_inner());

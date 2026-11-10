@@ -359,6 +359,14 @@ wrap_browser_process_handler! {
 struct RenderState {
     size: (i32, i32),
     imported: Option<(ID3D11Texture2D, ID3D11ShaderResourceView)>,
+    /// **COMBIEN D'IMAGES CETTE PAGE A PEINTES** — incrémenté à chaque
+    /// `on_paint`/`on_accelerated_paint` réussi. `win32::cef_popup::render`
+    /// compare ce compteur à celui de la dernière frame et prévient `app::run`
+    /// qu'un popup VISIBLE a une image neuve : c'est ce qui fait présenter le
+    /// dock. ⚠️ Le compteur des peintures ne suffit PAS à lui seul : les
+    /// treize pages PRÉCHARGÉES peignent aussi, fenêtres cachées — compter
+    /// toutes les peintures gardait le dock en train de présenter en continu.
+    peintures: u64,
     /// Actions demandées par la page HTML/JS (voir `NeuraDeskRequestHandler`,
     /// doc plus bas) — un bouton fait `location.href =
     /// "neuradesk://<action>"`, interceptée AVANT toute navigation réelle et
@@ -470,7 +478,11 @@ wrap_render_handler! {
             // pendant toute la durée de cet appel.
             let bgra = unsafe { std::slice::from_raw_parts(buffer, (width * height * 4) as usize) };
             match crate::gfx::cef_texture::texture_depuis_bgra(&self.handler.device, width, height, bgra) {
-                Ok(texture) => self.handler.state.borrow_mut().imported = Some(texture),
+                Ok(texture) => {
+                    let mut etat = self.handler.state.borrow_mut();
+                    etat.imported = Some(texture);
+                    etat.peintures += 1;
+                }
                 Err(err) => {
                     let count = IMPORT_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     IMPORT_WAS_FAILING.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -505,7 +517,9 @@ wrap_render_handler! {
                             IMPORT_FAILURES.swap(0, std::sync::atomic::Ordering::Relaxed)
                         );
                     }
-                    self.handler.state.borrow_mut().imported = Some(imported);
+                    let mut etat = self.handler.state.borrow_mut();
+                    etat.imported = Some(imported);
+                    etat.peintures += 1;
                 }
                 Err(err) => {
                     let count = IMPORT_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -884,7 +898,7 @@ impl CefBrowserSurface {
     /// une fois le chargement initial terminé, PAS ici (trop tôt, voir sa
     /// doc).
     pub fn new(device: ID3D11Device, width: i32, height: i32, url: &str, zoom_level: f64) -> Self {
-        let state = Rc::new(RefCell::new(RenderState { size: (width, height), imported: None, actions: Vec::new(), cursor: None, tooltip: None }));
+        let state = Rc::new(RefCell::new(RenderState { size: (width, height), imported: None, peintures: 0, actions: Vec::new(), cursor: None, tooltip: None }));
         let render_handler = RenderHandlerBuilder::new(Rc::new(NeuraDeskRenderHandler { state: state.clone(), device }));
         let request_handler = RequestHandlerBuilder::build(state.clone());
         let load_handler = LoadHandlerBuilder::build(zoom_level);
@@ -934,6 +948,25 @@ impl CefBrowserSurface {
     /// forcerait `alpha = 1.0`.
     pub fn latest_texture(&self) -> Option<ID3D11ShaderResourceView> {
         self.state.borrow().imported.as_ref().map(|(_, srv)| srv.clone())
+    }
+
+    /// Le nombre d'images que cette page a peintes — voir `RenderState::peintures`.
+    pub fn peintures(&self) -> u64 {
+        self.state.borrow().peintures
+    }
+
+    /// Dit à Chromium que ce navigateur est CACHÉ (ou redevenu visible).
+    ///
+    /// ⛔ **SANS CETTE LIGNE, UNE PAGE CACHÉE CONTINUE DE PEINDRE.** Les treize
+    /// pages PRÉCHARGÉES peignaient ~70 images/s, fenêtres hors écran : du travail
+    /// dans le processus navigateur et des textures importées pour rien. `was_hidden`
+    /// est l'API prévue pour ça — Chromium cesse alors de composer et d'animer.
+    /// Appelé par `win32::cef_popup::render_if_visible` UNIQUEMENT sur changement
+    /// d'état (voir `CefPopupState::visible_notifiee`).
+    pub fn set_visible(&self, visible: bool) {
+        if let Some(host) = self.browser.host() {
+            host.was_hidden((!visible) as _);
+        }
     }
 
     /// Dernier curseur demandé par la page via CSS `cursor:` (voir

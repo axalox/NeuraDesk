@@ -9,7 +9,8 @@ use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext};
 use windows::Win32::Graphics::Gdi::HMONITOR;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId, IsWindowVisible, SM_CYSCREEN,
+    GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId, IsWindowVisible,
+    MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT, SM_CYSCREEN,
 };
 
 use crate::config;
@@ -6856,6 +6857,35 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         crate::win32::clic_molette_bureau::installer();
     }
     let mut icones_ouverture_echeance = Instant::now();
+    // ⭐ **PRÉSENTER SEULEMENT QUAND L'IMAGE CHANGE** (2026-11-10, demande
+    // « l'app semble consommer beaucoup de ressources CPU »).
+    //
+    // MESURE : un `Present` BitBlt de 2560×1440 coûte ~13 ms de CPU par image
+    // dans le pilote NVIDIA, contre ~1 ms pour DESSINER la scène. Au repos
+    // l'image ne change pas : la présenter 60 fois par seconde brûlait plus
+    // d'un cœur pour rien.
+    //
+    // L'activité se lit SANS énumérer toutes les animations :
+    //   - tout message Windows, sauf les `WM_TIMER` de `tray_flux` (voir
+    //     `Window::pump_messages`) ;
+    //   - toute peinture d'un popup CEF VISIBLE (`cef_popup::peintures_visibles`)
+    //     — pas celles des pages préchargées, qui peignent fenêtres cachées ;
+    //   - la magnification au survol (`Dock::magnified_index`), qui est > 1
+    //     aussi pendant la décroissance ;
+    //   - les animations CONTINUES déclarées par leur réglage : dégradé animé,
+    //     fond du logo, textures personnalisées « évoluer » ;
+    //   - un rafraîchissement de secours, qui couvre l'horloge, les données et
+    //     le clignotement des notifications.
+    // ⛔ En capture (`debug_capture.active()`), on présente CHAQUE frame : les
+    // PNG du harnais doivent sortir comme avant.
+    const PRESENTATION_APRES_ACTIVITE: Duration = Duration::from_millis(500);
+    const PRESENTATION_SECOURS: Duration = Duration::from_millis(250);
+    /// Sans `Present(1)` (qui attend le vsync), plus rien ne cadence la boucle :
+    /// c'est ce sommeil qui l'empêche de dessiner à vide à pleine vitesse.
+    const PERIODE_SANS_PRESENT: Duration = Duration::from_millis(16);
+    let mut presenter_jusqua = Instant::now() + PRESENTATION_APRES_ACTIVITE;
+    let mut derniere_presentation = Instant::now();
+    let mut peintures_cef_vues = crate::win32::cef_popup::peintures_visibles();
     // Voir `win32::chien_de_garde` : la pile de ce fil quand la boucle s'arrête.
     crate::win32::chien_de_garde::installer();
     'main: loop {
@@ -6903,7 +6933,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         // ⚠️ **UNE SEULE FOIS POUR LES DEUX FENÊTRES QUI ÉCRIVENT** (caractères et
         // kaomojis) : la cible est une propriété du bureau, pas d'une fenêtre.
         crate::win32::cible_de_frappe::noter_la_derniere_fenetre_etrangere();
-        if !Window::pump_messages() {
+        let (continuer, messages) = Window::pump_messages();
+        if messages > 0 {
+            // Une entrée (ou un évènement système) vient d'arriver : les frames
+            // suivantes doivent être présentées, le temps que les animations
+            // qu'elle déclenche (survol, ouverture, fondu) retombent.
+            presenter_jusqua = Instant::now() + PRESENTATION_APRES_ACTIVITE;
+        }
+        if !continuer {
             // ⛔ **LE MODULE INJECTÉ LIT LA RETENUE DANS UN FICHIER** : le
             // laisser derrière nous ferait retarder chaque fermeture des
             // applications déjà injectées, sans animation, jusqu'au prochain
@@ -7263,6 +7300,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         if debug_capture.fermer_frame == Some(debug_frame) {
             crate::diag!("[harnais] fermeture des panneaux a la frame {debug_frame}");
             hide_overlay_windows();
+        }
+        // `NEURADESK_DEBUG_REOUVRIR_FRAME` : le MÊME bras d'ouverture, une
+        // seconde fois — la première part de l'estimation, la seconde de la
+        // taille demandée par la page (voir `cef_popup::taille_rappelee`). Le
+        // bloc juste en dessous s'en charge dès cette frame.
+        if debug_capture.reouvrir_frame == Some(debug_frame) {
+            debug_opened = false;
+            crate::diag!("[harnais] reouverture du popup a la frame {debug_frame}");
         }
         if debug_capture.active() && !debug_opened && debug_frame >= debug_capture.open_frame {
             debug_opened = true;
@@ -18179,9 +18224,54 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        // Present(1, 0) attend le vsync : ça cadence naturellement la
-        // boucle au taux de rafraîchissement de l'écran, sans busy-loop.
-        swapchain.present()?;
+        // ⭐ **PRÉSENTER SEULEMENT QUAND L'IMAGE CHANGE** — voir les constantes
+        // et la mesure au début de la boucle. Une peinture CEF reçue pendant
+        // cette frame est une raison de présenter, et prolonge la salve.
+        let peintures_cef = crate::win32::cef_popup::peintures_visibles();
+        if peintures_cef != peintures_cef_vues {
+            peintures_cef_vues = peintures_cef;
+            presenter_jusqua = Instant::now() + PRESENTATION_APRES_ACTIVITE;
+        }
+        let anime_sans_fin = crate::gfx::degrade::is_enabled()
+            || crate::ui::dock::logo_animation_enabled()
+            || crate::gfx::texture_perso::INTERFACE.anime()
+            || crate::gfx::texture_perso::TERMINAUX.anime()
+            || dock.magnified_index().is_some();
+        let presenter = anime_sans_fin
+            || debug_capture.active()
+            || Instant::now() < presenter_jusqua
+            || derniere_presentation.elapsed() >= PRESENTATION_SECOURS;
+        if presenter {
+            // Present(1, 0) attend le vsync : ça cadence naturellement la
+            // boucle au taux de rafraîchissement de l'écran, sans busy-loop.
+            swapchain.present()?;
+            derniere_presentation = Instant::now();
+        } else if !anime_sans_fin
+            && !crate::win32::cef_popup::une_fenetre_visible()
+            && !debug_capture.active()
+        {
+            // ⭐ **DORMIR SUR LA FILE DE MESSAGES, PAS EN TOURNANT.** Quand ni
+            // l'image ni un popup ne réclament une frame, la boucle bloquait en
+            // dormant 16 ms puis refaisait TOUTE la scène pour la jeter (~2 ms de
+            // CPU par image, mesuré : 21 % d'un cœur). Ici elle attend jusqu'à
+            // l'échéance de secours, et un message (souris, clavier, shell) la
+            // réveille immédiatement — puis l'itération suivante le traite.
+            // ⚠️ La minuterie de `tray_flux` (100 ms) réveille au moins à ce
+            // rythme : c'est le plancher réel de ce sommeil, et il est bon.
+            let reste = PRESENTATION_SECOURS.saturating_sub(derniere_presentation.elapsed());
+            let ms = reste.as_millis().clamp(1, 1000) as u32;
+            unsafe {
+                MsgWaitForMultipleObjectsEx(None, ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            }
+        } else {
+            // ⛔ **SANS `Present(1)`, PLUS RIEN NE CADENCE LA BOUCLE** : sans ce
+            // sommeil elle dessinerait à vide aussi vite que possible, et le CPU
+            // resterait à 100 % — le contraire du but.
+            let reste = PERIODE_SANS_PRESENT.saturating_sub(now.elapsed());
+            if !reste.is_zero() {
+                std::thread::sleep(reste);
+            }
+        }
         // L'essai d'un motif de l'utilisateur mesure l'écart entre deux images
         // (voir `gfx::shader_utilisateur::surveiller`).
         crate::gfx::shader_utilisateur::surveiller(Instant::now());

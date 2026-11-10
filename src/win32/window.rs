@@ -60,7 +60,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_CLIPBOARDUPDATE, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND,
     SendMessageW, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_SHARED, LoadImageW, SM_CXICON, SM_CYICON, SM_CXSMICON,
     SM_CYSMICON, WM_SETICON, SYSTEM_METRICS_INDEX,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MBUTTONDOWN, WM_QUIT, WM_RBUTTONDOWN, WM_SETTINGCHANGE, WM_SIZE,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MBUTTONDOWN, WM_QUIT, WM_RBUTTONDOWN, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER,
     WINDOW_EX_STYLE, WNDCLASSEXW,
     WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
@@ -1451,19 +1451,31 @@ impl Window {
     }
 
     /// Traite tous les messages Windows en attente, sans bloquer.
-    /// Retourne `false` quand la fenêtre doit se fermer (WM_QUIT).
-    pub fn pump_messages() -> bool {
+    ///
+    /// Rend `(continuer, messages)` : `continuer` vaut `false` quand la fenêtre
+    /// doit se fermer (WM_QUIT), et `messages` compte ceux qui ont été traités.
+    ///
+    /// **`WM_TIMER` N'EST PAS COMPTÉ** : la seule minuterie de ce fil est celle
+    /// de `win32::tray_flux` (réaffirmation du rang du shell, toutes les 100 ms),
+    /// qui ne change RIEN à l'image. La compter garderait le dock en train de
+    /// présenter dix fois par seconde pour rien (voir `app::run`, « présenter
+    /// seulement les changements »).
+    pub fn pump_messages() -> (bool, u32) {
+        let mut traites = 0u32;
         unsafe {
             let mut msg = MSG::default();
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_QUIT {
-                    return false;
+                    return (false, traites);
+                }
+                if msg.message != WM_TIMER {
+                    traites += 1;
                 }
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
         }
-        true
+        (true, traites)
     }
 
     /// Récupère et vide la file d'évènements accumulés par le wndproc

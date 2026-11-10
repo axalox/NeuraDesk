@@ -142,6 +142,36 @@ const TOGGLE_DEBOUNCE: Duration = Duration::from_millis(300);
 /// Voir `win32::dash::FOCUS_LOST_DEBOUNCE`, même principe.
 const FOCUS_LOST_DEBOUNCE: Duration = Duration::from_millis(150);
 
+/// **QUAND UNE TAILLE ANNONCÉE PAR UNE PAGE EST-ELLE CRUE ?** — voir
+/// `appliquer_la_mesure`, qui porte la mesure du défaut.
+///
+/// ⛔ **LA PREMIÈRE ANNONCE D'UNE OUVERTURE DÉCRIT UN CONTENU EN COURS DE
+/// MONTAGE.** Mesuré le 2026-11-10 sur le menu Contexte, à chaque ouverture et
+/// quel que soit le zoom de la page : `209×300` unités CSS, puis `298×259`,
+/// puis `297×240`, puis `296×240` — la page se reconstruit pendant ~400 ms.
+/// Appliquées à la lettre, ces annonces font la cascade de redimensionnements
+/// que l'utilisateur voit (« les menus sont encore buggués »). Seule une
+/// annonce CONCORDANTE avec la précédente est crue.
+const MESURE_TOLERANCE: i32 = 4;
+/// Sans nouvelle annonce pendant ce délai, la dernière en attente s'applique :
+/// c'est le repli pour une page qui ne se mesure qu'UNE fois (aucune
+/// confirmation possible).
+const MESURE_SILENCE: Duration = Duration::from_millis(350);
+/// Au-delà, la stabilisation est terminée : tout s'applique comme avant. Borne
+/// les pages dont le contenu bouge en continu (`cef_voicemeeter`).
+const MESURE_OUVERTURE_MAX: Duration = Duration::from_millis(1000);
+/// **LA MESURE D'OUVERTURE PART DEUX FRAMES APRÈS LE MONTAGE** — le temps que
+/// `render` ait posé le zoom du menu (il ne tourne que pour une fenêtre
+/// VISIBLE). La demander dans `toggle_with` la fait prendre au zoom 3× de la
+/// page cachée : voir `PopupSlot::mesure_differee`, qui porte la mesure du
+/// défaut et le cas `sound.html`.
+///
+/// ⚠️ **CE N'EST PAS LA MÊME CHOSE QUE LA PISTE REFUTÉE** « mesurer avant de
+/// montrer » : là, la fenêtre restait CACHÉE, et la mise en page d'une page
+/// cachée ne suit pas `set_zoom_level`. Ici la fenêtre est montrée et
+/// redimensionnée ; seul l'ORDRE entre le zoom et la mesure est corrigé.
+const MESURE_DIFFEREE_FRAMES: u8 = 2;
+
 /// Facteur de zoom voulu pour TOUS les popups CEF (voir `CONTENT_ZOOM_LEVEL`
 /// ci-dessous) — DEMANDE EXPLICITE : "multiplie par 3 la taille des menus et
 /// des dashs". Un seul endroit à changer pour ajuster tous les popups à la
@@ -458,6 +488,15 @@ struct CefPopupState {
     /// `render_if_visible`) alors que la taille et le rayon ne changent
     /// quasiment jamais une fois le popup ouvert.
     applied_region: Option<(i32, i32, u32)>,
+    /// Le compteur de peintures de la page déjà ANNONCÉ à `app::run` (voir
+    /// `peintures_visibles`) — pour ne l'annoncer qu'une fois par image.
+    peinture_vue: u64,
+    /// Le dernier état de visibilité DIT À CHROMIUM (voir
+    /// `CefBrowserSurface::set_visible`) — pour ne le lui dire qu'au changement.
+    /// ⚠️ VRAI À LA CRÉATION : une page préchargée naît cachée, et c'est la
+    /// première frame de `render_if_visible` qui doit le lui ANNONCER
+    /// (`false != true`).
+    visible_notifiee: bool,
     pending_show: Option<Instant>,
     /// **CETTE OUVERTURE NE DOIT PAS PRENDRE LE PREMIER PLAN.**
     ///
@@ -584,6 +623,34 @@ pub struct PopupSlot {
     /// **LA TAILLE DES TEXTES DE CE POPUP** — voir [`regler_zoom_textes`]. `1.0`
     /// (neutre) par défaut.
     facteur_textes: Cell<f32>,
+    /// **L'IDENTITÉ PERSISTÉE DE CE POPUP** — le nom de sa page (voir
+    /// `PopupSpec::html_file`), posé par `toggle_with` et `preload`, seuls
+    /// chemins qui reçoivent la spec. C'est la clé de `tailles_menus.txt` (voir
+    /// `taille_rappelee`) : `resize_to_content` n'a que le SLOT sous la main,
+    /// et c'est pourtant lui qui enregistre la taille demandée par la page.
+    identite: Cell<Option<&'static str>>,
+    /// ⭐ **L'INSTANT DE L'OUVERTURE EN COURS** — pendant `MESURE_OUVERTURE_MAX`
+    /// après lui, une taille annoncée par la page n'est appliquée qu'une fois
+    /// CONFIRMÉE par une seconde annonce concordante (voir `appliquer_la_mesure`).
+    /// `None` = aucune stabilisation en cours (ou terminée) : tout s'applique.
+    ouverture_a: Cell<Option<Instant>>,
+    /// La dernière taille annoncée pendant cette ouverture — la moitié
+    /// « précédente » de la confirmation (voir `mesure_concordante`).
+    mesure_precedente: Cell<Option<[i32; 2]>>,
+    /// La dernière annonce NON confirmée, et son instant : c'est elle qui
+    /// s'applique si aucune nouvelle n'est venue pendant `MESURE_SILENCE`.
+    mesure_en_attente: Cell<Option<([i32; 2], Instant)>>,
+    /// **LA MESURE D'OUVERTURE, DEMANDÉE DEUX FRAMES APRÈS LE MONTAGE** — voir
+    /// `drain_actions`, qui décompte. ⛔ **LA DEMANDER DANS `toggle_with` LA FAIT
+    /// MESURER AU ZOOM 3× DE LA PAGE CACHÉE**, et non au zoom du menu : `render`
+    /// n'est appelé que pour une fenêtre VISIBLE, donc le zoom du menu n'est posé
+    /// qu'à la frame qui suit le montage. Mesuré le 2026-11-10 sur
+    /// `sound.html` : ouvert à 966 px, la page annonçait **322 unités CSS — la
+    /// borne `max-width: 100vw` à 966/3 — et non son contenu**, si bien que
+    /// chaque ouverture la rétrécissait de 30 % (966 → 676 → …), c'est-à-dire
+    /// exactement « le menu n'apparaît pas tel qu'il est quand il a fini de se
+    /// redimensionner ».
+    mesure_differee: Cell<Option<u8>>,
 }
 
 /// **LE HARNAIS ÉPINGLE-T-IL TOUT CE QUI S'OUVRE ?** — voir
@@ -602,6 +669,31 @@ pub struct PopupSlot {
 /// pas est un test qui ne prouve rien.
 static EPINGLER_A_L_OUVERTURE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+/// Combien de pages VISIBLES ont peint une image neuve — voir
+/// `peintures_visibles()`. Incrémenté par `render`, qui n'est appelé que pour
+/// une fenêtre que `render_if_visible` a trouvée visible.
+static PEINTURES_VISIBLES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Ce compteur ne dit qu'une chose, et c'est celle dont `app::run` a besoin
+/// pour décider de PRÉSENTER : une page visible a une image neuve à l'écran.
+/// ⚠️ Compter toutes les peintures serait faux — les treize pages
+/// préchargées peignent aussi, fenêtres cachées, et leur compteur ne
+/// redescend jamais (mesuré : ~70 peintures/s sans qu'aucune fenêtre ne soit
+/// ouverte).
+pub fn peintures_visibles() -> u64 {
+    PEINTURES_VISIBLES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Au moins un popup est-il VISIBLE (menu qui fond, panneau, fenêtre) ?
+///
+/// `app::run` s'en sert pour NE PAS s'endormir tant qu'un popup est à l'écran :
+/// leurs fondus avancent une fois par frame (voir `render_if_visible`), et
+/// bloquer la boucle les figerait. Passe par `REGISTRY`, le registre que tient
+/// le module lui-même — pas une liste écrite à la main.
+pub fn une_fenetre_visible() -> bool {
+    REGISTRY.with(|registry| registry.borrow().iter().any(|slot| is_visible(slot)))
+}
 
 /// **ÉPINGLE TOUT CE QUI S'OUVRIRA** — réservé au harnais (voir
 /// `EPINGLER_A_L_OUVERTURE`, où le pourquoi est écrit).
@@ -942,6 +1034,11 @@ impl PopupSlot {
             epingle: Cell::new(false),
             zoom_suit_le_dpi: Cell::new(false),
             facteur_textes: Cell::new(1.0),
+            identite: Cell::new(None),
+            ouverture_a: Cell::new(None),
+            mesure_precedente: Cell::new(None),
+            mesure_en_attente: Cell::new(None),
+            mesure_differee: Cell::new(None),
         }
     }
 }
@@ -1158,6 +1255,10 @@ pub fn toggle_with(slot: &'static LocalKey<PopupSlot>, spec: &PopupSpec, rect: [
     // soit créé maintenant ou simplement réaffiché — et par `preload`, qui est
     // l'autre chemin qui crée une fenêtre.
     register(slot);
+    // L'identité persistée de ce popup — la clé de `tailles_menus.txt`, voir
+    // `taille_rappelee`. Posée à CHAQUE ouverture, pas à la création : c'est le
+    // seul chemin qui reçoit la spec à coup sûr.
+    slot.with(|s| s.identite.set(Some(spec.html_file)));
 
     let already_exists = slot.with(|s| s.state.borrow().is_some());
     if already_exists {
@@ -1220,6 +1321,31 @@ pub fn toggle_with(slot: &'static LocalKey<PopupSlot>, spec: &PopupSpec, rect: [
         // plus bas) n'y était jamais exposée : `state` y est encore une
         // variable LOCALE, pas stockée dans le `RefCell`, au moment des
         // mêmes appels Win32.
+        // ⭐ **LA TAILLE DE LA DERNIÈRE OUVERTURE, QUAND ON LA CONNAÎT** —
+        // DEMANDE EXPLICITE (2026-11-10) : « serait-il possible de pré calculer
+        // les menus, je les vois se redimensionner quand je les ouvre ». C'est
+        // cette ligne qui répond à la demande : au lieu de partir de
+        // l'ESTIMATION d'`app::menu_rect` (calibrée, mais jamais exacte) et
+        // d'attendre que la page annonce la vraie taille une ou deux frames plus
+        // tard — en plein fondu de 500 ms —, on rouvre à la taille que la page a
+        // DEMANDÉE la dernière fois. Plus de saut du tout pour un menu dont le
+        // contenu n'a pas changé, qui est le cas courant.
+        //
+        // ⚠️ **CE N'EST PAS UNE MESURE PÉRIMÉE RÉUTILISÉE TELLE QUELLE** : la
+        // taille est ramenée à l'échelle CSS ACTUELLE par le rapport des
+        // `content_factor`, donc bouger « Taille des menus » ou « Taille des
+        // textes » entre deux lancements la fait suivre au lieu de la figer.
+        //
+        // ⚠️ **ET LA MESURE RESTE DEMANDÉE À CHAQUE OUVERTURE** (voir
+        // `request_content_measure` plus bas) : si le contenu a changé — le mois
+        // du calendrier, la liste des sorties audio — la page corrige la taille,
+        // exactement comme avant. On ne fait que partir du bon pied.
+        //
+        // ⚠️ **LUE SUR DISQUE AUSSI** (`tailles_menus.txt`) : sans ça, la
+        // PREMIÈRE ouverture de chaque menu après un lancement repartait de
+        // l'estimation et sautait — et c'est justement ce que l'utilisateur
+        // voyait le plus souvent, l'application démarrant avec Windows.
+        let rect = if was_open { rect } else { taille_rappelee(slot, rect) };
         let hwnd = slot.with(|s| {
             let mut state_ref = s.state.borrow_mut();
             let state = state_ref.as_mut()?;
@@ -1247,6 +1373,14 @@ pub fn toggle_with(slot: &'static LocalKey<PopupSlot>, spec: &PopupSpec, rect: [
                     state.pending_show = Some(Instant::now());
                 }
                 state.rect = rect;
+                // ⭐ **NOUVELLE OUVERTURE : la stabilisation repart.** Tant que
+                // la page se reconstruit, ses annonces ne seront crues qu'une
+                // fois concordantes (voir `appliquer_la_mesure`).
+                s.ouverture_a.set(Some(Instant::now()));
+                s.mesure_precedente.set(None);
+                s.mesure_en_attente.set(None);
+                // La mesure partira d'elle-même, zoom posé (voir `mesure_differee`).
+                s.mesure_differee.set(Some(MESURE_DIFFEREE_FRAMES));
                 // Plus de plafond à reposer ici : `resize_to_content` borne
                 // désormais à la PLACE SOUS LA FENÊTRE, qu'il recalcule à chaque
                 // appel (voir sa doc). C'est ce qui a permis de retirer
@@ -1329,8 +1463,19 @@ pub fn toggle_with(slot: &'static LocalKey<PopupSlot>, spec: &PopupSpec, rect: [
                     }
                     // Réouverture : la page est DÉJÀ chargée, donc sa mesure part
                     // vraiment — c'est le cas qui rattrape une action perdue et
-                    // rafraîchit un menu qui ne mute pas (voir la doc).
-                    request_content_measure(slot);
+                    // rafraîchit un menu qui ne mute pas (voir la doc). Ce qu'elle
+                    // annonce pendant que la page se reconstruit n'est pas cru
+                    // (voir `appliquer_la_mesure`).
+                    //
+                    // ⚠️ **L'APPEL ÉTAIT ANNONCÉ PAR CE COMMENTAIRE SANS ÊTRE
+                    // LÀ** — le texte décrivait l'intention, le code ne demandait
+                    // rien : un menu rouvert après un changement de contenu
+                    // (mois du calendrier, sorties audio) gardait donc sa taille
+                    // rappelée jusqu'à ce que la page se mesure d'elle-même.
+                    //
+                    // ⚠️ **ET ELLE NE SE DEMANDE PAS ICI** : à cet instant le zoom
+                    // du menu n'est pas encore posé (voir `mesure_differee`, qui
+                    // compte les frames).
                 }
             }
         }
@@ -1387,18 +1532,20 @@ pub fn toggle_with(slot: &'static LocalKey<PopupSlot>, spec: &PopupSpec, rect: [
             state.browser.set_focus(true);
         }
         // Première ouverture d'un popup NON préchargé : la page charge encore,
-        // donc cet appel ne fait probablement rien (`window.__ndMeasure` n'existe
-        // pas encore) — c'est son écouteur `load` qui mesurera. Il ne coûte rien
-        // et couvre le cas d'une page déjà en cache. Forcé (`true`) comme celui de
-        // `request_content_measure`, dont la doc porte le pourquoi complet : c'est
-        // ICI que le chemin de la toute première ouverture passe quand le popup
-        // n'a pas été préchargé, et il ne peut pas déléguer à
-        // `request_content_measure` — l'état n'est pas encore dans le `RefCell`
-        // à ce moment-là (il l'est juste en dessous).
-        state.browser.execute_js("window.__ndMeasure && window.__ndMeasure(true)");
+        // donc une mesure immédiate ne dirait rien (`window.__ndMeasure` n'existe
+        // pas encore) — c'est son écouteur `load` qui mesurera, et la mesure
+        // DIFFÉRÉE (voir `mesure_differee`) qui reprendra le relais au cas où.
+        // ⛔ **PAS D'APPEL IMMÉDIAT ICI** : page montée, il tournerait AVANT que
+        // `render` n'ait posé le zoom du menu, donc au zoom 3× de la page cachée
+        // — exactement le défaut mesuré sur `sound.html`.
         slot.with(|s| {
             s.had_focus.set(false);
             s.focus_lost_since.set(None);
+            // La stabilisation de CETTE ouverture (voir `appliquer_la_mesure`).
+            s.ouverture_a.set(Some(Instant::now()));
+            s.mesure_precedente.set(None);
+            s.mesure_en_attente.set(None);
+            s.mesure_differee.set(Some(MESURE_DIFFEREE_FRAMES));
             *s.state.borrow_mut() = Some(state);
         });
     }
@@ -1440,7 +1587,13 @@ pub fn preload(slot: &'static LocalKey<PopupSlot>, spec: &PopupSpec, gfx: &GfxDe
     }
     let Some(state) = create_window(spec, gfx, PRELOAD_RECT) else { return };
     register(slot);
-    slot.with(|s| *s.state.borrow_mut() = Some(state));
+    // L'identité est aussi posée ICI : un popup préchargé peut se mesurer (et
+    // donc enregistrer sa taille) avant sa première ouverture, et le harnais de
+    // capture n'ouvre que quelques popups.
+    slot.with(|s| {
+        s.identite.set(Some(spec.html_file));
+        *s.state.borrow_mut() = Some(state);
+    });
 }
 
 /// Taille de naissance d'un popup préchargé — voir `preload`, doc de fonction.
@@ -1855,7 +2008,22 @@ pub fn resize_to_content(slot: &'static LocalKey<PopupSlot>, target_w: Option<i3
         let (top_limit, bottom_limit, room_h) = vertical_limits(room, screen, y);
         let new_w = target_w.and_then(|target| clamped_content_height(w, target, room_w)).unwrap_or(w);
         let new_h = target_h.and_then(|target| clamped_content_height(current_h, target, room_h)).unwrap_or(current_h);
-        if new_w == w && new_h == current_h {
+        // ⚠️ **UN ÉCART DE QUELQUES PIXELS N'EST PAS UN DÉMÉNAGEMENT.** La page
+        // se mesure elle-même ; entre deux annonces d'un MÊME contenu il reste
+        // une ou deux unités (barre de défilement, arrondi), et la confirmer
+        // quand même faisait suivre la fenêtre pour ce résidu — mesuré : une
+        // seconde `[menu/resize]` de 624 à 622 px juste après la première.
+        // Sous `MESURE_TOLERANCE` on ne déplace pas la fenêtre.
+        //
+        // ⛔ **ET ON NE RETIENT PAS LA CIBLE, MAIS LA TAILLE AFFICHÉE.** Une page
+        // qui mesure `vue + 2` unités CSS (typiquement `sound.html`, dont la
+        // boîte est `fit-content` bornée à `100vw` : la barre de défilement
+        // verticale fait déborder la mesure de la vue) ferait sinon grandir la
+        // fenêtre de 4 px À CHAQUE ouverture — mesuré : 966 → 971 → 975 → 979.
+        // Ce que l'utilisateur voit à la fermeture, c'est `w` ; c'est `w` qu'il
+        // faut retrouver à la prochaine.
+        if mesure_concordante([new_w, new_h], [w, current_h]) {
+            retenir_pour_l_ouverture(s, [w, current_h]);
             return;
         }
         let new_y = resized_y(y, current_h, new_h, bottom_limit, top_limit);
@@ -1876,7 +2044,8 @@ pub fn resize_to_content(slot: &'static LocalKey<PopupSlot>, target_w: Option<i3
         // d'œil si un menu la recouvre encore. Bounded : n'écrit que lorsque le
         // rectangle change réellement (voir le `return` ci-dessus).
         crate::diag!(
-            "[menu/resize] ({x},{y},{w},{current_h}) -> ({new_x},{new_y},{new_w},{new_h}) | room={:?} bas_zone={bottom_limit} bas_ecran={screen_bottom}",
+            "[menu/resize] hwnd={:?} ({x},{y},{w},{current_h}) -> ({new_x},{new_y},{new_w},{new_h}) | room={:?} bas_zone={bottom_limit} bas_ecran={screen_bottom}",
+            state.hwnd.0 as usize,
             room
         );
         state.rect = [new_x, new_y, new_w, new_h];
@@ -1885,6 +2054,11 @@ pub fn resize_to_content(slot: &'static LocalKey<PopupSlot>, target_w: Option<i3
         }
         let _ = state.swapchain.resize(&state.device, new_w.max(1) as u32, new_h.max(1) as u32);
         state.browser.resize(new_w.max(1), new_h.max(1));
+        // ⭐ **LA TAILLE RETENUE POUR LA PROCHAINE OUVERTURE** — voir
+        // `taille_rappelee`, qui la relit (et la ramène à l'échelle du moment).
+        // C'est ICI qu'elle est juste : `new_w`/`new_h` sont ce que la PAGE a
+        // demandé, bornes de place comprises, pas une estimation.
+        retenir_pour_l_ouverture(s, [new_w, new_h]);
     });
 }
 
@@ -2664,6 +2838,26 @@ pub fn debug_scroll(slot: &'static LocalKey<PopupSlot>, x: i32, y: i32, delta_y:
 /// fenêtre n'existe pas — même convention que `Window::drain_events`.
 pub fn drain_actions(slot: &'static LocalKey<PopupSlot>) -> Vec<String> {
     let mut actions = slot.with(|s| s.state.borrow().as_ref().map(|state| state.browser.drain_actions()).unwrap_or_default());
+    // ⏱ **LA MESURE D'OUVERTURE SE DEMANDE ICI, PAS DANS `toggle_with`.**
+    // `app::run` appelle les `render_if_visible` AVANT les `dispatch_actions` :
+    // à ce point de la frame, le zoom du menu vient d'être posé (voir
+    // `mesure_differee`, et le défaut de `sound.html` qu'il corrige). Deux
+    // frames pour laisser CEF remettre la page en page à ce zoom.
+    let demander_la_mesure = slot.with(|s| match s.mesure_differee.get() {
+        Some(0) => {
+            s.mesure_differee.set(None);
+            true
+        }
+        Some(restant) => {
+            s.mesure_differee.set(Some(restant - 1));
+            false
+        }
+        None => false,
+    });
+    if demander_la_mesure {
+        crate::diag!("[menu/mesure] demandee apres le zoom");
+        request_content_measure(slot);
+    }
     // LA HAUTEUR PILOTÉE PAR LA PAGE — traitée ICI, et c'est le seul endroit qui
     // le puisse : il connaît le SLOT (= quelle fenêtre redimensionner) et voit
     // passer TOUTES les actions, chaque module s'alimentant ici.
@@ -2725,12 +2919,26 @@ pub fn drain_actions(slot: &'static LocalKey<PopupSlot>) -> Vec<String> {
         // c'est l'ouverture qui en redemande une — FORCÉE, car la garde de
         // déduplication de la page empêcherait sinon tout renvoi (voir
         // `request_content_measure`, où ce piège est expliqué).
-        if factor > 0.0 && is_visible(slot) && !closing {
-            resize_to_content(
-                slot,
-                width.map(|css| content_height_px(css, factor)),
-                height.map(|css| content_height_px(css, factor)),
-            );
+        // ...ET CELLE QUI ARRIVE AVANT QUE LE ZOOM DU MENU NE SOIT POSÉ NON PLUS :
+        // la page est encore à son zoom de préchargement (3×), sa largeur est donc
+        // bornée à `fenêtre/3` — mesuré le 2026-11-10 sur `sound.html` : 323
+        // unités CSS annoncées pour 966 px de fenêtre, qui auraient rétréci le
+        // menu de 30 %. Ces annonces-là sont IGNORÉES, pas mises en attente : une
+        // page lente les aurait sinon fait appliquer par le repli du silence,
+        // avant même que la mesure au bon zoom ne parte (voir `mesure_differee`).
+        let en_differe = slot.with(|s| s.mesure_differee.get().is_some());
+        let applique = factor > 0.0 && is_visible(slot) && !closing && !en_differe;
+        if applique {
+            let w_px = width.map(|css| content_height_px(css, factor));
+            let h_px = height.map(|css| content_height_px(css, factor));
+            match (w_px, h_px) {
+                // Les deux dimensions arrivent toujours ensemble (voir
+                // `parse_content_size` et `menu.js`) : c'est le cas normal, et
+                // c'est celui qui passe par la CONFIRMATION (voir
+                // `appliquer_la_mesure`).
+                (Some(w), Some(h)) => appliquer_la_mesure(slot, [w, h]),
+                _ => resize_to_content(slot, w_px, h_px),
+            }
         }
         // ⚠️ **CE DIAGNOSTIC EST INDISPENSABLE, ET SON ABSENCE A ÉTÉ TROMPEUSE.**
         // Le journal « actions CEF » plus bas est émis APRÈS le filtre qui retire
@@ -2738,11 +2946,33 @@ pub fn drain_actions(slot: &'static LocalKey<PopupSlot>) -> Vec<String> {
         // et son silence s'est lu à tort comme « la page n'a rien annoncé ». C'est
         // la même famille que la fiche « une absence de trace n'est pas une
         // preuve » — la mesure existait, l'instrument ne pouvait pas la voir.
+        // ⚠️ **LE HWND EST DANS LA TRACE, ET CE N'EST PAS DU BRUIT** : cette
+        // fonction est appelée pour CHAQUE popup, et treize pages préchargées
+        // mesurent au démarrage — sans identité, les lignes de plusieurs popups
+        // se lisent comme une seule suite de redimensionnements (payé le
+        // 2026-11-10, en cherchant d'où venait un saut de 473 à 622 px).
+        let hwnd = slot.with(|s| s.state.borrow().as_ref().map(|st| st.hwnd.0 as usize));
         crate::diag!(
-            "[menu/size] recu w={width:?} h={height:?} | facteur={factor} visible={} fermeture={closing} -> applique={}",
+            "[menu/size] hwnd={hwnd:?} recu w={width:?} h={height:?} | facteur={factor} visible={} fermeture={closing} differe={en_differe} -> applique={applique}",
             is_visible(slot),
-            factor > 0.0 && is_visible(slot) && !closing
         );
+    }
+    // ⏳ **LE REPLI DU SILENCE** — voir `appliquer_la_mesure`, issue 3. Une page
+    // qui ne se mesure qu'UNE fois n'a aucune annonce à opposer à la première :
+    // sans ce minuteur, sa taille ne serait jamais appliquée. Il tourne à chaque
+    // frame (cette fonction est appelée pour chaque popup), pas seulement quand
+    // une action arrive.
+    let a_appliquer = slot.with(|s| {
+        let (cible, quand) = s.mesure_en_attente.get()?;
+        if quand.elapsed() < MESURE_SILENCE {
+            return None;
+        }
+        s.mesure_en_attente.set(None);
+        Some(cible)
+    });
+    if let Some(cible) = a_appliquer {
+        crate::diag!("[menu/mesure] appliquee apres silence {cible:?}");
+        resize_to_content(slot, Some(cible[0]), Some(cible[1]));
     }
     // Journal de diagnostic (voir `diag`, doc de module) : TOUTES les actions
     // de TOUS les panneaux CEF passent par ici — les `dispatch_actions` de
@@ -2765,7 +2995,14 @@ pub fn drain_actions(slot: &'static LocalKey<PopupSlot>) -> Vec<String> {
 /// évènements du mois) sans le recalculer en JS pur. No-op si la fenêtre
 /// n'existe pas encore.
 /// Demande à la page de re-mesurer son contenu et de l'annoncer (voir
-/// `assets/popups/menu.js`) — appelée à CHAQUE ouverture, après l'affichage.
+/// `assets/popups/menu.js`) — appelée à chaque ouverture (et par les `poll` des
+/// modules).
+///
+/// ⚠️ **CE QU'ELLE ANNONCE PENDANT QUE LA PAGE SE RECONSTRUIT N'EST PAS CRU** :
+/// la première mesure d'une ouverture décrit un contenu en cours de montage
+/// (mesuré le 2026-11-10 : 209×300 unités, puis 298×259, puis 296×240 une fois
+/// la page prête). Elle n'est appliquée qu'une fois CONFIRMÉE par une seconde
+/// annonce concordante — voir `appliquer_la_mesure`.
 ///
 /// **LA DEMANDE EST FORCÉE (`true`), ET C'EST TOUT L'OBJET DE CE CHANGEMENT.** La
 /// page garde la dernière taille qu'elle a annoncée (`lastSent`, voir
@@ -2990,6 +3227,8 @@ fn create_window(spec: &PopupSpec, gfx: &GfxDevice, rect @ [x, y, w, h]: [i32; 4
             browser,
             backdrop: None,
             applied_region: None,
+            peinture_vue: 0,
+            visible_notifiee: true,
             pending_show: None,
             // ⚠️ **`false` ICI, ET LE SITE D'OUVERTURE LE REPOSE AUSSITÔT** :
             // `create_window` ne connaît pas l'intention (voir
@@ -3423,7 +3662,16 @@ pub fn render_if_visible(slot: &'static LocalKey<PopupSlot>, tint_rgba: [f32; 4]
             s.content_factor.set(1.2_f64.powf(zoom_level));
         }
         unsafe {
-            if IsWindowVisible(state.hwnd).as_bool() {
+            // ⛔ **DIRE À CHROMIUM QU'UNE PAGE EST CACHÉE — SINON ELLE PEINT
+            // QUAND MÊME.** Mesuré le 2026-11-10 : les treize pages PRÉCHARGÉES
+            // produisaient ~70 peintures/s, fenêtres hors écran, travail inutile
+            // dans le processus navigateur. Un seul appel, au CHANGEMENT d'état.
+            let visible = IsWindowVisible(state.hwnd).as_bool();
+            if visible != state.visible_notifiee {
+                state.visible_notifiee = visible;
+                state.browser.set_visible(visible);
+            }
+            if visible {
                 // LE FONDU AVANCE ICI, et c'est le seul endroit qui le fait :
                 // cette fonction est appelée à CHAQUE frame pour chaque popup
                 // qui existe, donc un seul appel suffit à couvrir l'apparition,
@@ -3694,6 +3942,13 @@ fn render(state: &mut CefPopupState, tint_rgba: [f32; 4], radius: f32, palette: 
     let mut batches: Vec<QuadBatch> = Vec::new();
     if let Some(backdrop_tex) = &state.backdrop {
         batches.push(QuadBatch::new(Some(&backdrop_tex.srv), &backdrop_instances));
+    }
+    // Une page VISIBLE a-t-elle peint depuis la dernière frame ? C'est la
+    // raison de présenter le dock (voir `peintures_visibles`).
+    let peintures = state.browser.peintures();
+    if peintures != state.peinture_vue {
+        state.peinture_vue = peintures;
+        PEINTURES_VISIBLES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     let cef_srv = state.browser.latest_texture();
     if let Some(cef_srv) = &cef_srv {
@@ -5014,6 +5269,263 @@ mod tests_echelle_du_menu_en_page {
         let fin = debut + js[debut..].find('`').expect("fin de la feuille");
         assert!(js[fin..].starts_with("`;"), "accent grave en pleine feuille : {:?}", &js[fin.saturating_sub(60)..fin + 1]);
         assert!(js[debut..fin].contains(".menu-contextuel .trait"), "la feuille s'arrête avant sa dernière règle");
+    }
+}
+
+thread_local! {
+    /// **LA TABLE PERSISTÉE DES TAILLES DE MENUS** (`tailles_menus.txt`, voir
+    /// `crate::config::load_tailles_menus`) — chargée au PREMIER usage, pas au
+    /// démarrage : les popups ne servent à rien dans les premières frames, et un
+    /// fichier illisible ne doit pas retarder la boucle.
+    static TAILLES_MENUS: RefCell<Option<std::collections::HashMap<String, ([i32; 2], f64)>>> =
+        const { RefCell::new(None) };
+}
+
+/// Prête la table, chargée une fois — voir `TAILLES_MENUS`.
+fn avec_les_tailles<R>(f: impl FnOnce(&mut std::collections::HashMap<String, ([i32; 2], f64)>) -> R) -> R {
+    TAILLES_MENUS.with(|cell| {
+        let mut garde = cell.borrow_mut();
+        let table = garde.get_or_insert_with(crate::config::load_tailles_menus);
+        f(table)
+    })
+}
+
+/// **LA TAILLE D'OUVERTURE D'UN MENU : CELLE QUE SA PAGE A DEMANDÉE LA DERNIÈRE
+/// FOIS** — y compris au lancement PRÉCÉDENT (voir `crate::config::
+/// load_tailles_menus`).
+///
+/// DEMANDE EXPLICITE (2026-11-10) : « serait-il possible de pré calculer les
+/// menus, je les vois se redimensionner quand je les ouvre ». La page mesure son
+/// contenu et l'annonce APRÈS l'ouverture (voir `request_content_measure`) ;
+/// partir de l'estimation d'`app::menu_rect` à chaque fois, c'est garantir un
+/// redimensionnement visible pendant le fondu. La dernière taille RÉELLE, elle,
+/// est exacte pour un contenu inchangé — le cas courant.
+///
+/// ⚠️ **LE CAS OÙ ÇA SE TROMPE EXISTE, ET IL EST BORNÉ** : les menus dont le
+/// contenu dépend des PARAMÈTRES d'ouverture (`cef_spacer_size` : 1, 2 ou 4
+/// rangées ; `cef_context` : sous-menu dépliable) peuvent rouvrir une ou deux
+/// rangées trop court avant que la mesure fraîche — demandée à CHAQUE
+/// ouverture — ne corrige, ~100 ms plus tard, alors que le fondu de 500 ms n'est
+/// qu'à ~20 % d'opacité. C'est le prix assumé de l'absence de saut dans le cas
+/// courant, et la mesure reste l'arbitre.
+fn taille_rappelee(slot: &'static LocalKey<PopupSlot>, rect: [i32; 4]) -> [i32; 4] {
+    let (cle, facteur) = slot.with(|s| (s.identite.get(), s.content_factor.get()));
+    let Some(cle) = cle else { return rect };
+    let memorisee = avec_les_tailles(|table| table.get(cle).copied());
+    let taille = taille_d_ouverture(memorisee, facteur, MENU_ROOM.with(std::cell::Cell::get), rect);
+    if taille != rect {
+        crate::diag!("[menu/taille] rappelee {taille:?} depuis {cle} (facteur {facteur})");
+    }
+    taille
+}
+
+/// La décision PURE de `taille_rappelee` — sans fichier ni `thread_local`, donc
+/// éprouvable (voir `tests_taille_rappelee`).
+///
+/// **LA TAILLE EST RAMENÉE À L'ÉCHELLE ACTUELLE** par le rapport des
+/// `content_factor` : la table est en pixels PHYSIQUES d'ALORS, et bouger
+/// « Taille des menus » entre deux lancements doit la faire suivre, pas la figer.
+/// Puis elle est BORNÉE À LA ZONE LIBRE, comme `resize_to_content` : une taille
+/// mémorisée sur un écran 4K ne doit pas ouvrir une fenêtre plus grande que la
+/// place disponible. Rend `rect` tel quel sans mémoire, ou pour un popup que son
+/// contenu ne pilote pas (facteur `0.0` : les PANNEAUX, voir `content_factor`).
+fn taille_d_ouverture(
+    memorisee: Option<([i32; 2], f64)>,
+    facteur: f64,
+    room: [i32; 4],
+    rect: [i32; 4],
+) -> [i32; 4] {
+    let Some((taille, facteur_alors)) = memorisee else { return rect };
+    if facteur <= 0.0 || facteur_alors <= 0.0 {
+        return rect;
+    }
+    let echelle = facteur / facteur_alors;
+    let mut w = ((taille[0] as f64) * echelle).round() as i32;
+    let mut h = ((taille[1] as f64) * echelle).round() as i32;
+    if room[2] > 0 {
+        w = w.min(room[2]);
+    }
+    if room[3] > 0 {
+        h = h.min(room[3]);
+    }
+    [rect[0], rect[1], w.max(1), h.max(1)]
+}
+
+/// Deux tailles SONT LA MÊME à la tolérance près — sert à deux endroits, et
+/// c'est voulu : la confirmation d'une mesure (`appliquer_la_mesure`) et la
+/// décision de NE PAS déplacer la fenêtre pour ce résidu (`resize_to_content`).
+/// Si les deux seuils divergeaient, une mesure « confirmée » pourrait encore
+/// provoquer un saut visible de quelques pixels.
+///
+/// La tolérance est en pixels PHYSIQUES : les annonces d'un même contenu
+/// peuvent varier de une ou deux unités CSS selon la barre de défilement
+/// (`296` puis `297`).
+fn mesure_concordante(precedente: [i32; 2], courante: [i32; 2]) -> bool {
+    (precedente[0] - courante[0]).abs() <= MESURE_TOLERANCE
+        && (precedente[1] - courante[1]).abs() <= MESURE_TOLERANCE
+}
+
+/// **APPLIQUE UNE MESURE — SI ELLE EST DIGNE DE FOI.** Voir `MESURE_TOLERANCE`
+/// pour la mesure du défaut, et `PopupSlot::ouverture_a`.
+///
+/// Trois issues, et chacune couvre un cas réel :
+/// 1. **hors stabilisation** (ou plafond `MESURE_OUVERTURE_MAX` dépassé) : on
+///    applique, comme avant — c'est le régime permanent ;
+/// 2. **annonce CONCORDANTE** avec la précédente : c'est la vraie taille, on
+///    applique et on sort de la stabilisation ;
+/// 3. **annonce isolée** : on la retient (`mesure_en_attente`) sans y toucher.
+///    Elle s'appliquera si aucune autre n'arrive pendant `MESURE_SILENCE` (voir
+///    la fin de `drain_actions`).
+fn appliquer_la_mesure(slot: &'static LocalKey<PopupSlot>, cible: [i32; 2]) {
+    let maintenant = Instant::now();
+    let appliquer = slot.with(|s| {
+        let Some(ouverture) = s.ouverture_a.get() else { return true };
+        // ⚠️ `ouverture_a` N'EST PAS REMIS À `None` ICI : c'est
+        // `retenir_pour_l_ouverture` qui le fera, au moment où la taille est
+        // réellement appliquée. L'effacer avant laissait `resize_to_content`
+        // croire à un redimensionnement ordinaire, et la taille d'ouverture
+        // n'était alors JAMAIS retenue pour la fois suivante.
+        if maintenant.duration_since(ouverture) >= MESURE_OUVERTURE_MAX {
+            s.mesure_en_attente.set(None);
+            return true;
+        }
+        let precedente = s.mesure_precedente.get();
+        s.mesure_precedente.set(Some(cible));
+        if precedente.is_some_and(|precedente| mesure_concordante(precedente, cible)) {
+            s.mesure_en_attente.set(None);
+            crate::diag!("[menu/mesure] confirmee {cible:?}");
+            true
+        } else {
+            s.mesure_en_attente.set(Some((cible, maintenant)));
+            crate::diag!("[menu/mesure] en attente de confirmation {cible:?}");
+            false
+        }
+    });
+    if appliquer {
+        resize_to_content(slot, Some(cible[0]), Some(cible[1]));
+    }
+}
+
+/// **RETIENT LA TAILLE — SI CELLE-CI EST CELLE DE L'OUVERTURE.**
+///
+/// Appelée par `resize_to_content` à chaque redimensionnement piloté par la
+/// page, mais elle ne retient QUE celui qui suit l'ouverture (marquée par
+/// `PopupSlot::ouverture_a`) : c'est la taille à laquelle le menu doit
+/// naître la prochaine fois.
+///
+/// ⛔ **ET PAS CELLE QU'UN SOUS-MENU DÉPLIÉ DONNE ENSUITE.** Le menu des
+/// fréquences s'ouvre replié ; un utilisateur qui le déplie redimensionne la
+/// fenêtre APRÈS l'ouverture. Retenir cette taille-là ferait naître le menu
+/// déplié, puis le faire rétrécir une fois la page remesurée — c'est-à-dire
+/// le saut même qu'on supprime, à chaque ouverture, pour tout le monde.
+fn retenir_pour_l_ouverture(slot: &PopupSlot, taille: [i32; 2]) {
+    let ouverture = slot.ouverture_a.get().is_some();
+    slot.ouverture_a.set(None);
+    if !ouverture {
+        return;
+    }
+    if let Some(cle) = slot.identite.get() {
+        memoriser_taille(cle, taille, slot.content_factor.get());
+    }
+}
+
+/// **RETIENT LA TAILLE DEMANDÉE PAR LA PAGE, POUR LES FOIS SUIVANTES** — en
+/// mémoire et sur disque (voir `taille_rappelee`). Appelée par
+/// `retenir_pour_l_ouverture`, seul chemin qui décide QUELLE taille retenir.
+///
+/// **ON N'ÉCRIT QUE SI QUELQUE CHOSE CHANGE** : cette fonction est traversée à
+/// chaque pas de la cascade d'ouverture (une fenêtre qui passe par deux ou trois
+/// tailles), et réécrire le fichier pour une valeur identique serait du bruit.
+fn memoriser_taille(cle: &str, taille: [i32; 2], facteur: f64) {
+    if facteur <= 0.0 || taille[0] <= 0 || taille[1] <= 0 {
+        return;
+    }
+    avec_les_tailles(|table| {
+        let change = table.get(cle).is_none_or(|(ancienne, ancien_facteur)| {
+            *ancienne != taille || (ancien_facteur - facteur).abs() > 1e-6
+        });
+        if change {
+            table.insert(cle.to_string(), (taille, facteur));
+            crate::config::save_tailles_menus(table);
+        }
+    });
+}
+
+/// **LA CONFIRMATION D'UNE MESURE** — le correctif de la cascade de
+/// redimensionnements (voir `MESURE_TOLERANCE` et `appliquer_la_mesure`).
+#[cfg(test)]
+mod tests_mesure_confirmee {
+    use super::*;
+
+    /// Deux annonces d'un MÊME contenu peuvent varier de une ou deux unités
+    /// (barre de défilement) : la tolérance les rapproche.
+    #[test]
+    fn une_variation_d_unites_css_est_concordante() {
+        assert!(mesure_concordante([621, 504], [624, 504]));
+        assert!(mesure_concordante([622, 504], [622, 504]));
+    }
+
+    /// Deux étapes DIFFÉRENTES de la cascade ne sont pas concordantes : c'est
+    /// tout ce qui empêche la fenêtre de suivre la page pendant qu'elle se
+    /// reconstruit (mesuré : 439×630, 439×672, 626×544, 624×504, 622×504).
+    #[test]
+    fn deux_etapes_de_la_cascade_ne_se_confirment_pas() {
+        assert!(!mesure_concordante([439, 630], [439, 672]), "hauteur en construction");
+        assert!(!mesure_concordante([439, 672], [626, 544]), "largeur et hauteur");
+        assert!(!mesure_concordante([626, 544], [297 * 2, 240 * 2]));
+    }
+
+    /// Le seuil est INCLUSIF : quatre pixels passent, cinq non.
+    #[test]
+    fn le_seuil_est_inclusif() {
+        assert!(mesure_concordante([100, 100], [104, 96]));
+        assert!(!mesure_concordante([100, 100], [105, 100]));
+    }
+}
+
+#[cfg(test)]
+mod tests_taille_rappelee {
+    use super::*;
+
+    /// Sans mémoire (jamais mesuré, ou fichier absent) : l'estimation de
+    /// l'appelant est rendue telle quelle.
+    #[test]
+    fn sans_mesure_anterieure_l_estimation_est_rendue() {
+        assert_eq!(taille_d_ouverture(None, 2.1, [124, 54, 3586, 2042], [10, 20, 672, 531]), [10, 20, 672, 531]);
+    }
+
+    /// Une mesure existe : on rouvre à SA taille, position de l'appelant intacte.
+    #[test]
+    fn la_derniere_taille_de_la_page_reprend_la_main() {
+        let t = taille_d_ouverture(Some(([622, 504], 2.1)), 2.1, [124, 54, 3586, 2042], [124, 100, 672, 531]);
+        assert_eq!(t, [124, 100, 622, 504]);
+    }
+
+    /// « Taille des menus » a bougé entre les deux lancements : la taille
+    /// rappelée suit l'échelle, elle ne revient pas à l'ancienne.
+    #[test]
+    fn la_taille_rappelee_suit_l_echelle_des_menus() {
+        let [_, _, w, h] = taille_d_ouverture(Some(([622, 504], 2.1)), 3.0, [124, 54, 3586, 2042], [124, 100, 0, 0]);
+        let attendu = ((622.0_f64 * 3.0 / 2.1).round() as i32, (504.0_f64 * 3.0 / 2.1).round() as i32);
+        assert_eq!((w, h), attendu, "echelle appliquee");
+    }
+
+    /// Une taille mémorisée sur un autre écran ne peut pas dépasser la zone
+    /// libre — c'est le même plafond que `resize_to_content`.
+    #[test]
+    fn la_taille_rappelee_est_bornee_par_la_zone_libre() {
+        let t = taille_d_ouverture(Some(([1498, 1132], 2.1)), 2.1, [124, 54, 900, 600], [0, 0, 672, 531]);
+        assert_eq!(t, [0, 0, 900, 600], "largeur et hauteur bornees");
+    }
+
+    /// Un PANNEAU n'est pas piloté par son contenu (facteur `0.0`) : sa taille
+    /// de zone l'emporte, une mesure ne doit pas la remplacer.
+    #[test]
+    fn un_panneau_ne_rappelle_rien() {
+        assert_eq!(
+            taille_d_ouverture(Some(([622, 504], 2.1)), 0.0, [0, 0, 0, 0], [0, 0, 1200, 900]),
+            [0, 0, 1200, 900]
+        );
     }
 }
 
