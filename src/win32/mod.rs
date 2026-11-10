@@ -273,3 +273,7 @@ pub mod wgc;
 pub mod window;
 pub mod window_previews;
 pub mod windows_update;
+// **LA MISE À JOUR DEPUIS LA DERNIÈRE RELEASE GITHUB** — vérification, archive,
+// préparation et assistant de remplacement. Voir sa doc de module pour l'ordre
+// complet et pour la raison du processus séparé.
+pub mod maj;

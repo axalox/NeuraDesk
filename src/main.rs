@@ -58,6 +58,12 @@ fn main() {
     // ecrit et SORT, comme les deux ci-dessus.
     config_initiale::exporter_si_demande();
 
+    // **L'ASSISTANT DE MISE À JOUR** (voir `win32::maj`, doc de module) : ce
+    // processus est une COPIE de l'exécutable, lancée après la fermeture de
+    // l'application ; il échange les dossiers et relance, puis SORT. Avant tout
+    // appel CEF, comme les trois modes ci-dessus.
+    win32::maj::executer_si_demande();
+
     // DOIT être le TOUT PREMIER appel CEF de `main()`, avant même le reste de
     // l'initialisation Win32 ci-dessous — voir `win32::cef_app`, doc de
     // module ("piège n°1") : `cef::api_hash` doit précéder tout autre appel
@@ -156,7 +162,13 @@ fn main() {
         // L'import confirmé s'applique ICI : `app::run` est fini, plus rien ne
         // réécrira ses fichiers (voir `sauvegarde_config`).
         sauvegarde_config::appliquer_si_confirme();
-        app::spawn_replacement_process();
+        // **UNE MISE À JOUR PRÉPARÉE PREND LE PAS SUR UNE SIMPLE RELANCE** :
+        // c'est l'assistant qui relancera l'application, après avoir échangé
+        // les dossiers. `false` = aucune mise à jour demandée, ou son lancement
+        // a échoué — on retombe alors sur le rechargement ordinaire.
+        if !win32::maj::lancer_l_installation_si_demandee() {
+            app::spawn_replacement_process();
+        }
     }
 
     match &result {

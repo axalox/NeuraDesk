@@ -12072,6 +12072,23 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     crate::win32::cef_apropos::toggle(crate::win32::cef_apropos::rect_pour_ecran_primaire(), &gfx);
                     continue;
                 }
+                // "app/update" — DEMANDE (2026-11-10) : « que l'app propose de
+                // mettre à jour ». Le menu ouvre la fenêtre « À propos » (dont
+                // la section Mises à jour est le seul endroit d'installation)
+                // et FORCE une vérification, contrairement à l'ouverture
+                // ordinaire qui se contente de l'anti-rebond de cinq minutes.
+                if action == "app/update" {
+                    crate::win32::cef_context::hide_if_visible();
+                    // ⛔ PAS `toggle` : si « À propos » est déjà ouverte, la
+                    // refermer serait le contraire de ce que ce menu demande.
+                    if crate::win32::cef_apropos::est_visible() {
+                        crate::win32::cef_apropos::ramener_devant();
+                    } else {
+                        crate::win32::cef_apropos::toggle(crate::win32::cef_apropos::rect_pour_ecran_primaire(), &gfx);
+                    }
+                    crate::win32::maj::verifier(true);
+                    continue;
+                }
                 // "app/refresh_rate/<hz|auto>" — DEMANDE EXPLICITE ("une
                 // option... qui permette de choisir la fréquence de
                 // rafraîchissement de l'app"), propre à ce popup (voir
@@ -13060,6 +13077,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // panneau se rouvrirait sur des prévisions vieilles d'un quart d'heure
             // alors que les fraîches sont dans le canal.
             crate::win32::meteo::avancer();
+            // **LA MISE À JOUR** (voir `win32::maj`) : vérification automatique
+            // différée au démarrage, et dépôt du toast sur CE fil (WinRT demande
+            // un appartement COM, que seul le fil principal a initialisé).
+            crate::win32::maj::avancer();
             // La carte du panneau (onglets Radar, Vent, Orage, Neige) — même raison.
             crate::win32::meteo_carte::avancer();
             crate::win32::meteo_horloge::avancer();

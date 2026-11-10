@@ -73,7 +73,10 @@ thread_local! {
 ///
 /// **PASSÉ DE 3 À 4 LE 2026-11-08** : « À propos de NeuraDesk » (voir
 /// `win32::cef_apropos`).
-pub const COLLAPSED_BUTTON_COUNT: usize = 4;
+///
+/// **PASSÉ DE 4 À 5 LE 2026-11-10** : « Rechercher les mises à jour » (voir
+/// `win32::maj`, action `app/update`).
+pub const COLLAPSED_BUTTON_COUNT: usize = 5;
 
 const SPEC: PopupSpec = PopupSpec {
     class_name: w!("NeuraDeskCefContextWindow"),

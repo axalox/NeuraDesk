@@ -126,6 +126,12 @@
          logo et le numéro de version » — ouvre `win32::cef_apropos` (voir
          `app::run`, action `app/about`). Compté dans `COLLAPSED_BUTTON_COUNT`. -->
     <button onclick="location.href='neuradesk://app/about'">À propos de NeuraDesk</button>
+    <!-- DEMANDE (2026-11-10) : « que l'app propose de mettre à jour ». Ouvre la
+         fenêtre « À propos » sur sa section Mises à jour et force une
+         vérification de la dernière release GitHub (voir `win32::maj`,
+         `app::run` action `app/update`). Compté dans
+         `COLLAPSED_BUTTON_COUNT`. -->
+    <button onclick="location.href='neuradesk://app/update'">Rechercher les mises à jour</button>
     <hr class="separator">
     <button id="freqToggle" class="submenu-toggle"></button>
     <div id="rates"></div>

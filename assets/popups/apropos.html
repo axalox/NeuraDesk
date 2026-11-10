@@ -80,6 +80,32 @@
   }
   #version dt { opacity: .7; }
   #version dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* La mise à jour : même carte que la version, et des boutons de la même
+     famille que « Ouvrir l'aide ». Aucun bouton n'est RECRÉÉ par setState —
+     seul `hidden` change : un élément remplacé entre le mousedown et le
+     mouseup perdrait son clic (défaut réel de context.html). */
+  #maj {
+    margin: 0 0 12px;
+    padding: 8px 12px;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.10 * var(--popup-fond-alpha, 1)));
+  }
+  #maj h2 { margin: 0 0 6px; font-size: 12.5px; font-weight: 600; }
+  #maj-etat { margin: 0 0 8px; opacity: .9; }
+  #maj-barre { display: block; width: 100%; height: 8px; margin: 0 0 8px; accent-color: rgb(var(--popup-accent-rgb, 255, 255, 255)); }
+  #maj-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  #maj-actions button {
+    all: unset;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.40 * var(--popup-fond-alpha, 1)));
+  }
+  #maj-actions button:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.60 * var(--popup-fond-alpha, 1))); }
+  #maj-actions button[hidden] { display: none; }
   p { margin: 0 0 8px; }
   #pied { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
   #licence { font-size: 11px; opacity: .65; }
@@ -111,6 +137,20 @@
       <dt>Publication</dt><dd id="v-publication">—</dd>
     </dl>
 
+    <!-- LA MISE À JOUR (voir win32::maj) : l'état est poussé par Rust, la page
+         n'a que quatre verbes — vérifier, installer, annuler, redémarrer. -->
+    <section id="maj">
+      <h2>Mises à jour</h2>
+      <p id="maj-etat">Aucune vérification effectuée.</p>
+      <progress id="maj-barre" max="100" value="0" hidden></progress>
+      <div id="maj-actions">
+        <button id="maj-verifier" title="Interroger la dernière release publiée sur GitHub">Vérifier les mises à jour</button>
+        <button id="maj-installer" hidden>Télécharger et installer</button>
+        <button id="maj-annuler" hidden>Annuler</button>
+        <button id="maj-redemarrer" hidden>Redémarrer et installer</button>
+      </div>
+    </section>
+
     <p>NeuraDesk remplace l'aspect de la barre des tâches par un environnement
     complet : un <b>dock</b> d'icônes à gauche avec effet de loupe, une
     <b>barre du haut</b> (horloge, réseau, son, notifications), une barre du
@@ -137,7 +177,91 @@
   });
   document.getElementById("fermer").addEventListener("click", function () { go("fermer"); });
   document.getElementById("ouvrir-aide").addEventListener("click", function () { go("aide"); });
+  document.getElementById("maj-verifier").addEventListener("click", function () { go("maj_verifier"); });
+  document.getElementById("maj-installer").addEventListener("click", function () { go("maj_installer"); });
+  document.getElementById("maj-annuler").addEventListener("click", function () { go("maj_annuler"); });
+  document.getElementById("maj-redemarrer").addEventListener("click", function () { go("maj_redemarrer"); });
   window.addEventListener("keydown", function (e) { if (e.key === "Escape") go("fermer"); });
+
+  // Une taille d'octets dans l'unité qui se lit — le MÊME calcul que
+  // `win32::maj::taille_lisible`, côté Rust, pour la taille annoncée.
+  function tailleLisible(octets) {
+    if (typeof octets !== "number" || !isFinite(octets)) return "—";
+    const unites = ["o", "Ko", "Mo", "Go"];
+    let valeur = octets;
+    let rang = 0;
+    while (valeur >= 1024 && rang + 1 < unites.length) { valeur /= 1024; rang++; }
+    return rang === 0 ? Math.round(valeur) + " o" : valeur.toFixed(1) + " " + unites[rang];
+  }
+
+  function pourcent(recu, total) {
+    return total ? Math.min(100, Math.round(recu * 100 / total)) : 0;
+  }
+
+  // **L'ÉTAT DE LA MISE À JOUR** — une seule fonction, qui ne fait que montrer
+  // ou cacher des boutons FIXES (même discipline que context.html).
+  function appliquerMaj(m) {
+    const etat = m.etat || "inconnu";
+    const barre = document.getElementById("maj-barre");
+    const texte = document.getElementById("maj-etat");
+    const verifier = document.getElementById("maj-verifier");
+    const installer = document.getElementById("maj-installer");
+    const annuler = document.getElementById("maj-annuler");
+    const redemarrer = document.getElementById("maj-redemarrer");
+    let libelle = "";
+    let montreVerifier = true;
+    let montreInstaller = false;
+    let montreAnnuler = false;
+    let montreRedemarrer = false;
+    let montreBarre = false;
+    let avancement = 0;
+
+    switch (etat) {
+      case "verification":
+        libelle = "Recherche d'une nouvelle version…";
+        montreVerifier = false;
+        break;
+      case "a_jour":
+        libelle = "NeuraDesk est à jour" + (m.version ? " (" + m.version + ")." : ".");
+        break;
+      case "disponible":
+        libelle = "La version " + m.version + " est disponible" +
+          (m.taille_lisible ? " (" + m.taille_lisible + ")." : ".");
+        montreInstaller = true;
+        break;
+      case "telechargement":
+        libelle = "Téléchargement de " + m.version + "… " + tailleLisible(m.recu) +
+          (m.total ? " / " + tailleLisible(m.total) : "");
+        montreVerifier = false;
+        montreAnnuler = true;
+        montreBarre = true;
+        avancement = pourcent(m.recu, m.total);
+        break;
+      case "extraction":
+        libelle = "Installation en cours… " + m.recu + " / " + m.total + " fichiers";
+        montreVerifier = false;
+        montreBarre = true;
+        avancement = pourcent(m.recu, m.total);
+        break;
+      case "pret":
+        libelle = "La version " + m.version + " est prête. Redémarrez NeuraDesk pour l'installer.";
+        montreVerifier = false;
+        montreRedemarrer = true;
+        break;
+      case "erreur":
+        libelle = "La mise à jour a échoué : " + (m.message || "raison inconnue");
+        break;
+      default:
+        libelle = "Aucune vérification effectuée.";
+    }
+    texte.textContent = libelle;
+    barre.hidden = !montreBarre;
+    barre.value = avancement;
+    verifier.hidden = !montreVerifier;
+    installer.hidden = !montreInstaller;
+    annuler.hidden = !montreAnnuler;
+    redemarrer.hidden = !montreRedemarrer;
+  }
 
   // La date du commit (`AAAA-MM-JJ`) en clair, à la française.
   function dateLisible(iso) {
@@ -153,6 +277,7 @@
     document.getElementById("v-revision").textContent = state.revision || "—";
     document.getElementById("v-date").textContent = dateLisible(state.date);
     document.getElementById("v-publication").textContent = state.publication || "—";
+    appliquerMaj(state.maj || {});
   };
 </script>
 </body>

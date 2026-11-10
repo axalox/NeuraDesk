@@ -30,6 +30,9 @@ thread_local! {
     /// Quelques poussées après l'ouverture : la page peut ne pas avoir encore
     /// défini `window.setState` (même raison que `cef_quadrapassel::RAFALE`).
     static RAFALE: Cell<u32> = const { Cell::new(0) };
+    /// Le numéro d'état de `win32::maj` déjà poussé — voir `refresh_if_visible`.
+    /// `u64::MAX` = « rien encore », pour forcer la première poussée.
+    static DERNIERE_GENERATION_MAJ: Cell<u64> = const { Cell::new(u64::MAX) };
 }
 
 const SPEC: PopupSpec = PopupSpec {
@@ -45,10 +48,11 @@ const SPEC: PopupSpec = PopupSpec {
 
 /// Unités de page → pixels physiques : le zoom `CONTENT_ZOOM_FACTOR` (3×).
 const PX_PAR_UNITE: i32 = 3;
-/// La taille VISÉE, en unités de page : le logo, la version et le texte sans
-/// ascenseur à la taille de texte par défaut. Plafonnée à `PART_ECRAN`.
-const LARGEUR: i32 = 420;
-const HAUTEUR: i32 = 670;
+/// La taille VISÉE, en unités de page : le logo, la version, la mise à jour et
+/// le texte sans ascenseur à la taille de texte par défaut. Plafonnée à
+/// `PART_ECRAN`.
+const LARGEUR: i32 = 440;
+const HAUTEUR: i32 = 860;
 
 fn taille_pour_tout_le_contenu(largeur_ecran: i32, hauteur_ecran: i32) -> [i32; 2] {
     let plafond_l = (largeur_ecran * PART_ECRAN / 100) / PX_PAR_UNITE;
@@ -79,10 +83,27 @@ pub fn toggle(rect: [i32; 4], gfx: &GfxDevice) {
         return;
     }
     PAYLOAD.with(|p| *p.borrow_mut() = None);
+    DERNIERE_GENERATION_MAJ.with(|g| g.set(u64::MAX));
     cef_popup::regler_zoom_textes(&SLOT, crate::win32::taille_panneaux::global(crate::win32::taille_panneaux::TEXTES), rect);
     cef_popup::montrer_fenetre(&SLOT, &SPEC, rect, gfx);
     RAFALE.with(|r| r.set(6));
+    // Une ouverture rafraîchit l'état des mises à jour, mais pas plus d'une
+    // fois toutes les cinq minutes (le module tient l'anti-rebond).
+    crate::win32::maj::verifier(false);
     push_state();
+}
+
+/// La fenêtre est-elle affichée ? — pour l'entrée « Rechercher les mises à
+/// jour » du menu, qui doit la RAMENER sans la refermer (`toggle` bascule).
+pub fn est_visible() -> bool {
+    cef_popup::is_visible(&SLOT)
+}
+
+/// La RAMÈNE DEVANT sans la cacher — voir `est_visible`.
+pub fn ramener_devant() {
+    if let Some(hwnd) = cef_popup::hwnd(&SLOT) {
+        cef_popup::force_foreground(hwnd);
+    }
 }
 
 pub fn render_if_visible(tint_rgba: [f32; 4], accent_rgb: [f32; 3], dark_mode: bool) {
@@ -100,6 +121,9 @@ fn etat_json() -> String {
         "revision": env!("NEURADESK_REVISION"),
         "date": env!("NEURADESK_DATE_REVISION"),
         "publication": env!("NEURADESK_PUBLICATION"),
+        // La mise à jour a son propre sous-objet : elle change sans que la
+        // version compilée change, et la page n'a pas à les mélanger.
+        "maj": crate::win32::maj::etat_json(),
     })
     .to_string()
 }
@@ -124,10 +148,25 @@ pub fn refresh_if_visible() {
     if !cef_popup::is_visible(&SLOT) {
         return;
     }
+    // ⚠️ **LA MISE À JOUR CHANGE SANS GESTE DE L'UTILISATEUR** (téléchargement,
+    // extraction, vérification silencieuse) : ce numéro est ce qui fait pousser
+    // l'état à la page même quand `RAFALE` est épuisée. Sans lui, la barre de
+    // progression resterait figée jusqu'au prochain clic.
+    let generation = crate::win32::maj::generation();
+    let maj_changee = DERNIERE_GENERATION_MAJ.with(|g| {
+        if g.get() == generation {
+            false
+        } else {
+            g.set(generation);
+            true
+        }
+    });
     let restante = RAFALE.with(|r| r.get());
     if restante > 0 {
         RAFALE.with(|r| r.set(restante - 1));
         PAYLOAD.with(|p| *p.borrow_mut() = None);
+        push_state();
+    } else if maj_changee {
         push_state();
     }
 }
@@ -154,6 +193,13 @@ pub fn dispatch_actions() {
                 // Ouverte EN HAUT (ancre vide) à la prochaine frame par `app::run`.
                 crate::win32::cef_aide::demander("");
             }
+            // **LES QUATRE GESTES DE LA MISE À JOUR** (voir `win32::maj`) — la
+            // page ne connaît que ces verbes, et c'est Rust qui décide de ce
+            // qu'ils engagent.
+            "maj_verifier" => crate::win32::maj::verifier(true),
+            "maj_installer" => crate::win32::maj::installer(),
+            "maj_annuler" => crate::win32::maj::annuler(),
+            "maj_redemarrer" => crate::win32::maj::redemarrer_pour_installer(),
             autre => crate::diag!("[apropos] verbe inconnu : {autre:?}"),
         }
     }
@@ -201,7 +247,15 @@ fn code_pour_point(rect: [i32; 4], (x, y): (i32, i32)) -> i32 {
 mod tests {
     use super::*;
 
-    const VERBES: [&str; 3] = ["deplacer", "fermer", "aide"];
+    const VERBES: [&str; 7] = [
+        "deplacer",
+        "fermer",
+        "aide",
+        "maj_verifier",
+        "maj_installer",
+        "maj_annuler",
+        "maj_redemarrer",
+    ];
 
     #[test]
     fn les_verbes_de_la_page_sont_exactement_ceux_du_dispatch() {
@@ -225,6 +279,16 @@ mod tests {
         for champ in ["version", "revision", "date", "publication"] {
             assert!(page.contains(&format!("state.{champ}")), "la page n'affiche pas `{champ}`");
         }
+    }
+
+    #[test]
+    fn la_page_porte_la_section_de_mise_a_jour() {
+        let page = include_str!("../../assets/popups/apropos.html");
+        for id in ["maj-etat", "maj-verifier", "maj-installer", "maj-annuler", "maj-redemarrer"] {
+            assert!(page.contains(&format!("id=\"{id}\"")), "la section de mise à jour n'a pas `{id}`");
+        }
+        assert!(page.contains("state.maj"), "la page n'affiche pas l'état `maj` poussé par Rust");
+        assert!(page.contains("progress"), "aucune barre de progression");
     }
 
     #[test]
