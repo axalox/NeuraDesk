@@ -18,6 +18,18 @@
 //! `synchroniser` — un menu ou un dash ouvert après elle passe dessous en moins
 //! de `REMONTEE`.
 //!
+//! ⭐ **SAUF QUAND UNE ICÔNE EST AGRANDIE** — DEMANDE EXPLICITE (2026-11-11) :
+//! « l'effet de magnification doit faire apparaître les icônes au-dessus des
+//! ombrages, des dashs et des menus ». L'icône agrandie est dessinée par la
+//! fenêtre du dock ; elle ne peut donc passer devant les ombres que si le dock
+//! passe devant elles. Tant que `ui::dock::magnification_en_cours` est vrai,
+//! `ranger` remonte les docks en tête et pose OMBRES ET MENUS dessous (voir
+//! `rangement_magnifie`) ; la magnification retombée, `app::run` rappelle
+//! `remonter` et l'ordre normal revient. ⛔ **Les ombres ne sont plus possédées
+//! par le dock** (mais par `socle`) : une fenêtre possédée est toujours
+//! AU-DESSUS de son propriétaire, donc aucun `SetWindowPos` n'aurait pu les
+//! faire passer sous lui.
+//!
 //! **Elle suit la barre** : chaque rendu de dock DÉCLARE sa barre (`declarer`),
 //! et une barre dont la fenêtre est masquée (plein écran, barre escamotée)
 //! n'a pas d'ombre.
@@ -76,7 +88,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
 use windows::core::w;
@@ -1612,6 +1624,10 @@ pub fn synchroniser() {
 /// au-dessus d'elles — appelé après chaque remontée du dock
 /// (`Window::raise_to_top`) et par `synchroniser`.
 ///
+/// ⭐ **ET PENDANT UNE MAGNIFICATION, L'ORDRE S'INVERSE** — le dock passe
+/// DEVANT les ombres et les menus (`rangement_magnifie`), pour que l'icône
+/// agrandie ne soit recouverte par rien. Voir `ui::dock::magnification_en_cours`.
+///
 /// ⭐ **LES MENUS, ET RIEN QU'EUX** — DEMANDE EXPLICITE (2026-10-23) : « je ne
 /// veux que les menus au-dessus des ombres ». Les panneaux et les fenêtres
 /// (Dash, Réglages, applets) restent SOUS les ombres, comme les autres
@@ -1660,6 +1676,12 @@ fn ranger(ombres: &[HWND], menus: &[HWND], docks: &[HWND], panneaux: &[HWND]) {
     let poser = |hwnd, sous| {
         let _ = unsafe { SetWindowPos(hwnd, Some(sous), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER) };
     };
+    // ⭐ **UNE ICÔNE AGRANDIE PASSE DEVANT TOUT** — voir `rangement_magnifie` et
+    // `ui::dock::magnification_en_cours`, qui porte la demande explicite.
+    if crate::ui::dock::magnification_en_cours() {
+        rangement_magnifie(&poser, ombres, menus, docks);
+        return;
+    }
     for &menu in menus {
         poser(menu, HWND_TOPMOST);
     }
@@ -1671,6 +1693,51 @@ fn ranger(ombres: &[HWND], menus: &[HWND], docks: &[HWND], panneaux: &[HWND]) {
     for (hwnd, sous) in placements(ombres, menus, docks, ancre) {
         poser(hwnd, sous);
     }
+}
+
+/// **L'ORDRE PENDANT LA MAGNIFICATION : DOCK EN TÊTE, PUIS MENUS, PUIS OMBRES.**
+///
+/// DEMANDE EXPLICITE (2026-11-11) : « l'effet de magnification doit faire
+/// apparaître les icônes au-dessus des ombrages, des dashs et des menus ».
+/// L'icône agrandie est dans la fenêtre du dock : elle n'est devant que si le
+/// dock l'est, donc les docks passent EN TÊTE de la bande topmost, et tout ce
+/// qui les recouvrirait d'habitude (ombres, menus) vient SOUS eux.
+///
+/// ⚠️ **L'ANCRE EST `ancre_de_magnification`**, le premier dock de `BARRES` —
+/// celui qu'on remonte en premier, donc le PLUS BAS des docks. Poser un menu
+/// dessous le met sous TOUS les docks (chaque `SetWindowPos` remonte à son tour
+/// le dock suivant au-dessus).
+///
+/// ⚠️ **OMBRES D'ABORD, MENUS ENSUITE** : chaque insertion se fait JUSTE sous
+/// l'ancre, donc la dernière posée finit la plus haute. Les menus restent donc
+/// devant les ombres, comme au repos (demande du 2026-10-23) — il n'y a que le
+/// dock qui change de camp.
+fn rangement_magnifie(poser: &impl Fn(HWND, HWND), ombres: &[HWND], menus: &[HWND], docks: &[HWND]) {
+    for &dock in docks {
+        poser(dock, HWND_TOPMOST);
+    }
+    // Le dock le plus bas de ceux qu'on vient de remonter : `BARRES` est la
+    // source de l'ordre des remontées ci-dessus, donc son premier élément est
+    // le premier remonté, donc le plus bas. À défaut (aucune barre déclarée —
+    // tout début de vie, ou test), le premier dock reçu fait le même office.
+    let Some(ancre) = ancre_de_magnification().or_else(|| docks.first().copied()) else { return };
+    for &ombre in ombres {
+        poser(ombre, ancre);
+    }
+    for &menu in menus {
+        poser(menu, ancre);
+    }
+}
+
+/// Le dock SOUS lequel se posent menus et ombres pendant la magnification —
+/// le PREMIER de `BARRES`, c'est-à-dire le plus bas après que `rangement_magnifie`
+/// les a tous remontés dans cet ordre. `None` : aucune barre déclarée.
+///
+/// ⚠️ **LE MÊME ANCRE SERT À `cef_popup::raise_visible_popups`** : les menus y
+/// sont reposés à chaque image pendant la magnification, et deux ancres
+/// différentes les feraient sauter d'un rang à l'autre.
+pub fn ancre_de_magnification() -> Option<HWND> {
+    BARRES.with(|b| b.try_borrow().ok().and_then(|b| b.first().map(|(h, _)| *h)))
 }
 
 /// Les `SetWindowPos` de `ranger`, DANS L'ORDRE : les docks puis les ombres,
@@ -1727,10 +1794,57 @@ fn classe() -> Option<HINSTANCE> {
     Some(instance)
 }
 
+/// **LE PROPRIÉTAIRE DES OMBRES — UN SOCLE INVISIBLE, POSSÉDÉ PAR LE DOCK.**
+///
+/// ⛔ **POURQUOI PAS LE DOCK LUI-MÊME** (c'était le cas jusqu'au 2026-11-11) :
+/// Windows impose qu'une fenêtre possédée soit **toujours AU-DESSUS de son
+/// propriétaire**. Les ombres ne pouvaient donc PAS passer sous le dock, et
+/// l'icône agrandie — dessinée par le dock — restait sous la bande d'ombre :
+/// c'est le défaut que la demande « l'effet de magnification doit faire
+/// apparaître les icônes au-dessus des ombrages » fait disparaître. Avec ce
+/// socle pour propriétaire, plus rien ne contraint leur rang relatif au dock :
+/// `ranger` le décide seul (voir `rangement_magnifie`).
+///
+/// **La durée de vie ne change pas** : le socle est possédé par le dock, donc
+/// il meurt avec lui, et les ombres meurent avec le socle.
+///
+/// Créé à la PREMIÈRE ombre, gardé ensuite. `None` tant que le dock n'existe
+/// pas (tests) : les ombres sont alors sans propriétaire, comme avant.
+fn socle() -> Option<HWND> {
+    static SOCOLE: AtomicIsize = AtomicIsize::new(0);
+    let existant = HWND(SOCOLE.load(Ordering::Relaxed) as *mut std::ffi::c_void);
+    if !existant.0.is_null() {
+        return Some(existant);
+    }
+    // Le dock doit déjà exister : c'est lui qui garde le socle en vie.
+    let proprietaire = crate::win32::coins_ecran::proprietaire()?;
+    let instance = classe()?;
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WS_EX_TOOLWINDOW,
+            w!("NdOmbreBarre"),
+            w!("NeuraDesk — socle des ombres"),
+            WS_POPUP,
+            0,
+            0,
+            1,
+            1,
+            Some(proprietaire),
+            None,
+            Some(instance),
+            None,
+        )
+    }
+    .ok()?;
+    SOCOLE.store(hwnd.0 as isize, Ordering::Relaxed);
+    Some(hwnd)
+}
+
 fn creer() -> Option<HWND> {
     let instance = classe()?;
-    // Possédée par le dock, comme les coins : voir `win32::coins_ecran`, doc de module.
-    let proprietaire = crate::win32::coins_ecran::proprietaire();
+    // Possédée par le SOCLE, pas par le dock : voir `socle`, qui porte la raison
+    // (une fenêtre possédée ne peut jamais passer sous son propriétaire).
+    let proprietaire = socle();
     match unsafe {
         CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -2676,6 +2790,51 @@ mod tests_rang {
         assert!(rang(ombre) < rang(dock), "l'ombre au-dessus du dock");
         assert!(rang(dock) < rang(panneau), "le dock (et ses congés) au-dessus du Dash ouvert");
         for h in [dock, panneau, menu, etranger, ombre] {
+            let _ = unsafe { DestroyWindow(h) };
+        }
+    }
+
+    /// ⭐ **PENDANT UNE MAGNIFICATION, LE DOCK PASSE DEVANT TOUT** — DEMANDE
+    /// EXPLICITE (2026-11-11) : « l'effet de magnification doit faire apparaître
+    /// les icônes au-dessus des ombrages, des dashs et des menus ». L'icône
+    /// agrandie est dessinée par la fenêtre du dock : elle n'est devant que si le
+    /// dock l'est. Les menus restent devant les ombres, et le panneau reste
+    /// derrière tout le monde.
+    ///
+    /// **MUTATION** : retirer le drapeau (l'ordre d'avant revient) — le dock
+    /// retombe derrière l'ombre et le menu, et ce test le nomme.
+    #[test]
+    fn une_icone_agrandie_passe_devant_les_ombres_et_les_menus() {
+        let [dock, autre_dock, panneau, menu, ombre] = [(); 5].map(|_| creer().unwrap());
+        let haut = |h| unsafe { SetWindowPos(h, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) };
+        // L'état d'avant : l'ombre devant le dock, le panneau entre les deux.
+        let _ = (haut(ombre), haut(menu), haut(panneau), haut(dock), haut(autre_dock));
+
+        let ancien = crate::ui::dock::set_magnification_en_cours(true);
+        ranger(&[ombre], &[menu], &[dock, autre_dock], &[panneau]);
+        crate::ui::dock::set_magnification_en_cours(ancien);
+
+        let rang = |cible| {
+            let mut c = unsafe { windows::Win32::UI::WindowsAndMessaging::GetTopWindow(None) }.ok();
+            let mut i = 0;
+            while let Some(h) = c {
+                if h == cible {
+                    return i;
+                }
+                i += 1;
+                c = unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindow(h, windows::Win32::UI::WindowsAndMessaging::GW_HWNDNEXT) }.ok();
+            }
+            usize::MAX
+        };
+        // Les DEUX docks remontés, et l'icône (dans le dock) devant ombre, menu
+        // et panneau — c'est la demande, dans les trois directions.
+        assert!(rang(dock) < rang(menu), "un menu recouvre encore l'icône agrandie");
+        assert!(rang(dock) < rang(ombre), "une ombre recouvre encore l'icône agrandie");
+        assert!(rang(dock) < rang(panneau), "un dash recouvre encore l'icône agrandie");
+        assert!(rang(autre_dock) < rang(menu), "le rangement ne vaut que pour un dock");
+        // L'ordre demandé le 2026-10-23 tient toujours : menus devant les ombres.
+        assert!(rang(menu) < rang(ombre), "les ombres sont repassées devant un menu");
+        for h in [dock, autre_dock, panneau, menu, ombre] {
             let _ = unsafe { DestroyWindow(h) };
         }
     }

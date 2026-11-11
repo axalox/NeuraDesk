@@ -4294,6 +4294,28 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     if let Some(scale) = config::load_clock_hover_scale() {
         dock::set_clock_hover_scale(scale);
     }
+    // ⭐ **LE FOND AU SURVOL DES ICÔNES FERMÉES** — DEMANDE EXPLICITE
+    // (2026-11-11) : « ajouter un autre effet au survol d'une icône en ajoutant
+    // un fond de couleur et de transparence paramétrable pour les programmes et
+    // applets qui ne sont pas ouverts ». GLOBAL comme les réglages de survol
+    // ci-dessus (voir `dock::survol_fond`), donc rien à transmettre au dock.
+    //
+    // JAMAIS RÉGLÉ : la couleur de départ est celle de l'ACCENTUATION DU THÈME,
+    // restaurée juste au-dessus — c'est celle qui va de soi pour un fond, et
+    // l'utilisateur n'a alors qu'à cocher la case. Le fond reste coupé (le
+    // défaut de la cellule), seul le point de départ de sa couleur est posé.
+    match config::load_survol_fond() {
+        Some((actif, couleur)) => {
+            dock::set_survol_fond_actif(actif);
+            dock::set_survol_fond_rgb([couleur[0], couleur[1], couleur[2]]);
+            dock::set_survol_fond_opacite(couleur[3]);
+        }
+        None => {
+            if let Some(rgb) = crate::ui::color::accent_du_theme() {
+                dock::set_survol_fond_rgb(rgb);
+            }
+        }
+    }
     // Transparence des éléments des panneaux (voir `cef_popup::POPUP_ALPHA`) —
     // GLOBALE elle aussi, et relue à chaque frame par `push_window_palette`,
     // donc le curseur agit à chaud sans variable locale à tenir ici.
@@ -14318,6 +14340,19 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         // mesure, pas une explication.
         let tooltips_on = crate::win32::tooltip::enabled();
         let hover_delay = crate::win32::tooltip::hover_delay();
+        // ⭐ **UN MENU AFFICHÉ TAIT L'INFOBULLE D'UNE ICÔNE** — DEMANDE EXPLICITE
+        // (2026-11-11) : « quand un menu est affiché l'infobulle de l'applet ne
+        // doit pas s'afficher ». Depuis « le menu passe toujours au-dessus des
+        // infobulles » (voir `win32::tooltip::TooltipWindow::show`), l'infobulle
+        // s'insère SOUS le menu au lieu d'en être recouverte : elle restait donc
+        // visible, posée juste à côté de lui. Lu une fois par frame, comme
+        // `tooltips_on`, et appliqué au bras de l'ICÔNE DU DOCK — celui que la
+        // demande vise (« l'applet »).
+        //
+        // ⚠️ **UN PANNEAU N'EST PAS UN MENU** — la distinction se lit sur
+        // `PopupSpec::fades` (voir `cef_popup::un_menu_visible`), jamais sur une
+        // liste de modules recopiée ici.
+        let menu_visible = crate::win32::cef_popup::un_menu_visible();
         let widget_tooltip_due = tooltip_hovered_widget
             .filter(|_| tooltips_on)
             .filter(|_| tooltip_hovered_icon.is_none())
@@ -14359,6 +14394,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     // les deux se superposeraient, et l'aperçu dit déjà tout ce que
                     // l'infobulle annoncerait.
                     .filter(|_| previews_open_for != hovered_icon.map(PreviewsFor::Icon))
+                    // ...NI TANT QU'UN MENU EST AFFICHÉ — voir `menu_visible` plus
+                    // haut (DEMANDE EXPLICITE : « quand un menu est affiché
+                    // l'infobulle de l'applet ne doit pas s'afficher »). Placé avec
+                    // les autres gardes AVANT le délai, pour que la décision se
+                    // lise d'un bloc : menu visible, pas d'infobulle — que le
+                    // délai de survol soit écoulé ou non.
+                    .filter(|_| !menu_visible)
                     .filter(|_| tooltips_on)
                     .filter(|_| tooltip_hover_start.is_some_and(|start| start.elapsed() >= hover_delay))
                     .and_then(|index| {
@@ -16062,6 +16104,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // qu'elles restent SOUS l'icône (DEMANDE EXPLICITE). Un seul
             // emplacement différé suffit : il y a au plus une icône magnifiée.
             let mut deferred_dot: Option<QuadInstance> = None;
+            // Le FOND AU SURVOL de l'icône fermée (voir `dock::survol_fond`) —
+            // même contrainte de durée de vie que `hover_icon` et que tout
+            // `*_render_instance` : le lot retient une RÉFÉRENCE, et le rendu
+            // n'a lieu qu'à la fin de la frame. Déclaré ICI, avec les autres
+            // instances de la frame, et rempli juste avant la poussée de
+            // l'icône magnifiée (voir `premier_lot_libre`).
+            let mut fond_survol_instance: Option<QuadInstance> = None;
             for (i, &running) in pinned_running.iter().enumerate() {
                 // La pastille est dessinée AUSSI quand l'application ne tourne
                 // pas, si elle a une notification : sans cela, une application
@@ -17492,6 +17541,32 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // Rang du premier lot qui a droit de sortir de la barre du haut
             // masquée (voir la découpe juste avant `renderer.render_at`).
             let premier_lot_libre = batches.len();
+            // ⭐ **LE FOND COLORÉ AU SURVOL D'UNE ICÔNE FERMÉE** — DEMANDE
+            // EXPLICITE (2026-11-11) : « ajouter un autre effet au survol d'une
+            // icône en ajoutant un fond de couleur et de transparence
+            // paramétrable pour les programmes et applets qui ne sont pas
+            // ouverts ». Choix de l'utilisateur : épinglés fermés + applets
+            // fermées, carré arrondi autour de l'icône (voir `icone_fermee`).
+            //
+            // **APRÈS `premier_lot_libre`, JUSTE AVANT l'icône magnifiée** :
+            // d'une part il doit sortir de la barre avec elle quand on survole
+            // une icône de la barre du haut masquée (les lots d'avant sont
+            // découpés), d'autre part il doit rester DESSOUS — il n'est poussé
+            // que maintenant, donc l'icône le recouvre. Le fond est un aplat
+            // dont l'alpha se compose sur la barre déjà peinte (voir
+            // `icon_halo_for`, même forme que le fond animé du logo) : il suit
+            // la magnification et le balancement de l'icône.
+            //
+            // Il n'y a qu'une icône magnifiée : une seule requête par frame,
+            // et seulement quand le réglage est actif.
+            if let (Some(fond), Some(index)) = (dock::survol_fond(), magnified) {
+                if icone_fermee(&dock, index, &pinned_running, &winpin_running) {
+                    fond_survol_instance = dock::icon_halo_for(&dock, &layout, index, false, fond);
+                }
+            }
+            if let Some(instance) = &fond_survol_instance {
+                batches.push(QuadBatch::new(None, std::slice::from_ref(instance)));
+            }
             if let Some((texture, instance)) = hover_icon {
                 batches.push(match texture {
                     Some(texture) => QuadBatch::new(Some(&texture.srv), std::slice::from_ref(instance)),
@@ -17783,19 +17858,22 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // ENSEIGNE** : le dock passe devant les quatre PANNEAUX (sans quoi
             // l'élément agrandi est caché par le Dash — DÉFAUT RÉEL SIGNALÉ :
             // « le bug des icônes et applets grandifiées sous les dashs est
-            // réapparu »), et les MENUS repassent devant lui à la ligne suivante.
-            // Voir `PopupSpec::above_a_magnified_dock`, qui porte la règle
-            // complète et les deux demandes explicites qu'elle départage.
-            if last_applied_overflow.is_some() {
+            // réapparu »), et les MENUS AUSSI DEPUIS LE 2026-11-11 — DEMANDE
+            // EXPLICITE : « l'effet de magnification doit faire apparaître les
+            // icônes au-dessus des ombrages, des dashs et des menus ». Voir
+            // `PopupSpec::above_a_magnified_dock`, qui porte la règle complète.
+            //
+            // ⚠️ **LE DRAPEAU EST POSÉ AVANT LES REMONTÉES** : `raise_to_top`
+            // déclenche `ombre_barre::remonter`, qui lit
+            // `dock::magnification_en_cours` pour inverser l'ordre — le poser
+            // après rendrait la première image de la magnification fausse.
+            let magnifie = last_applied_overflow.is_some();
+            let vient_de_retomber = dock::set_magnification_en_cours(magnifie) && !magnifie;
+            if magnifie {
                 window.raise_to_top();
-                // ...ET LES MENUS REPASSENT DEVANT, EUX AUSSI — DÉFAUT RÉEL
-                // SIGNALÉ : « il y a encore des menus de widget qui apparaissent
-                // sous les barres ». `raise_to_top` place le dock en tête de la
-                // bande topmost, donc un menu ouvert pendant qu'un widget est
-                // survolé passait DERRIÈRE la barre. Ce commentaire promettait
-                // pourtant l'inverse deux lignes plus haut (« les popups et le
-                // Dash restent devant le dock ») — c'était vrai au repos, faux
-                // dès qu'une icône se magnifie.
+                // ...ET LES MENUS SE POSENT SOUS LE DOCK, ELLE AUSSI — voir
+                // `raise_visible_popups` : il consulte le même drapeau et glisse
+                // les menus juste sous l'ancre (`ombre_barre::ancre_de_magnification`).
                 //
                 // Placé APRÈS `raise_to_top` et pas avant : l'ordre est tout
                 // l'objet de ce correctif.
@@ -17819,6 +17897,16 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 // qui passe DERRIÈRE les barres ne montrerait plus rien des
                 // fenêtres du bureau, qui sont précisément ce qu'il a à montrer.
                 desktop_preview.reassert_on_top();
+            } else if vient_de_retomber {
+                // ⭐ **LA MAGNIFICATION VIENT DE S'ARRÊTER** : les menus et les
+                // ombres reprennent leur place immédiatement — menus en tête,
+                // ombres au-dessus du dock (voir `ombre_barre::ranger`, chemin
+                // normal). Sans cet appel, ils resteraient derrière le dock
+                // jusqu'au prochain rangement périodique de `synchroniser`
+                // (`REMONTEE`, 250 ms) : les ombres seraient cachées par les
+                // barres et un menu resterait sous elles, alors que la demande
+                // inverse ne valait que pendant la magnification.
+                crate::win32::ombre_barre::remonter();
             }
 
             // L'ICÔNE « AFFICHER LE BUREAU » EST POUSSÉE ICI, EN DERNIER — et non
@@ -18506,6 +18594,144 @@ fn dot_hover_scales(
         return Vec::new();
     }
     (0..virtual_desktops.as_ref().map_or(0, |vd| vd.count)).map(|i| dots_hover.scale(i)).collect()
+}
+
+/// **LA PAGE CEF QUE PORTE CHAQUE APPLET DU NOYAU — OU AUCUNE.**
+///
+/// DEMANDE EXPLICITE (2026-11-11) : le fond au survol ne doit apparaître que sur
+/// un programme ou une applet **fermés** (voir `icone_fermee`). Une applet n'a
+/// pas d'état « ouvert » central ; ce qui en tient lieu est la visibilité de SA
+/// page (voir `cef_popup::page_visible`), et il faut donc savoir quelle page lui
+/// appartient.
+///
+/// ⚠️ **LA CLÉ EST LE NOM POSÉ PAR `poser_noms`**, pas un index : les index
+/// d'applets sont contigus et se décalent à chaque applet ajoutée, alors que le
+/// nom est stable et relu du dock (`Dock::nom_du_noyau`) au moment du dessin.
+///
+/// ⚠️ **`None` EST UNE RÉPONSE, PAS UN OUBLI** : un interrupteur (thème,
+/// éclairage nocturne, verrouillage), une applet qui ouvre une fenêtre de
+/// WINDOWS (gestionnaire de périphériques, Narrateur, clavier visuel…) ou une
+/// applet sans état ouvert n'ont pas de page à consulter. Ils sont donc traités
+/// comme fermés en permanence — c'est le cas ordinaire d'une icône qu'on va
+/// cliquer.
+///
+/// ⚠️ **CETTE LISTE EST TENUE PAR UN TEST**
+/// (`chaque_applet_du_noyau_a_sa_ligne_au_fond_du_survol`) : elle doit nommer
+/// EXACTEMENT les applets de `poser_noms`, et chaque page doit exister dans
+/// `assets/popups/`. Une applet ajoutée sans sa ligne fait échouer le test au
+/// lieu de rester sans fond en silence.
+const PAGES_DES_APPLETS: &[(&str, Option<&'static str>)] = &[
+    ("presse_papiers", Some("clipboard.html")),
+    ("reglages", Some("settings.html")),
+    ("alimentation", Some("power.html")),
+    ("terminal", Some("terminal.html")),
+    ("son", Some("sound.html")),
+    ("reseau", Some("network.html")),
+    ("voicemeeter", Some("voicemeeter.html")),
+    ("notes", Some("notes.html")),
+    // Bascules : aucun état ouvert à consulter.
+    ("theme", None),
+    ("eclairage_nocturne", None),
+    // Ouvre une file d'impression de Windows.
+    ("imprimante", None),
+    ("calendrier", Some("calendar_applet.html")),
+    ("editeur_image", Some("editeur_image.html")),
+    ("capture_ecran", Some("capture.html")),
+    ("minuteur", Some("minuteur.html")),
+    ("surveillance", Some("surveillance.html")),
+    // Panneaux RÉGLAGES de Windows, jamais une page CEF.
+    ("mise_a_jour_windows", None),
+    ("gestionnaire_peripheriques", None),
+    ("reglages_affichage", None),
+    ("calculatrice", Some("calculatrice.html")),
+    ("ssh", Some("ssh.html")),
+    ("couleurs", Some("couleurs.html")),
+    ("fonctionnalites_optionnelles", None),
+    // Le centre de notifications de Windows.
+    ("notifications", None),
+    ("recherche", Some("recherche.html")),
+    ("automatisations", Some("automatisations.html")),
+    ("meteo", Some("meteo.html")),
+    // Verrouille la session.
+    ("verrouillage", None),
+    ("caracteres", Some("caracteres.html")),
+    ("kaomoji", Some("kaomoji.html")),
+    ("aide", Some("aide.html")),
+    ("proprietes_systeme", None),
+    // Relaie NAPS2.
+    ("scanner", Some("scanner.html")),
+    ("shaders", Some("shaders.html")),
+    ("phonetique", Some("phonetique.html")),
+    ("maths", Some("maths.html")),
+    ("lueurs", Some("lueurs.html")),
+    ("textures", Some("textures.html")),
+    ("narrateur", None),
+    ("loupe", None),
+    ("moniteur", Some("moniteur.html")),
+    ("observateur_evenements", None),
+    ("enregistrer", Some("enregistrer.html")),
+    ("clavier", None),
+    ("jeu2048", Some("jeu2048.html")),
+    ("cinq_ou_plus", Some("cinq_ou_plus.html")),
+    ("quadrapassel", Some("quadrapassel.html")),
+    ("lightsoff", Some("lightsoff.html")),
+    ("reversi", Some("reversi.html")),
+    ("bovo", Some("bovo.html")),
+    ("patience", Some("patience.html")),
+];
+
+/// La page CEF d'une applet, par son nom de noyau — `None` aussi bien pour une
+/// applet SANS page que pour un nom inconnu (voir `PAGES_DES_APPLETS`).
+fn page_de_l_applet(nom: &str) -> Option<&'static str> {
+    PAGES_DES_APPLETS.iter().find(|(applet, _)| *applet == nom).and_then(|(_, page)| *page)
+}
+
+/// **L'ICÔNE `index` EST-ELLE FERMÉE, au sens du fond au survol ?**
+///
+/// Trois familles seulement répondent oui (DEMANDE EXPLICITE du 2026-11-11,
+/// choix de l'utilisateur : « Fermés : épinglés + applets ») :
+///
+/// | famille | « fermée » veut dire |
+/// |---|---|
+/// | épingles du dock | l'application ne tourne pas (`pinned_running`) |
+/// | épingles de Windows | idem (`winpin_running`) |
+/// | applets du noyau | aucune page CEF de l'applet n'est visible |
+///
+/// Tout le reste est **exclu** : le logo, les dossiers, les espaces, le miroir
+/// de notification et les applications ouvertes non épinglées ne reçoivent
+/// jamais ce fond (`Dock::nom_du_noyau` ne rend un nom que pour le noyau, et les
+/// deux familles d'épingles sont testées par leur plage).
+///
+/// ⚠️ **LES DEUX TABLEAUX DE TOURNE SONT CEUX DES PASTILLES** (voir les boucles
+/// de `running_dot_instance` dans `run`) : le fond et la pastille disent donc la
+/// même chose de la même application, ce qui est le seul moyen d'éviter qu'une
+/// icône se dise « fermée » avec un point allumé dessous.
+fn icone_fermee(
+    dock: &dock::Dock,
+    index: usize,
+    pinned_running: &[bool],
+    winpin_running: &[bool],
+) -> bool {
+    // Épingles du dock : la place d'une épingle est `PINNED_ICON_BASE + rang`,
+    // exactement comme dans la boucle des pastilles.
+    if let Some(rang) = index.checked_sub(PINNED_ICON_BASE) {
+        if let Some(&tourne) = pinned_running.get(rang) {
+            return !tourne;
+        }
+    }
+    // Épingles de la barre des tâches de Windows : leur rang passe par le dock,
+    // qui seul connaît la base de sa plage (voir `Dock::rang_dans`).
+    if let Some(rang) = dock.rang_dans(dock::Plage::WinPins, index) {
+        if let Some(&tourne) = winpin_running.get(rang) {
+            return !tourne;
+        }
+    }
+    // Applets du noyau.
+    let Some(nom) = dock.nom_du_noyau(index) else { return false };
+    match page_de_l_applet(nom) {
+        Some(page) => !crate::win32::cef_popup::page_visible(page),
+        None => true,
+    }
 }
 
 /// `left_offset` à passer aux pastilles de bureaux virtuels : celui de la zone/// d'icônes de gauche, PLUS la largeur de l'icône « afficher le bureau » quand
@@ -24724,6 +24950,194 @@ mod desktop_preview_hover_delay_tests {
         // quoi franchir une pastille ferait hériter de son temps d'attente.
         assert!(!desktop_preview_is_due(Some(5), Some((1, ago(10_000))), None, DELAY));
     }
+}
+
+/// **UN MENU AFFICHÉ TAIT L'INFOBULLE D'UNE ICÔNE** — DEMANDE EXPLICITE
+/// (2026-11-11) : « quand un menu est affiché l'infobulle de l'applet ne doit
+/// pas s'afficher ».
+///
+/// La décision vit dans `run`, qui n'existe pas hors d'une boucle de messages :
+/// ce test lit donc la SOURCE, comme ceux de `cef_capture`. Il échoue si le
+/// filtre disparaît, c'est-à-dire si la demande est défaite en silence — et
+/// c'est le seul filet, l'infobulle n'ayant aucune API publique.
+#[test]
+fn l_infobulle_d_une_icone_est_tuee_tant_qu_un_menu_est_visible() {
+    let source = include_str!("app.rs");
+    assert!(
+        source.contains("let menu_visible = crate::win32::cef_popup::un_menu_visible();"),
+        "la lecture de `un_menu_visible` a disparu de `run`"
+    );
+    assert!(
+        source.contains(".filter(|_| !menu_visible)"),
+        "le filtre qui tait l'infobulle d'icône pendant qu'un menu est affiché a disparu"
+    );
+}
+
+/// **LA TABLE DES PAGES D'APPLETS SUIT `poser_noms`, ET AUCUNE PAGE N'EST
+/// INVENTÉE** — c'est la moitié Rust du fond au survol (DEMANDE EXPLICITE du
+/// 2026-11-11 : « un fond de couleur et de transparence paramétrable pour les
+/// programmes et applets qui ne sont pas ouverts »).
+///
+/// ⚠️ **UNE APPLET AJOUTÉE SANS SA LIGNE NE CASSE RIEN DE VISIBLE** : elle
+/// n'aurait simplement jamais de fond au survol, ou pire, serait classée
+/// « fermée » pour toujours si sa page était mal orthographiée. Le test lit
+/// donc les DEUX listes — celle de `poser_noms` (l'autorité des noms) et celle
+/// de `PAGES_DES_APPLETS` —, exige qu'elles nomment EXACTEMENT les mêmes
+/// applets, et vérifie que chaque page existe dans `assets/popups/` ET qu'elle
+/// est réellement déclarée par un popup (`html_file: "…"` dans `src/win32`).
+///
+/// **MUTATION** : retirer la ligne `("calculatrice", …)`, ou renommer sa page
+/// en `calculette.html` — le test dit laquelle des deux moitiés a bougé.
+#[test]
+fn chaque_applet_du_noyau_a_sa_ligne_au_fond_du_survol() {
+    const SOURCE: &str = include_str!("app.rs");
+
+    // Les noms posés sur le noyau — la source de vérité (voir `poser_noms`).
+    let debut = SOURCE.find("let oubliees = dock.poser_noms(&[").expect("poser_noms introuvable");
+    let bloc = &SOURCE[debut..];
+    let fin = bloc.find("]);").expect("poser_noms non terminé");
+    let mut noms: Vec<String> = bloc[..fin]
+        .match_indices(", \"")
+        .filter_map(|(i, _)| bloc[i + 3..].split('"').next())
+        .map(str::to_string)
+        .collect();
+    assert!(noms.len() >= 40, "la liste des noms du noyau n'a pas été lue ({})", noms.len());
+
+    // La table du fond au survol.
+    let debut = SOURCE.find("const PAGES_DES_APPLETS:").expect("table du fond au survol absente");
+    let bloc = &SOURCE[debut..];
+    let fin = bloc.find("\n];").expect("table du fond au survol non terminée");
+    let table: Vec<(&str, Option<&str>)> = bloc[..fin]
+        .lines()
+        .filter_map(|ligne| {
+            let reste = ligne.trim().strip_prefix("(\"")?;
+            let (nom, reste) = reste.split_once("\", ")?;
+            let page = reste.strip_prefix("Some(\"").and_then(|r| r.split('"').next());
+            Some((nom, page))
+        })
+        .collect();
+    let mut vus: Vec<String> = table.iter().map(|(nom, _)| nom.to_string()).collect();
+    vus.sort();
+    noms.sort();
+    assert_eq!(
+        vus, noms,
+        "la table du fond au survol doit nommer EXACTEMENT les applets de `poser_noms` (et sans doublon)"
+    );
+
+    // Chaque page annoncée existe, et un popup la déclare vraiment.
+    let mut pages_du_code = std::collections::BTreeSet::new();
+    let dossier = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/win32");
+    for entree in std::fs::read_dir(&dossier).expect("src/win32 introuvable") {
+        let chemin = entree.expect("entrée lisible").path();
+        if chemin.extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let Ok(texte) = std::fs::read_to_string(&chemin) else { continue };
+        for (i, _) in texte.match_indices("html_file: \"") {
+            if let Some(page) = texte[i + 12..].split('"').next() {
+                pages_du_code.insert(page.to_string());
+            }
+        }
+    }
+    for (nom, page) in &table {
+        let Some(page) = page else { continue };
+        let fichier = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/popups").join(page);
+        assert!(fichier.is_file(), "{nom} : la page {page} n'existe pas dans assets/popups");
+        assert!(
+            pages_du_code.contains(*page),
+            "{nom} : aucun popup de src/win32 ne déclare html_file: \"{page}\""
+        );
+    }
+}
+
+/// **SEULES LES ICÔNES FERMÉES REÇOIVENT LE FOND** — la règle complète, sur un
+/// dock réel : le logo et tout ce qui n'est pas une applet du noyau sont exclus ;
+/// une applet sans page visible est fermée ; une applet sans page CEF l'est
+/// toujours ; une épingle suit SON état « tourne » (les deux tableaux sont ceux
+/// des pastilles, voir `icone_fermee`).
+///
+/// **MUTATION** : inverser un `!tourne`, ou faire répondre `true` pour un index
+/// sans nom — le test nomme le cas.
+#[test]
+fn le_fond_au_survol_ne_prend_que_les_icones_fermees() {
+    let mut dock = dock::Dock::new([0.0, 0.0, 0.0, 1.0], 0);
+    dock.poser_noms(&[(1, "calculatrice"), (2, "theme")]);
+
+    // Le logo n'est pas une applet : jamais de fond.
+    assert!(!icone_fermee(&dock, APP_ICON_INDEX, &[], &[]));
+    // Une applet à page, aucune page visible (le registre de ce fil est vide) :
+    // fermée.
+    assert!(icone_fermee(&dock, 1, &[], &[]));
+    // Une applet SANS page CEF (bascule de thème) : pas d'état ouvert, donc
+    // fermée.
+    assert!(icone_fermee(&dock, 2, &[], &[]));
+    // Un index sans nom et hors de toute plage (un espace, un dossier…) : exclu.
+    assert!(!icone_fermee(&dock, 10, &[], &[]));
+
+    // Les épingles : la place EST `PINNED_ICON_BASE + rang` (même convention que
+    // les boucles de pastilles), et c'est `running` qui décide — dans les DEUX
+    // sens, sans quoi le fond mentirait sur une application ouverte.
+    assert!(!icone_fermee(&dock, PINNED_ICON_BASE, &[true], &[]), "une épingle ouverte n'est pas fermée");
+    assert!(icone_fermee(&dock, PINNED_ICON_BASE + 1, &[true, false], &[]), "une épingle fermée l'est");
+}
+
+/// **LE FOND SE DESSINE SOUS L'ICÔNE, ET HORS DU DÉCOUPAGE DES BARRES** — deux
+/// propriétés de PLACEMENT que rien d'autre ne retient : poussé avant
+/// `premier_lot_libre`, il serait coupé avec le contenu de la barre du haut ;
+/// poussé après l'icône magnifiée, il la recouvrirait.
+///
+/// La décision vit dans `run`, qui n'existe pas hors d'une boucle de messages :
+/// ce test lit donc la source, comme `l_infobulle_d_une_icone_est_tuee_tant_qu_un_menu_est_visible`.
+#[test]
+fn le_fond_au_survol_se_dessine_sous_l_icone_et_hors_du_decoupage() {
+    let source = include_str!("app.rs");
+    let libre = source.find("let premier_lot_libre = batches.len();").expect("borne des lots libres absente");
+    let fond = source
+        .find("if let Some(instance) = &fond_survol_instance {")
+        .expect("la poussée du fond au survol a disparu de `run`");
+    let icone = source
+        .find("if let Some((texture, instance)) = hover_icon {")
+        .expect("la poussée de l'icône magnifiée a disparu de `run`");
+    assert!(libre < fond, "le fond doit être poussé APRÈS `premier_lot_libre`, sinon les barres le coupent");
+    assert!(fond < icone, "le fond doit être poussé AVANT l'icône magnifiée, sinon il la recouvre");
+    assert!(
+        source.contains("if icone_fermee(&dock, index, &pinned_running, &winpin_running)"),
+        "la condition « icône fermée » a disparu : le fond serait posé sur toutes les icônes"
+    );
+}
+
+/// ⭐ **UN ÉLÉMENT AGRANDI PASSE DEVANT TOUT** — DEMANDE EXPLICITE (2026-11-11) :
+/// « l'effet de magnification doit faire apparaître les icônes au-dessus des
+/// ombrages, des dashs et des menus ».
+///
+/// La décision vit dans `run` (elle règle l'ORDRE DES FENÊTRES, pas le dessin) :
+/// ce test lit donc la source, comme celui de l'infobulle. Il vérifie les deux
+/// moitiés qui font la règle — le drapeau posé AVANT les remontées (sinon la
+/// première image de la magnification est fausse), et le retour à l'ordre
+/// normal dès que la magnification retombe (sinon les ombres et les menus
+/// resteraient derrière le dock jusqu'au rangement périodique, 250 ms plus tard).
+///
+/// **MUTATION** : retirer le `else if vient_de_retomber` — le test le nomme.
+#[test]
+fn la_magnification_met_le_dock_devant_ombres_et_menus() {
+    let source = include_str!("app.rs");
+    let drapeau = source
+        .find("dock::set_magnification_en_cours(magnifie)")
+        .expect("le drapeau de magnification a disparu de `run`");
+    let queue = &source[drapeau..];
+    let montee = queue.find("window.raise_to_top();").expect("plus de remontée du dock après le drapeau");
+    let menus = queue
+        .find("crate::win32::cef_popup::raise_visible_popups();")
+        .expect("les menus ne sont plus rangés avec le dock");
+    assert!(montee < menus, "le drapeau doit être posé AVANT les deux remontées");
+    assert!(
+        source.contains("let vient_de_retomber = dock::set_magnification_en_cours(magnifie) && !magnifie;"),
+        "la fin de la magnification n'est plus détectée"
+    );
+    assert!(
+        source.contains("crate::win32::ombre_barre::remonter();"),
+        "les ombres et les menus ne reprennent pas leur place quand la magnification retombe"
+    );
 }
 
 /// **LA BRANCHE DYNAMIQUE DE L'APERÇU** — une application OUVERTE mais NON

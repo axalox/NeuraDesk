@@ -695,6 +695,62 @@ pub fn une_fenetre_visible() -> bool {
     REGISTRY.with(|registry| registry.borrow().iter().any(|slot| is_visible(slot)))
 }
 
+/// Au moins un MENU est-il VISIBLE ? — **ni un panneau, ni une vraie fenêtre**
+/// (voir `PopupSpec::fades` : seuls les menus fondent, et c'est ce qui les
+/// distingue ici, sans liste de modules à tenir à jour).
+///
+/// ⭐ **DEMANDE EXPLICITE (2026-11-11) : « quand un menu est affiché l'infobulle
+/// de l'applet ne doit pas s'afficher ».** `app::run` s'en sert pour taire
+/// l'infobulle d'une icône du dock tant qu'un menu est à l'écran. L'ancien
+/// correctif ne suffisait pas : depuis « le menu passe toujours au-dessus des
+/// infobulles » (voir `TooltipWindow::show`), l'infobulle s'insère SOUS le menu
+/// — donc elle reste visible, posée juste à côté, et c'est elle que la demande
+/// fait disparaître. Le sous-dock compte aussi (c'est un menu au sens de
+/// `fades`, et il s'ouvre au survol d'un raccourci de dossier) : les deux ne
+/// cohabitent donc plus.
+///
+/// ⚠️ **UN PANNEAU NE COMPTE PAS.** Les dashes et les applets ne fondent pas
+/// (`PopupSpec::fades == false`) : ils laissent la place autour du dock, et
+/// l'infobulle y reste l'explication utile des icônes.
+///
+/// Passe par `REGISTRY` comme `une_fenetre_visible` — aucune liste écrite à la
+/// main, donc aucun popup à y inscrire.
+pub fn un_menu_visible() -> bool {
+    REGISTRY.with(|registry| {
+        registry.borrow().iter().any(|slot| {
+            slot.with(|s| {
+                s.state
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|state| state.fade.is_some() && unsafe { IsWindowVisible(state.hwnd).as_bool() })
+            })
+        })
+    })
+}
+
+/// **LA PAGE `html_file` EST-ELLE À L'ÉCRAN ?** — demande explicite
+/// (2026-11-11) : le fond au survol d'une icône du dock ne doit apparaître que
+/// sur un programme ou une applet **fermés**. Une applet n'a pas d'état
+/// « ouvert » central ; ce qui en tient lieu est la visibilité de SA page, et
+/// le registre sait quelle page porte chaque popup (`PopupSlot::identite`,
+/// posée à chaque ouverture).
+///
+/// ⚠️ **AUCUNE LISTE DE MODULES À TENIR** : l'appelant désigne la page par son
+/// fichier (voir `app::PAGES_DES_APPLETS`), pas par un slot — un popup
+/// préchargé ou caché ne compte donc pas (`IsWindowVisible`), et un module qui
+/// ouvrirait la même page par un autre slot serait vu lui aussi.
+///
+/// Passe par `REGISTRY`, comme `un_menu_visible` juste au-dessus : un popup
+/// nouveau s'y inscrit de lui-même, il n'y a rien à ajouter ici.
+pub fn page_visible(html_file: &str) -> bool {
+    REGISTRY.with(|registry| {
+        registry
+            .borrow()
+            .iter()
+            .any(|slot| slot.with(|s| s.identite.get() == Some(html_file)) && is_visible(slot))
+    })
+}
+
 /// **ÉPINGLE TOUT CE QUI S'OUVRIRA** — réservé au harnais (voir
 /// `EPINGLER_A_L_OUVERTURE`, où le pourquoi est écrit).
 pub fn epingler_tout_a_l_ouverture() {
@@ -938,6 +994,16 @@ pub fn deplacer_par_le_systeme(hwnd: HWND, qui: &str) {
 /// `IsWindowVisible` écarte les entrées périmées du registre (une fenêtre cachée
 /// n'est pas détruite), et l'appel est SANS déplacement, redimensionnement ni
 /// activation — même idiome que `Window::raise_to_top`.
+///
+/// ⭐ **PENDANT UNE MAGNIFICATION, LES MENUS PASSENT SOUS LE DOCK** — DEMANDE
+/// EXPLICITE (2026-11-11) : « l'effet de magnification doit faire apparaître les
+/// icônes au-dessus des ombrages, des dashs et des menus ». La règle d'avant
+/// (« menus devant le dock agrandi ») est donc INVERSÉE, et seulement pendant
+/// ce moment-là : le dock est déjà en tête (`Window::raise_to_top`), il suffit
+/// de glisser les menus JUSTE SOUS lui (`ombre_barre::ancre_de_magnification`,
+/// le même ancrage que les ombres — deux ancres les feraient sauter d'un rang à
+/// l'autre). Au repos, ils repassent en tête : voir `app::run`, qui rappelle
+/// `ombre_barre::remonter` quand la magnification retombe.
 pub fn raise_visible_popups() {
     let mut hwnds: Vec<HWND> = Vec::new();
     REGISTRY.with(|registry| {
@@ -952,10 +1018,24 @@ pub fn raise_visible_popups() {
             }
         }
     });
+    // L'ancre LUE UNE FOIS : un dock par écran, un seul rang à choisir.
+    let sous = if crate::ui::dock::magnification_en_cours() {
+        crate::win32::ombre_barre::ancre_de_magnification()
+    } else {
+        None
+    };
     for hwnd in hwnds {
         unsafe {
             if IsWindowVisible(hwnd).as_bool() {
-                let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                let _ = SetWindowPos(
+                    hwnd,
+                    Some(sous.unwrap_or(HWND_TOPMOST)),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+                );
             }
         }
     }
@@ -977,9 +1057,30 @@ pub fn raise_visible_popups() {
 /// Les appels de POSITION (`SetWindowPos` avec `SWP_NOZORDER` juste avant) restent
 /// intacts — cet ajout ne fait que replacer la fenêtre en tête de sa bande, sans
 /// déplacement ni redimensionnement, comme `Window::raise_to_top`.
-fn raise_above_tooltips(hwnd: HWND) {
+///
+/// ⭐ **PENDANT UNE MAGNIFICATION, UN MENU SE POSE SOUS LE DOCK** — DEMANDE
+/// EXPLICITE (2026-11-11) : « l'effet de magnification doit faire apparaître les
+/// icônes au-dessus des ombrages, des dashs et des menus ». Sans cette branche,
+/// le menu ouvert par le clic sur l'icône survolée resterait devant elle pendant
+/// la frame qui suit (`raise_visible_popups` ne le range qu'à la frame
+/// suivante). `menu` vient de `PopupSpec::above_a_magnified_dock` : un PANNEAU
+/// garde son chemin, `sous_le_dock` s'en occupant déjà.
+fn raise_above_tooltips(hwnd: HWND, menu: bool) {
+    let sous = if menu && crate::ui::dock::magnification_en_cours() {
+        crate::win32::ombre_barre::ancre_de_magnification()
+    } else {
+        None
+    };
     unsafe {
-        let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        let _ = SetWindowPos(
+            hwnd,
+            Some(sous.unwrap_or(HWND_TOPMOST)),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        );
     }
 }
 
@@ -1129,29 +1230,32 @@ pub struct PopupSpec {
     /// `dispatch_input(&SLOT, ...)` puis `DefWindowProcW` — voir
     /// `win32::cef_test_window` pour un exemple concret.
     pub wndproc: WNDPROC,
-    /// `true` si ce popup doit RESTER DEVANT le dock quand celui-ci passe au
-    /// premier rang parce qu'un élément est AGRANDI — voir
-    /// `raise_visible_popups`, seule fonction qui lit ce champ, à travers
-    /// `CefPopupState`.
+    /// `true` si ce popup appartient à la famille des MENUS — voir
+    /// `raise_visible_popups` et `raise_above_tooltips`, seules fonctions qui
+    /// lisent ce champ, à travers `CefPopupState`.
     ///
     /// **Les neuf MENUS : `true`.** Un menu s'ancre à l'icône qu'on survole : le
     /// dock passé devant lui, il disparaîtrait derrière la barre. DÉFAUT RÉEL
     /// SIGNALÉ, et c'est ce champ qui le répare : « il y a encore des menus de
     /// widget qui apparaissent sous les barres ».
     ///
-    /// **Les quatre PANNEAUX (Dash, Réglages, Presse-papiers, Notes) : `false`.**
-    /// Ils couvrent toute la zone libre, donc les remonter cache EXACTEMENT ce que
-    /// la demande d'origine veut protéger — « je voudrais que les icônes
-    /// agrandies soient toujours visibles, que rien ne puisse les recouvrir ».
-    /// DÉFAUT RÉEL SIGNALÉ : « le bug des icônes et applets grandifiées sous les
-    /// dashs est réapparu » — la remontée de tous les popups sans distinction
-    /// (commit `28c53cc`, livré NON MESURÉ) avait échangé un défaut contre
-    /// l'autre.
+    /// **Les PANNEAUX (Dash, Réglages, Presse-papiers, Notes, applets) :
+    /// `false`.** Ils couvrent toute la zone libre, donc les remonter cache
+    /// EXACTEMENT ce que la demande d'origine veut protéger — « je voudrais que
+    /// les icônes agrandies soient toujours visibles, que rien ne puisse les
+    /// recouvrir ». DÉFAUT RÉEL SIGNALÉ : « le bug des icônes et applets
+    /// grandifiées sous les dashs est réapparu » — la remontée de tous les
+    /// popups sans distinction (commit `28c53cc`, livré NON MESURÉ) avait
+    /// échangé un défaut contre l'autre.
     ///
-    /// **Les deux demandes ne se contredisent donc pas**, et c'est ce qui rend la
-    /// distinction légitime plutôt qu'arbitraire : un menu est ancré à l'icône
-    /// survolée, un panneau est une grande surface posée par-dessus la zone
-    /// libre. L'ordre voulu est **menus > dock agrandi > panneaux**.
+    /// ⭐ **CE QUI A CHANGÉ LE 2026-11-11** : DEMANDE EXPLICITE — « l'effet de
+    /// magnification doit faire apparaître les icônes au-dessus des ombrages,
+    /// des dashs et des menus ». Pendant la magnification, les menus passent
+    /// donc EUX AUSSI sous le dock (voir `raise_visible_popups` et
+    /// `raise_above_tooltips`) ; cette famille reste ce qui les distingue,
+    /// puisqu'eux se posent juste sous le dock, les panneaux restant sous tout
+    /// le monde (`sous_le_dock`). Au repos, l'ordre d'avant est intact :
+    /// **menus > ombres > dock > panneaux**.
     pub above_a_magnified_dock: bool,
     /// `true` si ce popup APPARAÎT ET DISPARAÎT EN FONDANT — voir `win32::fade`.
     ///
@@ -1446,7 +1550,7 @@ pub fn toggle_with(slot: &'static LocalKey<PopupSlot>, spec: &PopupSpec, rect: [
                         }
                     });
                     // APRÈS `ShowWindow` — voir `raise_above_tooltips`.
-                    raise_above_tooltips(hwnd);
+                    raise_above_tooltips(hwnd, spec.above_a_magnified_dock);
                     // ⛔ **C'EST ICI QUE LE PREMIER PLAN SE PRENAIT, ET C'EST LA
                     // SEULE MOITIÉ QUI SE CORRIGE.** Sans cet appel, la fenêtre est
                     // montrée non activée (`SW_SHOWNOACTIVATE`, ci-dessus) : le
@@ -1510,7 +1614,7 @@ pub fn toggle_with(slot: &'static LocalKey<PopupSlot>, spec: &PopupSpec, rect: [
         // normalement devant, mais c'est ici que le cas « infobulle déjà à
         // l'écran » se produit le plus souvent — on survole l'icône, l'infobulle
         // apparaît, on clique. Voir `raise_above_tooltips`.
-        raise_above_tooltips(state.hwnd);
+        raise_above_tooltips(state.hwnd, spec.above_a_magnified_dock);
         // ⛔ **LES DEUX MÊMES RÈGLES QU'À LA RÉOUVERTURE, ET ELLES MANQUAIENT ICI.**
         // Cette branche est celle de la PREMIÈRE ouverture — un popup non encore
         // préchargé, ce qui est le cas de TOUT panneau qu'on ouvre avant que la file
@@ -2026,7 +2130,14 @@ pub fn resize_to_content(slot: &'static LocalKey<PopupSlot>, target_w: Option<i3
             retenir_pour_l_ouverture(s, [w, current_h]);
             return;
         }
-        let new_y = resized_y(y, current_h, new_h, bottom_limit, top_limit);
+        let new_y = resized_y(y, current_h, new_h, bottom_limit, top_limit)
+            // ⚠️ **LE BORD RESTE DANS LA ZONE, MÊME QUAND IL N'Y ÉTAIT PAS COLLÉ.**
+            // `resized_y` ne remonte que le menu dont le bas touchait la limite —
+            // un menu ancré plus haut grandit donc vers le BAS, et dépasse la
+            // zone libre dès que son contenu réel la remplit (mesuré : barre du
+            // bas mordue de 12 px par le menu Son, ouvert à la hauteur de la
+            // zone). Même famille de défaut que celui de `taille_d_ouverture`.
+            .clamp(top_limit, (bottom_limit - new_h).max(top_limit));
         // ⚠️ **UN MENU CENTRÉ LE RESTE QUAND SA PAGE ANNONCE SA VRAIE TAILLE** —
         // voir `set_menu_centre`, qui porte la mesure du défaut. `resized_x` ne
         // sait que retenir le bord droit d'un menu qui le TOUCHAIT ; un panneau
@@ -2037,6 +2148,10 @@ pub fn resize_to_content(slot: &'static LocalKey<PopupSlot>, target_w: Option<i3
             left_limit + (right_limit - left_limit - new_w) / 2
         } else {
             resized_x(x, w, new_w, right_limit, left_limit)
+                // Même garde que ci-dessus, sur l'axe horizontal : `resized_x`
+                // recule un menu PLAQUÉ à droite, pas celui qui déborde en
+                // grandissant depuis l'intérieur de la zone.
+                .clamp(left_limit, (right_limit - new_w).max(left_limit))
         };
         // Trace de placement, jumelle de celle de `menu_rect` (qui journalise le
         // rectangle PROVISOIRE) : le bord de la ZONE LIBRE et celui de l'ÉCRAN
@@ -5224,6 +5339,56 @@ mod tests_sous_le_dock {
             let _ = unsafe { DestroyWindow(h) };
         }
     }
+
+    /// ⭐ **PENDANT UNE MAGNIFICATION, LES MENUS AUSSI SE POSENT SOUS LE DOCK** —
+    /// DEMANDE EXPLICITE (2026-11-11) : « l'effet de magnification doit faire
+    /// apparaître les icônes au-dessus des ombrages, des dashs et des menus ».
+    ///
+    /// Les deux fonctions qui rangent les menus lisent le drapeau et l'ANCRE DE
+    /// `ombre_barre` (la même que les ombres, sinon menus et ombres changeraient
+    /// de rang l'un par rapport à l'autre) ; la famille vient de
+    /// `PopupSpec::above_a_magnified_dock`, donc un PANNEAU garde son chemin.
+    ///
+    /// **MUTATION** : retirer la lecture du drapeau de `raise_visible_popups` —
+    /// les menus repassent devant l'icône agrandie et le test le nomme.
+    #[test]
+    fn la_magnification_met_les_menus_sous_le_dock() {
+        // Le porte-à-faux part de `raise_visible_popups` et s'arrête au PREMIER
+        // module de tests qui suit : le fichier a des modules de tests AVANT ces
+        // fonctions, donc couper sur le premier `#[cfg(test)]` rendrait une source
+        // vide — et lire tout le fichier compterait les littéraux de CE test.
+        let tout = include_str!("cef_popup.rs");
+        let debut = tout.find("pub fn raise_visible_popups()").expect("`raise_visible_popups` a disparu");
+        let suite = &tout[debut..];
+        let fin = suite.find("#[cfg(test)]").expect("aucun module de tests après les deux fonctions");
+        let source = &suite[..fin];
+        assert_eq!(
+            source.matches("crate::ui::dock::magnification_en_cours()").count(),
+            2,
+            "`raise_visible_popups` et `raise_above_tooltips` doivent lire le drapeau"
+        );
+        assert_eq!(
+            source.matches("crate::win32::ombre_barre::ancre_de_magnification()").count(),
+            2,
+            "les deux fonctions doivent viser le MÊME ancrage que les ombres"
+        );
+        assert!(
+            source.contains("sous.unwrap_or(HWND_TOPMOST)"),
+            "au repos, les menus doivent retrouver la tête de la bande topmost"
+        );
+        assert!(
+            source.contains("if menu && crate::ui::dock::magnification_en_cours()"),
+            "un PANNEAU n'a pas le rang d'un menu : le drapeau ne vaut que pour `menu`"
+        );
+        let appels = source.matches("raise_above_tooltips(").count();
+        let avec_famille = source.matches("spec.above_a_magnified_dock)").count();
+        assert_eq!(
+            (appels, avec_famille),
+            (3, 2),
+            "la famille du popup doit être transmise aux DEUX appels de `toggle_with` \
+             (le troisième `raise_above_tooltips(` est la définition)"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -5312,7 +5477,7 @@ fn taille_rappelee(slot: &'static LocalKey<PopupSlot>, rect: [i32; 4]) -> [i32; 
     let (cle, facteur) = slot.with(|s| (s.identite.get(), s.content_factor.get()));
     let Some(cle) = cle else { return rect };
     let memorisee = avec_les_tailles(|table| table.get(cle).copied());
-    let taille = taille_d_ouverture(memorisee, facteur, MENU_ROOM.with(std::cell::Cell::get), rect);
+    let taille = taille_d_ouverture(memorisee, facteur, MENU_ROOM.with(std::cell::Cell::get), rect, menu_centre());
     if taille != rect {
         crate::diag!("[menu/taille] rappelee {taille:?} depuis {cle} (facteur {facteur})");
     }
@@ -5329,11 +5494,32 @@ fn taille_rappelee(slot: &'static LocalKey<PopupSlot>, rect: [i32; 4]) -> [i32; 
 /// mémorisée sur un écran 4K ne doit pas ouvrir une fenêtre plus grande que la
 /// place disponible. Rend `rect` tel quel sans mémoire, ou pour un popup que son
 /// contenu ne pilote pas (facteur `0.0` : les PANNEAUX, voir `content_factor`).
+///
+/// ⛔ **LA POSITION SUIT LA TAILLE, ET ELLE AUSSI EST BORNÉE** — c'est le défaut
+/// réel de la version qui ne rendait que `[rect[0], rect[1], w, h]`. `rect` a été
+/// posé par `app::menu_rect` pour la taille PROVISOIRE ; lui donner une largeur ou
+/// une hauteur d'ouverture plus grande sans retoucher `x`/`y` fait déborder le
+/// menu de la zone libre, **par-dessus la barre de droite ou du bas**. MESURÉ au
+/// journal (`NEURADESK_DIAG`) : `[menu/place] ancre=(3708,66) … provisoire=
+/// (2889,66,821,1000)` puis `[menu/taille] rappelee [2889, 66, 1406, 2042]` — un
+/// menu de 1406 px ancré à x=2889 dans une zone qui finit à 3710 : 585 px
+/// par-dessus la barre de droite, et la mesure suivante ne le rattrapait pas
+/// (`resized_x` ne recule que ce qui TOUCHE la limite, et ce n'était plus le cas
+/// après la substitution). « certains menus sont mal placés et sont trop grands
+/// par rapport à l'espace disponible dans la zone centrale ».
+///
+/// ⇒ Les deux règles de `resize_to_content` sont reprises, dans le même ordre :
+/// `resized_x`/`resized_y` d'abord (le bord par lequel le menu pend à son icône
+/// ne bouge pas), puis un bornage strict — un menu PLUS GRAND que la place
+/// restante du côté de son ancre n'a plus d'autre choix que de glisser, et y
+/// glisser vaut mieux que mordre sur une barre. `centre` vient de
+/// `set_menu_centre` : un panneau centré le reste, comme au redimensionnement.
 fn taille_d_ouverture(
     memorisee: Option<([i32; 2], f64)>,
     facteur: f64,
     room: [i32; 4],
     rect: [i32; 4],
+    centre: bool,
 ) -> [i32; 4] {
     let Some((taille, facteur_alors)) = memorisee else { return rect };
     if facteur <= 0.0 || facteur_alors <= 0.0 {
@@ -5348,7 +5534,31 @@ fn taille_d_ouverture(
     if room[3] > 0 {
         h = h.min(room[3]);
     }
-    [rect[0], rect[1], w.max(1), h.max(1)]
+    let w = w.max(1);
+    let h = h.max(1);
+    // Sans zone retenue (aucun popup aujourd'hui), rien ne permet de borner la
+    // position : on garde `rect` comme avant — même repli que `resize_to_content`.
+    if room[2] <= 0 || room[3] <= 0 {
+        return [rect[0], rect[1], w, h];
+    }
+    let (gauche, droite) = (room[0], room[0] + room[2]);
+    let (haut, bas) = (room[1], room[1] + room[3]);
+    let x = if centre {
+        // Le centrage est recalculé pour la NOUVELLE largeur — même formule que
+        // `resize_to_content`, et pour la même raison (voir `set_menu_centre`).
+        gauche + (droite - gauche - w) / 2
+    } else {
+        // `resized_x` garde le bord droit d'un menu qui le touchait ; le `clamp`
+        // couvre les deux autres cas — un menu qui débordait déjà sans être collé,
+        // et une position provisoire hors de la zone (mesurée : `x = 0` pour une
+        // zone qui commence à 124).
+        resized_x(rect[0], rect[2], w, droite, gauche).clamp(gauche, (droite - w).max(gauche))
+    };
+    // Le haut est retenu quand le menu pend d'une icône ; `resized_y` ne remonte
+    // que celui dont le bas touchait la limite (voir sa doc), et le `clamp` ramène
+    // les autres dans la zone.
+    let y = resized_y(rect[1], rect[3], h, bas, haut).clamp(haut, (bas - h).max(haut));
+    [x, y, w, h]
 }
 
 /// Deux tailles SONT LA MÊME à la tolérance près — sert à deux endroits, et
@@ -5491,13 +5701,17 @@ mod tests_taille_rappelee {
     /// l'appelant est rendue telle quelle.
     #[test]
     fn sans_mesure_anterieure_l_estimation_est_rendue() {
-        assert_eq!(taille_d_ouverture(None, 2.1, [124, 54, 3586, 2042], [10, 20, 672, 531]), [10, 20, 672, 531]);
+        assert_eq!(
+            taille_d_ouverture(None, 2.1, [124, 54, 3586, 2042], [10, 20, 672, 531], false),
+            [10, 20, 672, 531]
+        );
     }
 
-    /// Une mesure existe : on rouvre à SA taille, position de l'appelant intacte.
+    /// Une mesure existe : on rouvre à SA taille, position de l'appelant intacte
+    /// — ici la taille rappelée est PLUS PETITE et la position tient déjà.
     #[test]
     fn la_derniere_taille_de_la_page_reprend_la_main() {
-        let t = taille_d_ouverture(Some(([622, 504], 2.1)), 2.1, [124, 54, 3586, 2042], [124, 100, 672, 531]);
+        let t = taille_d_ouverture(Some(([622, 504], 2.1)), 2.1, [124, 54, 3586, 2042], [124, 100, 672, 531], false);
         assert_eq!(t, [124, 100, 622, 504]);
     }
 
@@ -5505,17 +5719,44 @@ mod tests_taille_rappelee {
     /// rappelée suit l'échelle, elle ne revient pas à l'ancienne.
     #[test]
     fn la_taille_rappelee_suit_l_echelle_des_menus() {
-        let [_, _, w, h] = taille_d_ouverture(Some(([622, 504], 2.1)), 3.0, [124, 54, 3586, 2042], [124, 100, 0, 0]);
+        let [_, _, w, h] = taille_d_ouverture(Some(([622, 504], 2.1)), 3.0, [124, 54, 3586, 2042], [124, 100, 0, 0], false);
         let attendu = ((622.0_f64 * 3.0 / 2.1).round() as i32, (504.0_f64 * 3.0 / 2.1).round() as i32);
         assert_eq!((w, h), attendu, "echelle appliquee");
     }
 
     /// Une taille mémorisée sur un autre écran ne peut pas dépasser la zone
-    /// libre — c'est le même plafond que `resize_to_content`.
+    /// libre — c'est le même plafond que `resize_to_content`. Et la POSITION est
+    /// ramenée dans la zone en même temps que la taille y est bornée.
     #[test]
     fn la_taille_rappelee_est_bornee_par_la_zone_libre() {
-        let t = taille_d_ouverture(Some(([1498, 1132], 2.1)), 2.1, [124, 54, 900, 600], [0, 0, 672, 531]);
-        assert_eq!(t, [0, 0, 900, 600], "largeur et hauteur bornees");
+        let t = taille_d_ouverture(Some(([1498, 1132], 2.1)), 2.1, [124, 54, 900, 600], [0, 0, 672, 531], false);
+        assert_eq!(t, [124, 54, 900, 600], "largeur, hauteur ET position bornees");
+    }
+
+    /// **LE DÉFAUT MESURÉ** (2026-11-11) : un menu ancré près de la barre de
+    /// droite, dont la taille rappelée est plus GRANDE que l'estimation de
+    /// `menu_rect`. La position posée pour l'estimation (bord droit sur la limite
+    /// de la zone, `x + 821 = 3710`) ne vaut plus pour 1406 px de large : sans
+    /// recul, le menu déborde de 585 px par-dessus la barre de droite.
+    #[test]
+    fn une_taille_rappelee_plus_grande_fait_reculer_le_menu() {
+        // Les nombres du journal : `[menu/place] ancre=(3708,66) room=[124, 54,
+        // 3586, 2042] provisoire=(2889,66,821,1000)`, puis `[menu/taille]
+        // rappelee [2889, 66, 1406, 2042]`.
+        let t = taille_d_ouverture(Some(([1406, 2042], 2.1)), 2.1, [124, 54, 3586, 2042], [2889, 66, 821, 1000], false);
+        assert_eq!(t[2], 1406, "premisse : la largeur rappelee est plus grande que l'estimation");
+        assert_eq!(t[0] + t[2], 3710, "le bord droit reste sur la limite de la zone libre");
+        assert_eq!(t[0], 2304, "3710 - 1406 : le menu recule au lieu de mordre sur la barre");
+        assert_eq!(t[1] + t[3], 2096, "et son bas reste sur le bord de la zone, pas sur la barre du bas");
+        assert!(t[0] >= 124 && t[1] >= 54, "jamais hors de la zone : {t:?}");
+    }
+
+    /// Un panneau CENTRÉ le reste quand la taille rappelée n'est pas celle de
+    /// l'estimation — même règle que `resize_to_content` (voir `set_menu_centre`).
+    #[test]
+    fn un_menu_centre_le_reste_a_la_taille_rappelee() {
+        let t = taille_d_ouverture(Some(([1406, 800], 2.1)), 2.1, [124, 54, 3586, 2042], [100, 66, 821, 1000], true);
+        assert_eq!(t[0] - 124, 3710 - (t[0] + t[2]), "marges egales : {t:?}");
     }
 
     /// Un PANNEAU n'est pas piloté par son contenu (facteur `0.0`) : sa taille
@@ -5523,7 +5764,7 @@ mod tests_taille_rappelee {
     #[test]
     fn un_panneau_ne_rappelle_rien() {
         assert_eq!(
-            taille_d_ouverture(Some(([622, 504], 2.1)), 0.0, [0, 0, 0, 0], [0, 0, 1200, 900]),
+            taille_d_ouverture(Some(([622, 504], 2.1)), 0.0, [0, 0, 0, 0], [0, 0, 1200, 900], false),
             [0, 0, 1200, 900]
         );
     }

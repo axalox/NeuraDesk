@@ -2765,6 +2765,34 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
                     config::save_clock_hover_scale(crate::ui::dock::clock_hover_scale());
                 }
             }
+            // ⭐ **LE FOND AU SURVOL DES ICÔNES FERMÉES** — DEMANDE EXPLICITE
+            // (2026-11-11) : « ajouter un autre effet au survol d'une icône en
+            // ajoutant un fond de couleur et de transparence paramétrable pour
+            // les programmes et applets qui ne sont pas ouverts ». GLOBAL comme
+            // les réglages de survol ci-dessus (voir `ui::dock::survol_fond`),
+            // donc sans passer par `refs`. La couleur passe par la cible
+            // `survol` d'`apply_color_to_target`, juste en bas.
+            //
+            // ⚠️ **LES DEUX VERBES ENREGISTRENT L'ÉTAT COMPLET** (actif + les
+            // quatre composantes) : la case et le curseur réglent deux moitiés
+            // du même fichier, et n'écrire que la sienne effacerait l'autre
+            // entre deux lancements (voir `config::load_survol_fond`).
+            ["survol-fond", flag] => {
+                let actif = *flag == "1";
+                crate::ui::dock::set_survol_fond_actif(actif);
+                config::save_survol_fond(actif, crate::ui::dock::survol_fond_couleur());
+            }
+            ["survol-fond-opacite", percent] => {
+                if let Ok(percent) = percent.parse::<u32>() {
+                    crate::ui::dock::set_survol_fond_opacite(percent as f32 / 100.0);
+                    // La valeur DÉJÀ BORNÉE est relue de la cellule, jamais le
+                    // pourcentage reçu — même discipline que `hover-scale`.
+                    config::save_survol_fond(
+                        crate::ui::dock::survol_fond_actif(),
+                        crate::ui::dock::survol_fond_couleur(),
+                    );
+                }
+            }
             ["dash-icon-scale", percent] => {
                 if let Ok(percent) = percent.parse::<u32>() {
                     let scale = percent as f32 / 100.0;
@@ -4276,6 +4304,18 @@ fn apply_color_to_target(target: &str, rgb: [f32; 3], refs: &mut SettingsRefs) {
             refs.dock.set_running_dot_color(Some(color));
             config::save_running_dot_color(Some(color));
         }
+        // ⭐ **LE FOND AU SURVOL DES ICÔNES FERMÉES** (voir
+        // `ui::dock::survol_fond`) — cible DÉDIÉE, sans préfixe : elle
+        // n'appartient à aucun panneau, donc `leak_known_target` n'a pas à la
+        // connaître. On enregistre l'état COMPLET (actif + couleur), comme les
+        // deux verbes de `dispatch_actions` (voir `config::load_survol_fond`).
+        "survol" => {
+            crate::ui::dock::set_survol_fond_rgb(rgb);
+            config::save_survol_fond(
+                crate::ui::dock::survol_fond_actif(),
+                crate::ui::dock::survol_fond_couleur(),
+            );
+        }
         "popup" => {
             menu::set_menu_accent_rgb(rgb);
             config::save_window_accent("popup", rgb, false);
@@ -5681,6 +5721,19 @@ fn push_state(refs: &SettingsRefs) {
     if let (Some(objet), serde_json::Value::Object(ajout)) = (payload.as_object_mut(), etat_ajoute()) {
         objet.extend(ajout);
     }
+    // ⭐ **LE FOND AU SURVOL DES ICÔNES FERMÉES** (voir `ui::dock::survol_fond`)
+    // — GLOBAL comme les réglages de survol du `json!` ci-dessus, et AJOUTÉ
+    // APRÈS COUP pour la même raison qu'`etat_ajoute` : la macro a atteint sa
+    // limite de récursion. Trois clés, parce que le panneau a trois contrôles
+    // (case, couleur, opacité) ; `survolFondActif` est aussi dans
+    // `computeStructureKey` côté page, sans quoi cocher la case n'afficherait
+    // pas ses réglages.
+    if let Some(objet) = payload.as_object_mut() {
+        let [r, g, b, opacite] = crate::ui::dock::survol_fond_couleur();
+        objet.insert("survolFondActif".into(), json!(crate::ui::dock::survol_fond_actif()));
+        objet.insert("survolFondColor".into(), json!(hex([r, g, b])));
+        objet.insert("survolFondOpacitePercent".into(), json!((opacite * 100.0).round() as i32));
+    }
     // Lit le dock : hors d'`etat_ajoute`, qui n'a pas `refs`.
     if let Some(objet) = payload.as_object_mut() {
         // Couleur INDIVIDUELLE de chaque menu (demande explicite : « personnaliser
@@ -6182,9 +6235,15 @@ mod tests {
         );
 
         for cle in cles {
-            let attendue = format!("\"{cle}\":");
+            // DEUX FORMES LÉGITIMES : l'entrée du `json!` géant (`"cle":`) ou une
+            // insertion APRÈS coup (`"cle".into()`), qui est la règle du dépôt
+            // pour une clé neuve — la macro a atteint sa limite de récursion
+            // (voir `etat_ajoute`, et `survolFondActif` inséré de la même façon
+            // le 2026-11-11). Dans les deux cas la clé EST dans `push_state`.
+            let entree = format!("\"{cle}\":");
+            let inseree = format!("\"{cle}\".into()");
             assert!(
-                source_ici.contains(&attendue),
+                source_ici.contains(&entree) || source_ici.contains(&inseree),
                 "« {cle} » a une case dans `settings.html` mais AUCUNE cle dans le JSON de \
                  `push_state` : elle s'affichera DECOCHEE quel que soit le reglage, tout en \
                  fonctionnant quand on la clique"
@@ -6302,6 +6361,55 @@ mod tests {
         assert_eq!(
             dans_la_page, cote_rust,
             "la page et `bandeau::Position::TOUTES` doivent nommer les memes positions, dans le meme ordre"
+        );
+    }
+
+    /// ⭐ **LE FOND AU SURVOL EST CÂBLÉ DES DEUX CÔTÉS** — DEMANDE EXPLICITE
+    /// (2026-11-11) : « ajouter un autre effet au survol d'une icône en ajoutant
+    /// un fond de couleur et de transparence paramétrable pour les programmes et
+    /// applets qui ne sont pas ouverts ».
+    ///
+    /// Une page et un dispatch écrits à deux endroits se vérifient : un verbe
+    /// émis sans bras ne fait RIEN (le panneau paraît réglé, l'effet ne change
+    /// pas), un état poussé sans clé lue laisse un contrôle figé sur son défaut
+    /// — les deux défauts déjà payés dans ce panneau (voir
+    /// `runningDotColorMode`).
+    ///
+    /// **MUTATION** : retirer le bras `["survol-fond", flag]`, la clé
+    /// `"survolFondActif"`, ou l'entrée `survolFondActif` de
+    /// `computeStructureKey` — le test nomme la moitié manquante.
+    #[test]
+    fn le_fond_au_survol_est_cable_des_deux_cotes() {
+        const PAGE: &str = include_str!("../../assets/popups/settings.html");
+        let dispatch = include_str!("cef_settings.rs").split("#[cfg(test)]").next().unwrap_or("");
+
+        // La page ÉMET les deux verbes.
+        assert!(PAGE.contains("go(\"survol-fond\""), "aucune case n'émet `survol-fond`");
+        assert!(
+            PAGE.contains("go(\"survol-fond-opacite\""),
+            "aucun curseur n'émet `survol-fond-opacite`"
+        );
+        assert!(PAGE.contains("colorPicker(box, \"survol\""), "aucun sélecteur ne vise la cible `survol`");
+        // Le Rust les REÇOIT.
+        assert!(dispatch.contains("[\"survol-fond\", flag]"), "RIEN ne reçoit la case");
+        assert!(dispatch.contains("[\"survol-fond-opacite\", percent]"), "RIEN ne reçoit le curseur");
+        assert!(dispatch.contains("\"survol\" =>"), "RIEN ne reçoit la couleur (cible `survol`)");
+
+        // L'état voyage dans les deux sens. ⚠️ Les trois clés sont insérées
+        // APRÈS le `json!` (limite de récursion de la macro, voir `push_state`) :
+        // ce sont des littéraux `"...".into()`, pas des entrées `"clé": valeur`.
+        assert!(dispatch.contains("\"survolFondActif\""), "push_state ne pousse pas la case");
+        assert!(dispatch.contains("\"survolFondColor\""), "push_state ne pousse pas la couleur");
+        assert!(
+            dispatch.contains("\"survolFondOpacitePercent\""),
+            "push_state ne pousse pas l'opacité"
+        );
+        assert!(PAGE.contains("state.survolFondActif"), "la page ne lit pas la case");
+        assert!(PAGE.contains("state.survolFondColor"), "la page ne lit pas la couleur");
+        assert!(PAGE.contains("state.survolFondOpacitePercent"), "la page ne lit pas l'opacité");
+        assert!(
+            PAGE.contains("survolFondActif: state.survolFondActif"),
+            "la case n'est pas dans `computeStructureKey` : cocher ne ferait pas apparaître ses réglages"
         );
     }
 }

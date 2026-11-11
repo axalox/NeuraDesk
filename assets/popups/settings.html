@@ -2993,6 +2993,10 @@
         // décocher la case du clignotement laisserait la case cochée à l'écran
         // jusqu'au prochain changement de structure.
         notificationBlink: state.notificationBlink,
+        // La case du fond au survol des icônes fermées : elle fait apparaître
+        // son sélecteur de couleur et son curseur d'opacité — même piège et
+        // même remède que les cases précédentes.
+        survolFondActif: state.survolFondActif,
         // Cinquième case à cocher, même piège et même remède (voir les quatre
         // ci-dessus) : sans cette entrée, décocher « Miroir de la zone de
         // notification » la laisserait cochée à l'écran jusqu'au prochain
@@ -5209,6 +5213,30 @@
         // le commentaire de `runningDotSize`).
         slider(box, { label: "Magnification des horloges", min: 100, max: 350, value: state.clockHoverScalePercent, valueLabel: (v) => v + "%", dataKey: "clock-hover-scale", onInput: (v) => go("clock-hover-scale", v) });
         box.appendChild(el("p", { class: "hint" }, ["Vaut pour le texte de l'horloge de la barre du haut et pour celui de la mini-barre plein écran. La vitesse d'approche ci-dessus leur est commune."]));
+        // ⭐ **LE FOND AU SURVOL D'UNE ICÔNE FERMÉE** — DEMANDE EXPLICITE
+        // (2026-11-11) : « ajouter un autre effet au survol d'une icône en
+        // ajoutant un fond de couleur et de transparence paramétrable pour les
+        // programmes et applets qui ne sont pas ouverts ». Coupé par défaut :
+        // le survol ne dessine que l'icône grossie, comme avant.
+        //
+        // ⚠️ **LA CASE PILOTE L'APPARITION DU RESTE** (`survolFondActif` est
+        // dans `computeStructureKey`) : sans cette clé, cocher la case ne
+        // reconstruirait pas la section — la voie rapide `updateValues` ne crée
+        // aucun contrôle — et le sélecteur n'apparaîtrait qu'au prochain
+        // changement de structure sans rapport (défaut déjà payé avec
+        // `separatorColorMode` et `runningDotColorMode`).
+        //
+        // ⚠️ **PAS DE `return` ICI** : contrairement à la section des verrous,
+        // d'autres cases suivent dans CETTE section (clignotement, miroir) ;
+        // un retour les effacerait aussi.
+        checkboxRow(box, state.survolFondActif, "Fond de couleur au survol des icônes fermées", (checked) => go("survol-fond", checked ? "1" : "0"));
+        box.appendChild(el("p", { class: "hint" }, ["Ne s'applique qu'aux programmes épinglés qui ne tournent pas et aux applets dont la page n'est pas ouverte : une icône ouverte garde le survol habituel. Le fond est le carré arrondi de l'icône agrandie et suit son balancement."]));
+        if (state.survolFondActif) {
+          box.appendChild(el("div", { class: "label" }, ["Couleur du fond"]));
+          colorPicker(box, "survol", state.survolFondColor);
+          slider(box, { label: "Opacité du fond", min: 0, max: 100, value: state.survolFondOpacitePercent, valueLabel: (v) => v + "%", dataKey: "survol-fond-opacite", onInput: (v) => go("survol-fond-opacite", v) });
+          box.appendChild(el("p", { class: "hint" }, ["100 % est un aplat derrière l'icône ; 0 % le rend invisible, comme si la case était décochée. La couleur et l'opacité sont conservées quand on décoche."]));
+        }
         // Clignotement à la notification — DEMANDE EXPLICITE ("il faudrait
         // aussi que l'indicateur clignote de plusieurs couleurs si l'app
         // envoit une notification"). Désactivé par défaut : le texte de
@@ -6007,6 +6035,11 @@
       const tirages = state.tiragesPercent || [100, 100, 100];
       TIRAGES.forEach(([cle], rang) => updateSlider("tirage-" + cle, tirages[rang], (v) => v + "%"));
       updateSlider("clock-hover-scale", state.clockHoverScalePercent, (v) => v + "%");
+      // Le fond au survol des icônes fermées (voir sa case dans la même
+      // section). ⚠️ `updateSlider` sur un curseur ABSENT (case décochée) ne
+      // fait rien — la section n'est reconstruite qu'au changement de
+      // structure, et c'est `survolFondActif` qui la déclenche.
+      updateSlider("survol-fond-opacite", state.survolFondOpacitePercent, (v) => v + "%");
       updateSlider("tooltip-scale", state.tooltipScalePercent, (v) => v + "%");
       updateSlider("tooltip-fade-ms", state.tooltipFadeMs, (v) => v + " ms");
       updateSlider("tooltip-delay", state.tooltipDelaySecs, (v) => v + " s");
@@ -6111,6 +6144,9 @@
       if (target === "verr_num") return state.verrous.num;
       if (target === "verr_maj") return state.verrous.maj;
       if (target === "running_dot") return state.runningDotColor.mode === "custom" ? state.runningDotColor.hex : null;
+      // Le fond au survol des icônes fermées — cible dédiée, sans préfixe :
+      // elle n'appartient à aucun panneau (voir `apply_color_to_target`).
+      if (target === "survol") return state.survolFondColor;
       if (target === "dash") return state.accents.dash.background;
       if (target === "settings") return state.accents.settings.background;
       if (target === "clipboard") return state.accents.clipboard.background;

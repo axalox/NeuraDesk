@@ -3192,6 +3192,38 @@ pub fn save_clock_hover_scale(scale: f32) {
     write_config("clock_hover_scale.txt", scale.to_string());
 }
 
+/// **LE FOND AU SURVOL DES ICÔNES FERMÉES** (voir `ui::dock::survol_fond`) :
+/// `actif,r,g,b,opacité`. `None` tant que l'utilisateur n'a jamais touché le
+/// réglage — et c'est l'appelant qui décide du défaut (désactivé, couleur de
+/// l'accentuation du thème), même convention que `load_hover_scale`.
+///
+/// ⚠️ **L'ACTIF ET LA COULEUR DANS UN SEUL FICHIER** : ils se règlent ensemble
+/// dans la même section du panneau, et deux fichiers pourraient se retrouver
+/// désynchronisés (couleur d'hier avec l'état de ce matin) ; un fichier unique
+/// ne peut pas être à moitié écrit.
+///
+/// ⚠️ **UNE VALEUR NON FINIE ANNULE TOUT LE FICHIER** plutôt que d'être bornée :
+/// `"nan".parse::<f32>()` réussit, et un NaN dans la couleur ferait disparaître
+/// le quad sans rien dire (voir `ui::dock::set_survol_fond_rgb`). On préfère les
+/// défauts à un réglage à moitié corrompu.
+pub fn load_survol_fond() -> Option<(bool, [f32; 4])> {
+    let v = read_config_floats("survol_fond.txt")?;
+    if v.len() < 5 || !v[..5].iter().all(|x| x.is_finite()) {
+        return None;
+    }
+    let [r, g, b] = [v[1].clamp(0.0, 1.0), v[2].clamp(0.0, 1.0), v[3].clamp(0.0, 1.0)];
+    Some((v[0] == 1.0, [r, g, b, v[4].clamp(0.0, 1.0)]))
+}
+
+/// Sauvegarde le fond au survol, repris au prochain lancement (voir
+/// `load_survol_fond`). La couleur écrite est celle DÉJÀ BORNÉE par `ui::dock`
+/// (voir `survol_fond_couleur`), jamais celle reçue du panneau — comme
+/// `save_hover_scale`.
+pub fn save_survol_fond(actif: bool, couleur: [f32; 4]) {
+    let [r, g, b, a] = couleur;
+    write_config("survol_fond.txt", format!("{},{r},{g},{b},{a}", u8::from(actif)));
+}
+
 /// Relit le multiplicateur de TRANSPARENCE des éléments des panneaux (voir
 /// `win32::cef_popup::popup_alpha`) — même convention que `load_hover_scale` :
 /// `None` tant que l'utilisateur n'a jamais touché le curseur, auquel cas c'est

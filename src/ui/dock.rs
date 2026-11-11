@@ -527,6 +527,53 @@ pub const MIN_CLOCK_HOVER_SCALE: f32 = 1.00;
 /// dont la place est réservée à part (voir `max_clock_magnified_growth`).
 pub const MAX_CLOCK_HOVER_SCALE: f32 = 3.50;
 
+// --- Fond coloré au survol des icônes FERMÉES ----------------------------
+// DEMANDE EXPLICITE (2026-11-11) : « ajouter un autre effet au survol d'une
+// icône en ajoutant un fond de couleur et de transparence paramétrable pour les
+// programmes et applets qui ne sont pas ouverts ». **DÉSACTIVÉ PAR DÉFAUT** :
+// le survol continue de ne dessiner que l'icône grossie, comme avant que ce
+// réglage n'existe. La forme (carré arrondi d'une demi-case de marge) est celle
+// du fond animé du logo, voir `icon_halo_for`.
+
+/// Opacité par DÉFAUT du fond au survol (35 %) : assez pour se lire derrière
+/// l'icône, assez peu pour qu'elle reste la première chose vue.
+pub const DEFAULT_SURVOL_FOND_OPACITE: f32 = 0.35;
+
+/// **LA MAGNIFICATION EST-ELLE EN COURS, dans la fenêtre du dock ?** — vrai dès
+/// qu'un élément de la barre (icône, pastille, horloge) déborde de sa barre,
+/// c'est-à-dire dès que `app::run` a posé une boîte de débordement
+/// (`Window::set_overflow`).
+///
+/// DEMANDE EXPLICITE (2026-11-11) : « l'effet de magnification doit faire
+/// apparaître les icônes au-dessus des ombrages, des dashs et des menus ».
+///
+/// ⚠️ **C'EST L'ORDRE DES FENÊTRES QUI LE DÉCIDE, PAS LE DESSIN** : l'icône
+/// agrandie est dessinée par la fenêtre du dock, donc elle ne peut être devant
+/// une autre fenêtre que si LE DOCK l'est. Deux modules lisent ce drapeau et
+/// s'inversent quand il est vrai — `win32::ombre_barre` (les ombres sont
+/// normalement AU-DESSUS du dock) et `win32::cef_popup::raise_visible_popups`
+/// (les menus aussi, normalement) — puis reprennent leur place dès qu'il
+/// retombe.
+///
+/// Global au fil, comme `HOVER_SCALE` et pour la même raison : ces trois
+/// modules vivent dans des fenêtres différentes et `app::run` ne peut pas leur
+/// transmettre un état commun autrement.
+thread_local! {
+    static MAGNIFICATION_EN_COURS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Voir `MAGNIFICATION_EN_COURS`.
+pub fn magnification_en_cours() -> bool {
+    MAGNIFICATION_EN_COURS.with(Cell::get)
+}
+
+/// Change l'état et rend l'ANCIEN — l'appelant (`app::run`) n'agit que sur un
+/// CHANGEMENT : c'est la fin de la magnification qui doit rendre leur place aux
+/// menus et aux ombres, sans attendre le prochain rangement périodique.
+pub fn set_magnification_en_cours(actif: bool) -> bool {
+    MAGNIFICATION_EN_COURS.with(|c| c.replace(actif))
+}
+
 thread_local! {
     /// Facteur de magnification GLOBAL des ICÔNES, partagé par les instances de
     /// `HoverAnimator` qui les animent — celle de `Dock` et celle des trois
@@ -569,6 +616,22 @@ thread_local! {
     /// La VITESSE d'approche, elle, reste partagée avec les icônes
     /// (`HOVER_EASE_SPEED`) : la demande ne portait que sur la taille.
     static CLOCK_HOVER_SCALE: Cell<f32> = const { Cell::new(DEFAULT_CLOCK_HOVER_SCALE) };
+    /// **LE FOND AU SURVOL** — ACTIF ou non (voir `survol_fond`), et sa couleur
+    /// complète (RGB + opacité) dans `SURVOL_FOND_COULEUR` ci-dessous.
+    ///
+    /// GLOBAL et séparé en deux cellules, comme `HOVER_SCALE` : le DESSIN vit
+    /// dans `app::run` et le panneau Réglages ne partage aucun état avec lui.
+    /// L'ACTIF est distinct de l'opacité parce que décocher la case doit garder
+    /// la couleur et l'opacité choisies — une case recochée doit retrouver le
+    /// fond exact qu'on avait réglé, pas un alpha de 0 qu'il faudrait remonter.
+    static SURVOL_FOND_ACTIF: Cell<bool> = const { Cell::new(false) };
+    /// La COULEUR du fond au survol (RGB + opacité, alpha DANS la même case) —
+    /// voir `survol_fond_actif`. Le défaut (blanc à 35 %) n'est qu'un point de
+    /// départ : `app::run` le remplace au démarrage par l'accentuation du thème
+    /// (voir `config::load_survol_fond`), et le panneau par le choix de
+    /// l'utilisateur.
+    static SURVOL_FOND_COULEUR: Cell<[f32; 4]> =
+        const { Cell::new([1.0, 1.0, 1.0, DEFAULT_SURVOL_FOND_OPACITE]) };
 }
 
 /// Facteur de magnification au survol actuel — voir `HOVER_SCALE`.
@@ -802,6 +865,76 @@ pub fn set_clock_hover_scale(scale: f32) {
     }
     CLOCK_HOVER_SCALE
         .with(|s| s.set(scale.clamp(MIN_CLOCK_HOVER_SCALE, MAX_CLOCK_HOVER_SCALE)));
+}
+
+/// **LE FOND À POSER SOUS L'ICÔNE SURVOLÉE QUAND ELLE EST FERMÉE** — `None`
+/// quand le réglage est désactivé (le défaut), sinon la couleur COMPLÈTE,
+/// opacité comprise.
+///
+/// DEMANDE EXPLICITE (2026-11-11) : « ajouter un autre effet au survol d'une
+/// icône en ajoutant un fond de couleur et de transparence paramétrable pour
+/// les programmes et applets qui ne sont pas ouverts ». Ce n'est PAS un état
+/// porté par le `Dock` : il est lu au dessin (`app::run`) et écrit par le
+/// panneau Réglages, qui ne partagent aucun état — même raison que
+/// `HOVER_SCALE` ci-dessus.
+pub fn survol_fond() -> Option<[f32; 4]> {
+    SURVOL_FOND_ACTIF.with(Cell::get).then(|| SURVOL_FOND_COULEUR.with(Cell::get))
+}
+
+/// Le réglage est-il activé ? — pour le panneau, qui doit pouvoir le
+/// sauvegarder sans connaître la couleur (voir `survol_fond_couleur`).
+pub fn survol_fond_actif() -> bool {
+    SURVOL_FOND_ACTIF.with(Cell::get)
+}
+
+/// Active ou coupe le fond au survol — la COULEUR et l'OPACITÉ sont conservées
+/// (voir `SURVOL_FOND_ACTIF` : recocher doit retrouver le fond réglé).
+pub fn set_survol_fond_actif(actif: bool) {
+    SURVOL_FOND_ACTIF.with(|c| c.set(actif));
+}
+
+/// La couleur COMPLÈTE du fond au survol (RGB + opacité) — pour la sauvegarde
+/// (voir `config::save_survol_fond`) et l'état du panneau, qui affiche les deux
+/// séparément.
+pub fn survol_fond_couleur() -> [f32; 4] {
+    SURVOL_FOND_COULEUR.with(Cell::get)
+}
+
+/// Change la COULEUR (RGB) du fond au survol, en GARDANT l'opacité réglée à
+/// part (voir `set_survol_fond_opacite`) : ce sont deux contrôles distincts du
+/// panneau, et l'un ne doit pas écraser l'autre.
+pub fn set_survol_fond_rgb(rgb: [f32; 3]) {
+    // Le bornage est ici, comme `set_hover_scale` : l'appelant est un sélecteur
+    // de couleur, et une valeur venue d'ailleurs (fichier corrompu) ne doit
+    // jamais atteindre le dessin. Un composant NaN est REJETÉ (il en ferait
+    // disparaître le quad sans rien dire) plutôt que borné — `f32::clamp`
+    // PROPAGE les NaN.
+    if rgb.iter().any(|c| c.is_nan()) {
+        return;
+    }
+    SURVOL_FOND_COULEUR.with(|c| {
+        let alpha = c.get()[3];
+        c.set([rgb[0].clamp(0.0, 1.0), rgb[1].clamp(0.0, 1.0), rgb[2].clamp(0.0, 1.0), alpha]);
+    });
+}
+
+/// Opacité (alpha) actuelle du fond au survol — le panneau la présente en
+/// pourcentage.
+pub fn survol_fond_opacite() -> f32 {
+    SURVOL_FOND_COULEUR.with(Cell::get)[3]
+}
+
+/// Change l'opacité du fond au survol, bornée à [0, 1] — voir
+/// `set_survol_fond_rgb` pour le cas du NaN, et `set_hover_scale` pour le
+/// pourquoi du bornage ici plutôt que dans l'accesseur.
+pub fn set_survol_fond_opacite(alpha: f32) {
+    if alpha.is_nan() {
+        return;
+    }
+    SURVOL_FOND_COULEUR.with(|c| {
+        let [r, g, b, _] = c.get();
+        c.set([r, g, b, alpha.clamp(0.0, 1.0)]);
+    });
 }
 
 /// Écart d'échelle sous lequel l'animation RECOLLE à sa cible au lieu de
@@ -3171,6 +3304,20 @@ impl Dock {
             }
         }
         None
+    }
+
+    /// **LE NOM DU NOYAU D'UNE ICÔNE, SANS LA CONSTRUCTION `noyau:…`** — voir
+    /// `noms`/`poser_noms`, dont `identite` porte la table. `None` pour tout ce
+    /// qui n'est PAS une applet du noyau : logo, épingles des deux familles,
+    /// dossiers, applications ouvertes, miroir de notification, espaces.
+    ///
+    /// ⚠️ **C'EST CE QUE LIT LE FOND AU SURVOL** (`app::run`, via
+    /// `app::icone_fermee`) : il lui faut le nom NU pour retrouver la page CEF
+    /// de l'applet (voir `app::page_de_l_applet`). Passer par `identite`
+    /// allouerait un `String` à chaque image où une icône est survolée, pour le
+    /// défaire aussitôt.
+    pub fn nom_du_noyau(&self, index: usize) -> Option<&'static str> {
+        self.noms.get(index).copied().flatten()
     }
 
     /// **TOUTES LES IDENTITÉS QUE CE DOCK SAIT RÉSOUDRE** — l'inverse de la résolution :
@@ -11066,6 +11213,20 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
         set_clock_hover_scale(previous);
     }
 
+    /// Rend les deux cellules du fond au survol à leur état d'avant le test —
+    /// ces réglages sont GLOBAUX au fil, donc un test qui les laisse actifs
+    /// changerait ce que les suivants observent.
+    fn with_survol_fond(actif: bool, rgb: [f32; 3], opacite: f32, body: impl FnOnce()) {
+        let (previous_actif, previous) = (survol_fond_actif(), survol_fond_couleur());
+        set_survol_fond_actif(actif);
+        set_survol_fond_rgb(rgb);
+        set_survol_fond_opacite(opacite);
+        body();
+        set_survol_fond_actif(previous_actif);
+        set_survol_fond_rgb([previous[0], previous[1], previous[2]]);
+        set_survol_fond_opacite(previous[3]);
+    }
+
     /// Le bornage est ce qui empêche un fichier de configuration corrompu
     /// d'atteindre l'animation — une échelle à `1000` ferait disparaître les
     /// icônes hors de leur barre. Valeurs EXACTES (le bornage affecte la
@@ -11158,6 +11319,73 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
                 set_clock_hover_scale(1.1);
                 assert_eq!(hover_scale(), 1.9, "le réglage de l'horloge a bougé les icônes");
             });
+        });
+    }
+
+    /// **LA MAGNIFICATION EST UN ÉTAT GLOBAL, ET SON CHANGEMENT EST RENDU** —
+    /// les modules qui rangent les fenêtres (`win32::ombre_barre`,
+    /// `win32::cef_popup`) ne peuvent pas recevoir ce drapeau autrement, et
+    /// `app::run` n'agit qu'au CHANGEMENT (voir `set_magnification_en_cours`).
+    #[test]
+    fn la_magnification_est_un_drapeau_global_qui_rend_son_ancien_etat() {
+        // Né coupé : au repos, l'ordre des fenêtres reste celui d'avant.
+        assert!(!magnification_en_cours());
+        // Premier passage : rien ne change, et l'ancien état dit « coupé ».
+        assert!(!set_magnification_en_cours(false));
+        // Passage à « magnifié » : l'appelant apprend que ça CHANGE.
+        assert!(!set_magnification_en_cours(true));
+        assert!(magnification_en_cours());
+        // Repasser « magnifié » ne change rien : l'appelant ne doit rien refaire.
+        assert!(set_magnification_en_cours(true));
+        // La fin de la magnification se dit, elle aussi : c'est elle qui rend
+        // leur place aux menus et aux ombres (voir `app::run`).
+        assert!(set_magnification_en_cours(false));
+        assert!(!magnification_en_cours());
+    }
+
+    /// **LE FOND AU SURVOL EST COUPÉ PAR DÉFAUT, ET SON ÉTAT VIT EN DEUX
+    /// CELLULES** — la case ne doit pas emporter la couleur ni l'opacité (voir
+    /// `SURVOL_FOND_ACTIF`, doc de statique) : recocher rend le fond EXACT
+    /// qu'on avait réglé.
+    #[test]
+    fn le_fond_au_survol_est_coupe_par_defaut_et_garde_ses_reglages() {
+        with_survol_fond(false, [1.0, 1.0, 1.0], DEFAULT_SURVOL_FOND_OPACITE, || {
+            assert_eq!(survol_fond(), None, "le fond doit être coupé au premier lancement");
+            assert!(!survol_fond_actif());
+
+            set_survol_fond_rgb([0.2, 0.4, 0.6]);
+            set_survol_fond_opacite(0.5);
+            assert_eq!(survol_fond(), None, "régler la couleur ne doit pas activer le fond");
+
+            set_survol_fond_actif(true);
+            assert_eq!(survol_fond(), Some([0.2, 0.4, 0.6, 0.5]));
+
+            set_survol_fond_actif(false);
+            assert_eq!(survol_fond(), None);
+            assert_eq!(survol_fond_couleur(), [0.2, 0.4, 0.6, 0.5], "la case a emporté la couleur réglée");
+        });
+    }
+
+    /// Les bornes du fond au survol — mêmes règles que `set_hover_scale` : un
+    /// fichier de configuration corrompu ne doit jamais atteindre le dessin, et
+    /// un NaN est IGNORÉ (la valeur d'avant survit) plutôt que borné.
+    #[test]
+    fn le_fond_au_survol_borne_ses_reglages_et_ignore_un_nan() {
+        with_survol_fond(true, [0.3, 0.6, 0.9], DEFAULT_SURVOL_FOND_OPACITE, || {
+            set_survol_fond_opacite(2.0);
+            assert_eq!(survol_fond_opacite(), 1.0);
+            set_survol_fond_opacite(-1.0);
+            assert_eq!(survol_fond_opacite(), 0.0);
+
+            set_survol_fond_opacite(0.6);
+            set_survol_fond_opacite(f32::NAN);
+            assert_eq!(survol_fond_opacite(), 0.6, "un NaN doit laisser le réglage d'avant");
+
+            set_survol_fond_rgb([2.0, -1.0, 0.5]);
+            assert_eq!(survol_fond_couleur(), [1.0, 0.0, 0.5, 0.6], "le RGB doit être borné sans toucher l'opacité");
+
+            set_survol_fond_rgb([f32::NAN, 0.5, 0.5]);
+            assert_eq!(survol_fond_couleur(), [1.0, 0.0, 0.5, 0.6], "un NaN doit laisser la couleur d'avant");
         });
     }
 
@@ -13730,6 +13958,33 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
         assert_eq!(dock.identite(total + 50), None);
         dock.poser_noms(&[(total + 50, "fantome")]);
         assert_eq!(dock.identite(total + 50), None);
+    }
+
+    /// **LE NOM NU, CELUI QUE LIT LE FOND AU SURVOL** — le logo n'en a pas (il
+    /// n'est pas une applet), une applet nommée rend son nom SANS le préfixe
+    /// `noyau:`, et tout ce qui n'est pas du noyau reste `None` (voir
+    /// `nom_du_noyau`, qui dit pourquoi le fond au survol ne peut pas passer
+    /// par `identite`).
+    #[test]
+    fn le_nom_du_noyau_est_nu_et_ne_parle_pas_du_reste() {
+        let mut dock = Dock::new([0.0, 0.0, 0.0, 1.0], 0);
+        // La place des épingles est allouée AVANT la pose des noms : elle
+        // agrandit `icons` (et décale les fins de liste), donc une table de
+        // noms posée avant elle serait périmée.
+        let epingles = dock.ensure_winpin_capacity(1);
+        dock.poser_cles_d_epingles(vec![String::from("exe:firefox.exe")]);
+        let total = dock.icons.len();
+        dock.poser_noms(&[(1, "calculatrice"), (2, "reglages")]);
+
+        assert_eq!(dock.nom_du_noyau(0), None, "le logo n'est pas une applet");
+        assert_eq!(dock.nom_du_noyau(1), Some("calculatrice"));
+        assert_eq!(dock.nom_du_noyau(2), Some("reglages"));
+        assert_eq!(dock.nom_du_noyau(3), None, "non nommée");
+        assert_eq!(dock.nom_du_noyau(total + 50), None, "hors bornes : ni panique, ni nom");
+
+        // Une épingle nommée par SA PLAGE n'est pas une applet du noyau : son
+        // identité vient de `epingle:`, jamais des `noms` d'index.
+        assert_eq!(dock.nom_du_noyau(epingles), None);
     }
 
     /// Les PLAGES répondent aussi par leur identité — c'est ce qui permettra à
