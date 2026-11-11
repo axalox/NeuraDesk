@@ -6,7 +6,7 @@
 //! (`ssh-keygen -t ed25519`), sans aucun autre usage.
 
 use super::*;
-use russh::server::{Auth, ChannelOpenHandle, Msg, Session};
+use russh::server::{Auth, ChannelOpenHandle, Msg, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId};
 use russh_sftp::protocol::{Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version};
 use std::time::Instant;
@@ -52,9 +52,12 @@ impl russh::server::Handler for Serveur {
         Ok(if utilisateur == UTILISATEUR && mot_de_passe == MOT_DE_PASSE { Auth::Accept } else { Auth::reject() })
     }
 
-    async fn auth_publickey(&mut self, utilisateur: &str, cle: &PublicKey) -> Result<Auth, Self::Error> {
+    /// ⚠️ Depuis russh 0.65 la clé arrive **VÉRIFIÉE** (signature contrôlée et
+    /// cohérente avec l'algorithme annoncé, cf. l'avis GHSA-j7h2-66j4-ghjf) :
+    /// elle est dans `VerifiedPublicKey::public_key`, plus seule.
+    async fn auth_publickey(&mut self, utilisateur: &str, cle: VerifiedPublicKey<'_>) -> Result<Auth, Self::Error> {
         let attendue = russh::keys::parse_public_key_base64(CLE_CLIENT_PUBLIQUE).unwrap();
-        Ok(if utilisateur == UTILISATEUR && *cle == attendue { Auth::Accept } else { Auth::reject() })
+        Ok(if utilisateur == UTILISATEUR && *cle.public_key == attendue { Auth::Accept } else { Auth::reject() })
     }
 
     async fn channel_open_session(
@@ -684,4 +687,35 @@ fn fichiers_transferts_creation_renommage_droits_et_suppression() {
     fermer(onglet);
     attendre(onglet, ferme);
     let _ = std::fs::remove_dir_all(&dossier);
+}
+
+/// ⭐ **LA VERSION MINIMALE DE `russh` EST UNE EXIGENCE DE SÉCURITÉ, PAS UN GOÛT** —
+/// six avis Dependabot sur 0.63, tous corrigés en 0.65 (2026-11-11). Deux d'entre
+/// eux vivent dans le code **CLIENT**, celui que nous exécutons : allocations non
+/// bornées via `EXT_INFO` (GHSA-4p9f-7p9m-5vfg) et écriture de canal qui pend
+/// pour toujours sur une taille de paquet maximale nulle (GHSA-fw5c-8223-6h42).
+/// Les quatre autres sont côté serveur / serveur d'agent, que nous ne lançons pas
+/// (le serveur ci-dessus est un banc d'essai).
+///
+/// **MUTATION** : remettre `version = "0.63"` dans `Cargo.toml` et ce test tombe.
+#[test]
+fn russh_est_au_moins_en_0_65() {
+    let manifeste = include_str!("../../../Cargo.toml");
+    let ligne = manifeste
+        .lines()
+        .find(|l| l.trim_start().starts_with("russh ="))
+        .expect("la dépendance `russh` a disparu de Cargo.toml");
+    let version = ligne
+        .split("version = \"")
+        .nth(1)
+        .and_then(|reste| reste.split('"').next())
+        .expect("la ligne `russh` de Cargo.toml ne porte pas de version");
+    // « 0.65 » se lit majeur, puis MINEUR — le premier nombre est le majeur.
+    let mut nombres = version.split('.').map(|n| n.parse::<u32>());
+    let majeur = nombres.next().expect("version `russh` illisible").expect("version `russh` illisible");
+    let mineur = nombres.next().expect("version `russh` illisible").expect("version `russh` illisible");
+    assert!(
+        (majeur, mineur) >= (0, 65),
+        "russh {version} est sous le correctif des six avis : monter à 0.65 au moins"
+    );
 }

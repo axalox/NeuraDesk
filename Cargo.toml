@@ -263,7 +263,9 @@ cef = { version = "151.8.0", default-features = false, features = ["resources"] 
 # `russh` + `russh-sftp` sur un runtime `tokio` à part, jamais sur le fil UI.
 # ⚠️ `russh` SANS ses fonctionnalités par défaut : la défaut `aws-lc-rs` exige
 # NASM pour compiler, absent de cette machine — `ring` n'en a pas besoin.
-russh = { version = "0.63", default-features = false, features = ["ring", "flate2", "rsa"] }
+# 0.65 minimum : six avis Dependabot sur 0.63 (deux touchent le CLIENT, voir
+# docs du test `russh_est_au_moins_en_0_65`).
+russh = { version = "0.65", default-features = false, features = ["ring", "flate2", "rsa"] }
 russh-sftp = "3.0"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "fs"] }
 # L'export et l'import de la configuration (voir `sauvegarde_config`) — une
