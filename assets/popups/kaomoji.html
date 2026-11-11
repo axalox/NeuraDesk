@@ -22,10 +22,13 @@
       — Windows refuse les frappes d'un processus non élevé vers une fenêtre ÉLEVÉE,
       et ce refus est silencieux.
 
-  ⚠️ **L'INDEX, PAS LE KAOMOJI.** Un kaomoji contient des barres obliques
-  (`¯\_(ツ)_/¯`, `＼(º □ º l|l)/`) et des parenthèses : le faire voyager dans une URL
-  demanderait de l'échapper, et une erreur d'échappement serait SILENCIEUSE. La page
-  émet donc le RANG de la case, et Rust relit sa propre table au même rang.
+  ⚠️ **L'INDEX POUR LES INTÉGRÉS, L'IDENTIFIANT POUR LES PERSONNELS.** Un kaomoji
+  contient des barres obliques (`¯\_(ツ)_/¯`, `＼(º □ º l|l)/`) et des parenthèses :
+  le faire voyager dans une URL demanderait de l'échapper, et une erreur
+  d'échappement serait SILENCIEUSE. La page émet donc le RANG de la case, et Rust
+  relit sa propre table au même rang. ⭐ **Mais un kaomoji PERSONNEL change de rang
+  quand on ajoute ou supprime** : il voyage par son `id` stable (voir
+  `win32::kaomoji_perso`), et le texte de l'éditeur en percent-encodé — jamais brut.
 
   ⚠️ **LA LISTE VIENT DE RUST, PAS D'ICI** (`state.familles`) : l'écrire aussi dans
   cette page en ferait une SECONDE source de vérité — celle qui divergerait au premier
@@ -189,6 +192,72 @@
   }
   .case:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.30 * var(--popup-fond-alpha, 1))); }
   .case:active { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.55 * var(--popup-fond-alpha, 1))); }
+  /* ⭐ **L'ÉDITEUR REMPLACE LA LISTE, IL NE LA RECOUVRE PAS.** Le fond de la
+     fenêtre est le bureau flouté que Rust dessine SOUS la page ; un panneau opaque
+     posé par-dessus la liste jurerait avec lui. La classe `mode-editeur` sur le
+     `<body>` suffit donc à basculer tout le contenu. */
+  #editeur { display: none; flex: 1; min-height: 0; flex-direction: column; gap: 8px; padding: 8px; overflow: auto; }
+  body.mode-editeur #editeur { display: flex; }
+  body.mode-editeur #onglets, body.mode-editeur #liste { display: none; }
+  #editeur-tete { display: flex; align-items: center; gap: 8px; }
+  #editeur-titre { flex: 1; font-size: 13px; font-weight: 600; }
+  #editeur-form { display: flex; align-items: center; gap: 6px; }
+  #editeur-texte {
+    flex: 1;
+    min-width: 0;
+    box-sizing: border-box;
+    height: 30px;
+    padding: 0 8px;
+    border-radius: var(--nd-rayon-controle);
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.25 * var(--popup-fond-alpha, 1)));
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.08 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    font-family: "Segoe UI", "Yu Gothic UI", "MS Gothic", "Segoe UI Symbol", sans-serif;
+    font-size: 16px;
+    outline: none;
+  }
+  #editeur-texte:focus { border-color: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.85 * var(--popup-fond-alpha, 1))); }
+  .action {
+    all: unset;
+    box-sizing: border-box;
+    height: 30px;
+    padding: 0 12px;
+    display: flex;
+    align-items: center;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.25 * var(--popup-fond-alpha, 1)));
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .action:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.40 * var(--popup-fond-alpha, 1))); }
+  #editeur-erreur { min-height: 14px; font-size: 11px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); }
+  .perso-ligne { display: flex; align-items: center; gap: 8px; }
+  .perso-texte {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 8px;
+    border-radius: var(--nd-rayon-controle);
+    box-shadow: inset 0 0 0 1px rgba(var(--popup-fg-rgb, 255, 255, 255), var(--nd-bordure-alpha));
+    font-family: "Segoe UI", "Yu Gothic UI", "MS Gothic", "Segoe UI Symbol", sans-serif;
+    font-size: 16px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .perso-bouton {
+    all: unset;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    cursor: pointer;
+  }
+  .perso-bouton:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.18 * var(--popup-fond-alpha, 1))); }
+  #editeur-vide { font-size: 12px; opacity: calc(.7 * max(1, var(--popup-alpha, 1))); }
 </style>
 </head>
 <body>
@@ -198,15 +267,33 @@
     <!-- Deux glyphes de Segoe UI Symbol, jamais des emojis. ⚠️ LES CARACTÈRES SONT
          ÉCRITS EN CLAIR ICI, PAS EN `\uXXXX` : un échappement JavaScript n'est pas
          interprété dans du HTML — il s'afficherait tel quel. -->
+    <button id="editeur-bouton" class="bouton" title="Éditer mes kaomojis"><span class="ico ico-pencil-simple"></span></button>
     <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
     <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
   </div>
   <div id="onglets"></div>
   <div id="liste"></div>
+  <!-- ⭐ **L'ÉDITEUR DES KAOMOJIS PERSONNELS** — il porte sur les seules entrées
+       que NeuraDesk peut écrire : les 768 intégrés sont compilés dans le binaire. -->
+  <div id="editeur">
+    <div id="editeur-tete">
+      <span id="editeur-titre">Mes kaomojis</span>
+      <button id="editeur-fermer" class="bouton" title="Fermer l'éditeur"><span class="ico ico-x"></span></button>
+    </div>
+    <div id="editeur-form">
+      <input id="editeur-texte" type="text" maxlength="80" spellcheck="false" autocomplete="off" placeholder="Collez ou tapez un kaomoji">
+      <button id="editeur-valider" class="action">Ajouter</button>
+      <button id="editeur-annuler" class="action">Annuler</button>
+    </div>
+    <div id="editeur-erreur"></div>
+    <div id="editeur-liste"></div>
+  </div>
 <script>
-  function go(action) {
-    // ⚠️ Un segment, pas d'argument : c'est Rust qui sait QUELLE fenêtre parle.
-    location.href = "neuradesk://kaomoji/" + action;
+  // ⚠️ **CHAQUE ARGUMENT EST PERCENT-ENCODÉ** : un kaomoji contient des `/`, des
+  // `\` et des `%` (voir la doc du haut de la page). Rust décode le segment qui
+  // porte un TEXTE après avoir découpé — jamais avant.
+  function go(...segments) {
+    location.href = "neuradesk://kaomoji/" + segments.map(encodeURIComponent).join("/");
   }
 
   // ⛔ **LA BANDE DE TITRE DÉPLACE LA FENÊTRE** — elle n'a pas de barre de titre
@@ -225,6 +312,10 @@
   // l'onglet tient donc d'une ouverture à l'autre, tant que l'application tourne.
   let choisi = 0;
   let dernierEtat = null;
+  let modeEditeur = false;
+  // null = ajout ; sinon l'identifiant du kaomoji en cours de modification.
+  let edition = null;
+  let erreurEditeur = "";
 
   window.setState = function (state) {
     dernierEtat = state;
@@ -238,25 +329,56 @@
     dessiner();
   };
 
+  // Les onglets affichés : ceux de Rust, puis « Mes kaomojis » s'il y en a.
+  // ⚠️ **LE NOM DE L'ONGLET PERSONNEL VIENT AUSSI DE RUST** (`famillePerso`), pour
+  // la même raison que les autres : une seconde source de vérité divergerait.
+  function ongletsAffiches() {
+    const familles = (dernierEtat && dernierEtat.familles) || [];
+    const resultat = familles.map(function (f) {
+      return { nom: f.nom, kaomojis: f.kaomojis, perso: false };
+    });
+    const personnels = (dernierEtat && dernierEtat.personnels) || [];
+    if (personnels.length) {
+      resultat.push({
+        nom: (dernierEtat && dernierEtat.famillePerso) || "Mes kaomojis",
+        personnels: personnels,
+        perso: true
+      });
+    }
+    return resultat;
+  }
+
   function choisir(i) {
     choisi = i;
     dessiner();
     document.getElementById("liste").scrollTop = 0;
   }
 
+  function ouvrirEditeur(ouvrir) {
+    modeEditeur = ouvrir;
+    edition = null;
+    erreurEditeur = "";
+    document.getElementById("editeur-texte").value = "";
+    const bouton = document.getElementById("editeur-bouton");
+    bouton.setAttribute("aria-pressed", String(modeEditeur));
+    bouton.title = modeEditeur ? "Quitter l'éditeur" : "Éditer mes kaomojis";
+    dessiner();
+    if (modeEditeur) document.getElementById("editeur-texte").focus();
+  }
+
   function dessiner() {
-    const familles = (dernierEtat && dernierEtat.familles) || [];
-    if (choisi >= familles.length) choisi = 0;
+    const listeOnglets = ongletsAffiches();
+    if (choisi >= listeOnglets.length) choisi = 0;
+    document.body.classList.toggle("mode-editeur", modeEditeur);
+
     const onglets = document.getElementById("onglets");
     onglets.replaceChildren();
-    // ⭐ **LE NOM VIENT DE RUST** (`state.familles[i].nom`). L'écrire aussi ici en
-    // ferait une seconde source de vérité — celle qui divergerait au premier thème
-    // ajouté, et un onglet posé sur le mauvais groupe ne se verrait qu'à l'usage.
-    familles.forEach(function (groupe, i) {
+    listeOnglets.forEach(function (groupe, i) {
       const onglet = document.createElement("button");
       onglet.className = "onglet";
       onglet.textContent = groupe.nom;
-      onglet.title = groupe.nom + " — " + groupe.kaomojis.length + " kaomojis";
+      const nombre = groupe.perso ? groupe.personnels.length : groupe.kaomojis.length;
+      onglet.title = groupe.nom + " — " + nombre + " kaomojis";
       onglet.setAttribute("aria-selected", String(i === choisi));
       onglet.onclick = function () { choisir(i); };
       onglets.appendChild(onglet);
@@ -269,33 +391,150 @@
     // qui change l'état, `PAYLOAD` rendant les autres poussées gratuites). Le défaut a
     // été signalé sur la fenêtre des caractères le 2026-10-06.
     liste.replaceChildren();
-    // ⚠️ **L'INDEX EST GLOBAL, PAS PAR GROUPE** : c'est le RANG dans la table mise à
-    // plat, exactement ce que `cef_kaomoji::kaomoji_par_index` relit. Un seul groupe
-    // est montré, mais son premier kaomoji porte l'index qui suit TOUS ceux des
-    // onglets précédents — repartir de zéro écrirait le kaomoji d'un autre groupe.
-    let index = 0;
-    for (let i = 0; i < choisi; i++) index += familles[i].kaomojis.length;
-    const groupe = familles[choisi];
+    const groupe = listeOnglets[choisi];
     if (groupe) {
       const rang = document.createElement("div");
       rang.className = "rang";
-      for (const kaomoji of groupe.kaomojis) {
-        const ici = index++;
-        const bouton = document.createElement("button");
-        bouton.className = "case";
-        bouton.textContent = kaomoji;
-        bouton.title = kaomoji + "  —  clic : insérer, clic droit : copier";
-        bouton.onclick = function () { location.href = "neuradesk://kaomoji/frapper/" + ici; };
-        bouton.oncontextmenu = function (e) {
-          e.preventDefault();
-          location.href = "neuradesk://kaomoji/copier/" + ici;
-          return false;
-        };
-        rang.appendChild(bouton);
+      if (groupe.perso) {
+        for (const k of groupe.personnels) {
+          const bouton = document.createElement("button");
+          bouton.className = "case";
+          bouton.textContent = k.s;
+          bouton.title = k.s + "  —  clic : insérer, clic droit : copier";
+          bouton.onclick = function () { go("frapper-perso", String(k.id)); };
+          bouton.oncontextmenu = function (e) {
+            e.preventDefault();
+            go("copier-perso", String(k.id));
+            return false;
+          };
+          rang.appendChild(bouton);
+        }
+      } else {
+        // ⚠️ **L'INDEX EST GLOBAL POUR LES INTÉGRÉS** : c'est le RANG dans la table
+        // mise à plat, exactement ce que `cef_kaomoji::kaomoji_par_index` relit. Un
+        // seul groupe est montré, mais son premier kaomoji porte l'index qui suit
+        // TOUS ceux des onglets précédents — repartir de zéro écrirait un autre.
+        let index = 0;
+        for (let i = 0; i < choisi; i++) index += (listeOnglets[i].kaomojis || []).length;
+        for (const kaomoji of groupe.kaomojis) {
+          const ici = index++;
+          const bouton = document.createElement("button");
+          bouton.className = "case";
+          bouton.textContent = kaomoji;
+          bouton.title = kaomoji + "  —  clic : insérer, clic droit : copier";
+          bouton.onclick = function () { go("frapper", String(ici)); };
+          bouton.oncontextmenu = function (e) {
+            e.preventDefault();
+            go("copier", String(ici));
+            return false;
+          };
+          rang.appendChild(bouton);
+        }
       }
       liste.appendChild(rang);
     }
+
+    afficherEditeur();
   }
+
+  function afficherEditeur() {
+    const personnels = (dernierEtat && dernierEtat.personnels) || [];
+    // ⚠️ Si l'entrée en cours de modification a disparu (supprimée), on repasse en
+    // mode AJOUT : un « Enregistrer » sur un id inconnu échouerait en silence.
+    if (edition !== null && !personnels.some(function (k) { return k.id === edition; })) {
+      edition = null;
+    }
+    document.getElementById("editeur-valider").textContent = edition === null ? "Ajouter" : "Enregistrer";
+    document.getElementById("editeur-erreur").textContent = erreurEditeur;
+
+    const liste = document.getElementById("editeur-liste");
+    liste.replaceChildren();
+    if (!personnels.length) {
+      const vide = document.createElement("div");
+      vide.id = "editeur-vide";
+      vide.textContent = "Aucun kaomoji personnel pour l'instant.";
+      liste.appendChild(vide);
+      return;
+    }
+    for (const k of personnels) {
+      const ligne = document.createElement("div");
+      ligne.className = "perso-ligne";
+      const texte = document.createElement("span");
+      texte.className = "perso-texte";
+      texte.textContent = k.s;
+      texte.title = k.s;
+      const modifier = document.createElement("button");
+      modifier.className = "perso-bouton";
+      modifier.title = "Modifier";
+      modifier.innerHTML = '<span class="ico ico-pencil-simple"></span>';
+      modifier.onclick = function () {
+        edition = k.id;
+        erreurEditeur = "";
+        const champ = document.getElementById("editeur-texte");
+        champ.value = k.s;
+        champ.focus();
+        afficherEditeur();
+      };
+      const supprimer = document.createElement("button");
+      supprimer.className = "perso-bouton";
+      supprimer.title = "Supprimer";
+      supprimer.innerHTML = '<span class="ico ico-x"></span>';
+      supprimer.onclick = function () { go("perso-supprimer", String(k.id)); };
+      ligne.appendChild(texte);
+      ligne.appendChild(modifier);
+      ligne.appendChild(supprimer);
+      liste.appendChild(ligne);
+    }
+  }
+
+  document.getElementById("editeur-bouton").addEventListener("click", function () {
+    ouvrirEditeur(!modeEditeur);
+  });
+  document.getElementById("editeur-fermer").addEventListener("click", function () {
+    ouvrirEditeur(false);
+  });
+  document.getElementById("editeur-annuler").addEventListener("click", function () {
+    edition = null;
+    erreurEditeur = "";
+    document.getElementById("editeur-texte").value = "";
+    afficherEditeur();
+  });
+  document.getElementById("editeur-valider").addEventListener("click", function () {
+    const champ = document.getElementById("editeur-texte");
+    const texte = champ.value.trim();
+    if (!texte) {
+      erreurEditeur = "Le kaomoji est vide.";
+      afficherEditeur();
+      return;
+    }
+    // ⚠️ **EN CARACTÈRES, PAS EN UNITÉS UTF-16** — la borne de Rust compte les
+    // caractères (voir `kaomoji_perso::LONGUEUR_MAX`).
+    if (Array.from(texte).length > 80) {
+      erreurEditeur = "Trop long (80 caractères au maximum).";
+      afficherEditeur();
+      return;
+    }
+    const personnels = (dernierEtat && dernierEtat.personnels) || [];
+    const doublon = personnels.some(function (k) { return k.s === texte && k.id !== edition; });
+    if (doublon) {
+      erreurEditeur = "Ce kaomoji est déjà dans la liste.";
+      afficherEditeur();
+      return;
+    }
+    if (edition === null) go("perso-ajouter", texte);
+    else go("perso-modifier", String(edition), texte);
+    champ.value = "";
+    edition = null;
+    erreurEditeur = "";
+  });
+  document.getElementById("editeur-texte").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      document.getElementById("editeur-valider").click();
+    } else if (e.key === "Escape") {
+      ouvrirEditeur(false);
+    }
+  });
 </script>
 </body>
 </html>

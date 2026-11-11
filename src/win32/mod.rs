@@ -118,6 +118,8 @@ pub mod cible_de_frappe;
 pub mod caracteres;
 /// Les kaomojis : la TABLE (applet « Kaomojis »). La fenêtre est `cef_kaomoji`.
 pub mod kaomoji;
+/// Les kaomojis PERSONNELS, persistés — la seule partie que l'éditeur écrit.
+pub mod kaomoji_perso;
 /// La FENÊTRE des kaomojis — une page CEF, sœur de celle des caractères.
 pub mod cef_kaomoji;
 /// La FENÊTRE des caractères — une page CEF, comme la visionneuse.

@@ -23,7 +23,7 @@
 use std::cell::{Cell, RefCell};
 
 use windows::core::w;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, GetSystemMetrics, GetWindowRect, SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST, SM_CXSCREEN,
     SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WM_CLOSE, WM_NCHITTEST,
@@ -76,6 +76,9 @@ const HAUTEUR_CASE: i32 = 36;
 const HAUTEUR_ONGLET: i32 = 28;
 /// L'écart horizontal entre deux onglets — le `gap` de `#onglets`.
 const ESPACE_ONGLET: i32 = 4;
+/// **LE NOM DE L'ONGLET PERSONNEL** — écrit aussi dans `kaomoji.html`, où il
+/// n'apparaît que si `state.personnels` est non vide. Un test compare les deux.
+const FAMILLE_PERSO: &str = "Mes kaomojis";
 /// Ce que la rangée d'onglets ajoute autour de ses lignes : `padding` 6 + 6, le
 /// filet du bas, moins l'écart de la dernière ligne qui n'en a pas.
 const MARGE_ONGLETS: i32 = 9;
@@ -163,7 +166,14 @@ fn largeur_unites(largeur_ecran: i32) -> i32 {
 /// VISE ; c'est ce que fige `la_largeur_demandee_ne_deborde_jamais_de_l_ecran`.
 fn taille_pour_tout_le_contenu(largeur_ecran: i32, hauteur_ecran: i32) -> [i32; 2] {
     let largeur = largeur_unites(largeur_ecran);
-    let plus_grand = super::kaomoji::FAMILLES.iter().map(|f| lignes_de(f, largeur)).max().unwrap_or(0);
+    let mut plus_grand =
+        super::kaomoji::FAMILLES.iter().map(|f| lignes_de(f.kaomojis, largeur)).max().unwrap_or(0);
+    // ⚠️ **LES KAOMOJIS PERSONNELS COMPTENT AUSSI** : l'un d'eux peut être plus
+    // large que tous les intégrés, et l'oublier ferait une fenêtre trop étroite
+    // pour sa propre case.
+    if let Some(lignes) = lignes_des_personnels(largeur) {
+        plus_grand = plus_grand.max(lignes);
+    }
     // ⚠️ **LES ONGLETS S'ENROULENT À LA MÊME LARGEUR** : sur un écran étroit ils
     // prennent une ligne de plus, et ne pas la compter couperait le bas du groupe.
     let hauteur = BANDE + hauteur_des_onglets(largeur) + plus_grand * HAUTEUR_CASE;
@@ -178,8 +188,16 @@ fn taille_pour_tout_le_contenu(largeur_ecran: i32, hauteur_ecran: i32) -> [i32; 
 fn hauteur_des_onglets(largeur: i32) -> i32 {
     let mut lignes = 0;
     let mut reste = 0;
-    for famille in super::kaomoji::FAMILLES {
-        let onglet = largeur_onglet(famille.nom) + ESPACE_ONGLET;
+    // ⚠️ **L'ONGLET « Mes kaomojis » N'EXISTE QUE S'IL Y A DES ENTRÉES** — la page
+    // le cache quand la liste personnelle est vide, et le compter quand même
+    // laisserait une rangée d'onglets vide en haut de la fenêtre.
+    let personnels = super::kaomoji_perso::tous();
+    let noms = super::kaomoji::FAMILLES
+        .iter()
+        .map(|f| f.nom)
+        .chain(std::iter::once(FAMILLE_PERSO).filter(|_| !personnels.is_empty()));
+    for nom in noms {
+        let onglet = largeur_onglet(nom) + ESPACE_ONGLET;
         if reste > 0 && reste + onglet > largeur {
             lignes += 1;
             reste = 0;
@@ -190,6 +208,16 @@ fn hauteur_des_onglets(largeur: i32) -> i32 {
         lignes += 1;
     }
     lignes * HAUTEUR_ONGLET + MARGE_ONGLETS
+}
+
+/// Le nombre de lignes de l'onglet personnel, ou `None` s'il est vide.
+fn lignes_des_personnels(largeur_emballage: i32) -> Option<i32> {
+    let personnels = super::kaomoji_perso::tous();
+    if personnels.is_empty() {
+        return None;
+    }
+    let textes: Vec<&str> = personnels.iter().map(|k| k.texte.as_str()).collect();
+    Some(lignes_de(&textes, largeur_emballage))
 }
 
 /// La largeur estimée d'un onglet, en unités de page.
@@ -203,10 +231,10 @@ fn largeur_onglet(nom: &str) -> i32 {
 ///
 /// ⚠️ **SÉPARÉ DE `taille_pour_tout_le_contenu` POUR ÊTRE VÉRIFIABLE** : c'est la seule
 /// partie du calcul qui puisse se tromper sans que rien ne le dise.
-fn lignes_de(famille: &super::kaomoji::Famille, largeur_emballage: i32) -> i32 {
+fn lignes_de(kaomojis: &[&str], largeur_emballage: i32) -> i32 {
     let mut lignes = 0;
     let mut reste = 0;
-    for &k in famille.kaomojis {
+    for &k in kaomojis {
         let case = largeur_kaomoji(k) + ESPACE;
         if reste > 0 && reste + case > largeur_emballage {
             lignes += 1;
@@ -284,7 +312,20 @@ fn etat_json() -> String {
             serde_json::json!({ "nom": f.nom, "kaomojis": kaomojis })
         })
         .collect();
-    serde_json::json!({ "familles": familles, "epingle": crate::config::load_kaomoji_premier_plan() }).to_string()
+    // ⭐ **LES PERSONNELS SONT UN SECOND TABLEAU, PAS UNE FAMILLE DE PLUS** : la
+    // page doit pouvoir les distinguer pour passer leur `id` et non leur index,
+    // et la rangée d'onglets les ajoute elle-même à la fin (voir `kaomoji.html`).
+    let personnels: Vec<serde_json::Value> = super::kaomoji_perso::tous()
+        .iter()
+        .map(|k| serde_json::json!({ "id": k.id, "s": k.texte }))
+        .collect();
+    serde_json::json!({
+        "familles": familles,
+        "personnels": personnels,
+        "famillePerso": FAMILLE_PERSO,
+        "epingle": crate::config::load_kaomoji_premier_plan(),
+    })
+    .to_string()
 }
 
 /// Repousse l'état si la page ne l'a pas encore reçu (voir `RAFALE`).
@@ -329,14 +370,16 @@ fn appliquer_le_premier_plan() {
     }
 }
 
-/// **CE QUE LA PAGE DEMANDE** : les trois gestes de la fenêtre, les deux de la liste.
+/// **CE QUE LA PAGE DEMANDE** : les trois gestes de la fenêtre, les deux de la
+/// liste, et les trois de l'éditeur.
 /// ⚠️ **LA PUNAISE N'EST PAS ICI** — `cef_popup::drain_actions` retire tout ce qui
 /// finit par `/epingle` avant que le moindre module ne le voie.
 pub fn dispatch_actions() {
     for action in cef_popup::drain_actions(&SLOT) {
         let Some(reste) = action.strip_prefix("kaomoji/") else { continue };
         let mut morceaux = reste.split('/');
-        let (Some(verbe), index) = (morceaux.next(), morceaux.next()) else { continue };
+        let Some(verbe) = morceaux.next() else { continue };
+        let premier = morceaux.next();
         match verbe {
             "deplacer" => {
                 if let Some(hwnd) = cef_popup::hwnd(&SLOT) {
@@ -363,7 +406,7 @@ pub fn dispatch_actions() {
                 // d'échappement serait SILENCIEUSE. L'index est de l'ASCII, et Rust
                 // relit la table qu'il connaît déjà (même raison que le code
                 // hexadécimal des caractères).
-                let Some(index) = index.and_then(|i| i.parse::<usize>().ok()) else {
+                let Some(index) = premier.and_then(|i| i.parse::<usize>().ok()) else {
                     crate::diag!("[kaomoji] index illisible");
                     continue;
                 };
@@ -371,16 +414,100 @@ pub fn dispatch_actions() {
                     crate::diag!("[kaomoji] index hors table : {index}");
                     continue;
                 };
-                if verbe == "frapper" {
-                    crate::win32::cible_de_frappe::frapper_dans_la_cible(k);
+                frapper_ou_copier(verbe, k);
+            }
+            // ⭐ **LES PERSONNELS PAR IDENTIFIANT** : leur table peut changer
+            // pendant que la fenêtre est ouverte, donc un index y serait instable.
+            "frapper-perso" | "copier-perso" => {
+                let Some(id) = premier.and_then(|i| i.parse::<u32>().ok()) else {
+                    crate::diag!("[kaomoji] id personnel illisible");
+                    continue;
+                };
+                let Some(k) = kaomoji_perso_par_id(id) else {
+                    crate::diag!("[kaomoji] id personnel inconnu : {id}");
+                    continue;
+                };
+                frapper_ou_copier(verbe, &k);
+            }
+            // --- LES TROIS GESTES DE L'ÉDITEUR ---
+            "perso-ajouter" => {
+                let Some(texte) = premier else { continue };
+                let texte = crate::win32::cef_app::percent_decode(texte);
+                match super::kaomoji_perso::ajouter(&texte) {
+                    Some(id) => {
+                        crate::diag!("[kaomoji] personnel ajouté : id {id}");
+                        apres_mutation();
+                    }
+                    None => crate::diag!("[kaomoji] ajout refusé : {texte:?}"),
+                }
+            }
+            "perso-modifier" => {
+                let Some(id) = premier.and_then(|i| i.parse::<u32>().ok()) else {
+                    crate::diag!("[kaomoji] id personnel illisible");
+                    continue;
+                };
+                // ⚠️ **DÉCOUPER AVANT DE DÉCODER** : un `%2F` dans le texte ne doit
+                // pas être pris pour un séparateur (voir `cef_app::percent_decode`).
+                let Some(texte) = morceaux.next() else { continue };
+                let texte = crate::win32::cef_app::percent_decode(texte);
+                if super::kaomoji_perso::modifier(id, &texte) {
+                    crate::diag!("[kaomoji] personnel {id} modifié");
+                    apres_mutation();
                 } else {
-                    crate::win32::clipboard::write_text(k);
-                    crate::diag!("[kaomoji] copie : {k:?}");
+                    crate::diag!("[kaomoji] modification refusée : id {id}, {texte:?}");
+                }
+            }
+            "perso-supprimer" => {
+                let Some(id) = premier.and_then(|i| i.parse::<u32>().ok()) else {
+                    crate::diag!("[kaomoji] id personnel illisible");
+                    continue;
+                };
+                if super::kaomoji_perso::supprimer(id) {
+                    crate::diag!("[kaomoji] personnel {id} supprimé");
+                    apres_mutation();
+                } else {
+                    crate::diag!("[kaomoji] suppression refusée : id {id}");
                 }
             }
             autre => crate::diag!("[kaomoji] verbe inconnu : {autre:?}"),
         }
     }
+}
+
+fn frapper_ou_copier(verbe: &str, k: &str) {
+    if verbe.starts_with("frapper") {
+        crate::win32::cible_de_frappe::frapper_dans_la_cible(k);
+    } else {
+        crate::win32::clipboard::write_text(k);
+        crate::diag!("[kaomoji] copie : {k:?}");
+    }
+}
+
+/// **APRÈS UNE MUTATION** : l'état (la page) ET la taille (le kaomoji le plus
+/// large peut avoir changé). `resize_if_needed` est fait pour un redimensionnement
+/// À LA DEMANDE — ce n'est pas l'appel par frame que la doc de module interdit.
+fn apres_mutation() {
+    push_state();
+    recaler_apres_edition();
+}
+
+fn recaler_apres_edition() {
+    let Some(hwnd) = cef_popup::hwnd(&SLOT) else { return };
+    let (largeur, hauteur) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+    let [l, h] = cef_popup::taille_aux_textes(largeur, hauteur, taille_pour_tout_le_contenu);
+    let mut cadre = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut cadre) }.is_err() {
+        return;
+    }
+    let x = cadre.left.clamp(0, (largeur - l).max(0));
+    let y = cadre.top.clamp(0, (hauteur - h).max(0));
+    cef_popup::resize_if_needed(&SLOT, [x, y, l, h]);
+}
+
+/// Le kaomoji personnel d'un identifiant. Rend une COPIE : l'appelant la garde
+/// le temps de la frappe, sans tenir le cache.
+fn kaomoji_perso_par_id(id: u32) -> Option<String> {
+    super::kaomoji_perso::tous().into_iter().find(|k| k.id == id).map(|k| k.texte)
 }
 
 /// **LE KAOMOJI D'UN INDEX GLOBAL** — la table mise à plat, groupes dans l'ordre, et
@@ -440,8 +567,21 @@ fn code_pour_point(rect: [i32; 4], (x, y): (i32, i32)) -> i32 {
 mod tests {
     use super::*;
 
-    fn verbes_connus() -> [&'static str; 5] {
-        ["frapper", "copier", "deplacer", "epingler", "fermer"]
+    fn verbes_connus() -> &'static [&'static str] {
+        &[
+            // La fenêtre et les kaomojis intégrés.
+            "frapper",
+            "copier",
+            "deplacer",
+            "epingler",
+            "fermer",
+            // Les personnels, par identifiant, et les trois gestes de l'éditeur.
+            "frapper-perso",
+            "copier-perso",
+            "perso-ajouter",
+            "perso-modifier",
+            "perso-supprimer",
+        ]
     }
 
     /// ⭐ **LA PAGE ET RUST DOIVENT PARLER LE MÊME LANGAGE** — même contrat que
@@ -466,9 +606,23 @@ mod tests {
             assert!(verbes_connus().contains(&verbe), "verbe inconnu passé à `go` : {verbe:?}");
             vus.push(verbe);
         }
-        for attendu in verbes_connus() {
+        for attendu in verbes_connus().iter().copied() {
             assert!(vus.contains(&attendu), "la page n'appelle jamais `{attendu}`");
         }
+    }
+
+    /// **L'ÉDITEUR ET LA PAGE PARLENT LA MÊME LANGUE** : le tableau `personnels`,
+    /// le nom de leur onglet, et une liste VIDE sous `cargo test` (voir la doc de
+    /// `kaomoji_perso` — la géométrie doit rester déterministe).
+    #[test]
+    fn l_etat_porte_la_liste_personnelle_et_son_nom() {
+        let json: serde_json::Value = serde_json::from_str(&etat_json()).expect("un JSON valide");
+        assert_eq!(json["personnels"].as_array().map(|l| l.len()), Some(0));
+        assert_eq!(json["famillePerso"], FAMILLE_PERSO);
+        let page = include_str!("../../assets/popups/kaomoji.html");
+        assert!(page.contains("dernierEtat.personnels"), "la page lit `personnels`");
+        assert!(page.contains("famillePerso"), "la page lit le nom de l'onglet personnel");
+        assert_eq!(lignes_des_personnels(500), None, "un onglet vide n'occupe aucune ligne");
     }
 
     /// **L'ÉTAT PORTE TOUS LES KAOMOJIS, DANS L'ORDRE DE LA TABLE, AVEC LEUR GROUPE.**
@@ -519,8 +673,8 @@ mod tests {
         let [_, h] = taille_pour_tout_le_contenu(100_000, 100_000);
         let emballage = largeur_unites(100_000);
         let familles = super::super::kaomoji::FAMILLES;
-        let plus_grand = familles.iter().map(|f| lignes_de(f, emballage)).max().unwrap();
-        let somme: i32 = familles.iter().map(|f| lignes_de(f, emballage)).sum();
+        let plus_grand = familles.iter().map(|f| lignes_de(f.kaomojis, emballage)).max().unwrap();
+        let somme: i32 = familles.iter().map(|f| lignes_de(f.kaomojis, emballage)).sum();
         let attendu = (BANDE + hauteur_des_onglets(emballage) + plus_grand * HAUTEUR_CASE + 2 * (MARGE + SOUPLESSE)) * PX_PAR_UNITE;
         assert_eq!(h, attendu, "bande + onglets + le plus grand groupe");
         assert!(h < somme * HAUTEUR_CASE * PX_PAR_UNITE, "plus courte que tous les groupes empilés");
