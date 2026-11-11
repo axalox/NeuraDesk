@@ -36,8 +36,9 @@
 //! navigateur).
 
 use std::cell::Cell;
+use std::time::{Duration, Instant};
 
-use windows::core::{w, Result};
+use windows::core::{w, Interface, Result};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
 use windows::Win32::Graphics::Gdi::{
@@ -59,6 +60,38 @@ use crate::gfx::swapchain::SwapChain;
 use crate::gfx::texture::Texture;
 use crate::win32::fade;
 use crate::win32::menu;
+
+/// Intervalle minimal entre deux captures du fond de l'infobulle — voir
+/// `TooltipWindow::show`, qui porte la mesure : une capture par frame rend
+/// chaque image différente, donc impose un `Present` par frame — et ce
+/// `Present` coûte ~6 ms.
+const BACKDROP_REFRESH: Duration = Duration::from_millis(250);
+/// Déplacement (en pixels écran) au-delà duquel le fond est recapturé SANS
+/// attendre `BACKDROP_REFRESH` — l'infobulle suit l'icône pendant que celle-ci
+/// s'anime, et un fond pris pour un autre emplacement se verrait.
+const BACKDROP_TOLERANCE_PX: i32 = 24;
+
+/// Le fond de l'infobulle doit-il être recapturé — voir `TooltipWindow::show`,
+/// qui en fait toutes les captures et porte la mesure.
+///
+/// `dernier` : le rectangle et l'instant de la dernière capture retenue.
+/// `affichee` : l'infobulle était-elle déjà à l'écran AVANT cet appel (une
+/// apparition repart d'un fond neuf). Le temps est passé en paramètre plutôt
+/// que lu ici, pour que la décision se teste sans fenêtre.
+fn fond_perime(
+    dernier: Option<([i32; 4], Instant)>,
+    affichee: bool,
+    rect: [i32; 4],
+    maintenant: Instant,
+) -> bool {
+    let Some((ancien, pris_a)) = dernier else { return true };
+    !affichee
+        || maintenant.saturating_duration_since(pris_a) >= BACKDROP_REFRESH
+        || ancien[2] != rect[2]
+        || ancien[3] != rect[3]
+        || (ancien[0] - rect[0]).abs() > BACKDROP_TOLERANCE_PX
+        || (ancien[1] - rect[1]).abs() > BACKDROP_TOLERANCE_PX
+}
 
 /// Espace entre l'infobulle et l'icône survolée.
 const GAP: f32 = 8.0;
@@ -207,6 +240,32 @@ pub struct TooltipWindow {
     /// elle doit passer DEVANT le popup qui la porte, là où celle d'une icône
     /// passe sous un menu ouvert (voir `show`). Retenu pour `reassert_on_top`.
     au_dessus_des_popups: bool,
+    /// Le dernier fond capturé et flouté (voir `show`), gardé d'une frame à
+    /// l'autre — `None` tant qu'aucune capture n'a réussi.
+    fond: Option<Texture>,
+    /// Rectangle ÉCRAN de `fond` et instant de sa capture (voir
+    /// `BACKDROP_REFRESH`/`BACKDROP_TOLERANCE_PX`).
+    fond_rect: Option<([i32; 4], Instant)>,
+    /// Numéro de la dernière capture RÉUSSIE de `fond` — entre dans
+    /// `dernier_dessin`, donc dans la décision de redessiner (voir `show`).
+    fond_seq: u64,
+    /// Ce que la dernière image composée DÉCRIT, ou `None` si plus rien de
+    /// valide n'est à l'écran — voir `show`, qui ne redessine que si cela
+    /// change.
+    dernier_dessin: Option<DessinRetenu>,
+}
+
+/// Signature de la dernière image composée dans le swap chain de l'infobulle
+/// (voir `TooltipWindow::show`) : taille de la fenêtre, texture du texte, et
+/// numéro de la capture de fond dessinée. La POSITION n'y figure pas à
+/// dessein : `SetWindowPos` déplace la fenêtre avec son contenu, sans qu'il
+/// faille redessiner.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DessinRetenu {
+    largeur: u32,
+    hauteur: u32,
+    texte: usize,
+    fond_seq: u64,
 }
 
 impl TooltipWindow {
@@ -271,6 +330,10 @@ impl TooltipWindow {
                 fade: fade::WindowFade::new(),
                 shown: false,
                 au_dessus_des_popups: false,
+                fond: None,
+                fond_rect: None,
+                fond_seq: 0,
+                dernier_dessin: None,
             })
         }
     }
@@ -419,28 +482,68 @@ impl TooltipWindow {
                 }
             }
         }
-
         // Fond flouté du bureau sous l'infobulle, teinté avec la MÊME
         // couleur/force que les popups "menu" — voir la doc de module.
-        // Recapturé à chaque frame comme `win32::cef_popup::render` (même
-        // raison : suivre le bureau en temps réel derrière une infobulle qui
-        // peut rester affichée plusieurs secondes).
+        //
+        // ⛔ **LE FOND N'EST PLUS RECAPTURÉ À CHAQUE FRAME** — MESURÉ le
+        // 2026-11-11. La capture elle-même n'est pas le coût (~100 µs, son
+        // `AcquireNextFrame` est à délai NUL) : c'est **son effet** — un fond
+        // neuf à chaque frame rend chaque image DIFFÉRENTE, donc imposait un
+        // redessin et un `Present` à chaque frame, et un `Present` sur CETTE
+        // fenêtre coûte **~6 ms**, même en `Present(0)` (voir
+        // `SwapChain::present_sans_attente`). La boucle tombait de 143 à
+        // 68 images/s et la magnification SACCADAIT — DÉFAUT SIGNALÉ : « les
+        // animations saccadent même en mettant les performances sur qualité ».
+        // (Contrôle : infobulles coupées, la même magnification tient
+        // 136 images/s sur le même écran.) Le fond est donc GARDÉ, et
+        // rafraîchi à `BACKDROP_REFRESH` près — ou tout de suite s'il a changé
+        // de taille, s'il a bougé de plus de `BACKDROP_TOLERANCE_PX`, ou si
+        // l'infobulle vient de réapparaître (`!self.shown`).
         let screen_rect = [box_x.round() as i32, box_y.round() as i32, width as i32, height as i32];
-        let backdrop_tex = backdrop::capture_blurred_batch(&gfx.device, &[screen_rect]).into_iter().next().and_then(Result::ok);
+        if fond_perime(self.fond_rect, self.shown, screen_rect, Instant::now()) {
+            // ⚠️ L'INSTANT EST NOTÉ MÊME QUAND LA CAPTURE ÉCHOUE : sans cela un
+            // échec persistant retenterait une capture (et, en cas de succès,
+            // un redessin) à chaque frame. L'ancien fond reste dessiné
+            // entre-temps.
+            if let Some(tex) =
+                backdrop::capture_blurred_batch(&gfx.device, &[screen_rect]).into_iter().next().and_then(Result::ok)
+            {
+                self.fond = Some(tex);
+                self.fond_seq += 1;
+            }
+            self.fond_rect = Some((screen_rect, Instant::now()));
+        }
 
         let menu_rgb = menu::menu_accent_rgb();
         let tint_rgba = [menu_rgb[0], menu_rgb[1], menu_rgb[2], menu::menu_tint()];
         let backdrop_instance = QuadInstance::new_backdrop([0.0, 0.0, box_w, box_h], tint_rgba, radius);
         let text_instance = QuadInstance::new_glyph([padding, padding, text_w, text_h], text_color());
         let mut batches: Vec<QuadBatch> = Vec::new();
-        if let Some(backdrop_tex) = &backdrop_tex {
-            batches.push(QuadBatch::new(Some(&backdrop_tex.srv), std::slice::from_ref(&backdrop_instance)));
+        if let Some(fond) = &self.fond {
+            batches.push(QuadBatch::new(Some(&fond.srv), std::slice::from_ref(&backdrop_instance)));
         }
         batches.push(QuadBatch::new(Some(&text_texture.srv), std::slice::from_ref(&text_instance)));
 
-        let origin = crate::win32::window::hwnd_screen_origin(self.hwnd).unwrap_or((0, 0));
-        self.renderer.render_at(&gfx.context, swapchain.rtv().expect("rtv toujours présente après resize/new"), box_w, box_h, &batches, origin)?;
-        swapchain.present()?;
+        // ⛔ **ON NE REDESSINE QUE QUAND L'IMAGE CHANGE** — MESURÉ le
+        // 2026-11-11 : un `Present` sur CETTE fenêtre coûte ~6 ms même sans
+        // synchronisation (`present_sans_attente`, essayé), soit une seconde
+        // frame perdue derrière le dock à chaque frame de la boucle. Or rien
+        // ne change tant que l'infobulle reste sur la même icône : le fondu
+        // passe par `SetLayeredWindowAttributes` (`fade.push`), la position
+        // par `SetWindowPos` — ni l'un ni l'autre ne demande un nouveau
+        // dessin. Seuls comptent la taille, le TEXTE et la capture de fond.
+        let signature = DessinRetenu {
+            largeur: width,
+            hauteur: height,
+            texte: text_texture.srv.as_raw() as usize,
+            fond_seq: self.fond_seq,
+        };
+        if self.dernier_dessin != Some(signature) {
+            let origin = crate::win32::window::hwnd_screen_origin(self.hwnd).unwrap_or((0, 0));
+            self.renderer.render_at(&gfx.context, swapchain.rtv().expect("rtv toujours présente après resize/new"), box_w, box_h, &batches, origin)?;
+            swapchain.present_sans_attente()?;
+            self.dernier_dessin = Some(signature);
+        }
 
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
@@ -558,4 +661,48 @@ pub(crate) fn monitor_bounds(x: i32, y: i32) -> (i32, i32, i32, i32) {
 /// façon jamais d'entrée souris/clavier réelle.
 unsafe extern "system" fn tooltip_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RECT: [i32; 4] = [100, 200, 160, 40];
+
+    /// Le défaut mesuré le 2026-11-11 : une infobulle immobile doit garder son
+    /// fond, sinon chaque fond neuf impose un redessin et un `Present` (~6 ms
+    /// chacun) à chaque frame, et la magnification tombe de 143 à 68 i/s.
+    #[test]
+    fn un_fond_recent_et_immobile_n_est_pas_recapture() {
+        let maintenant = Instant::now();
+        assert!(!fond_perime(Some((RECT, maintenant)), true, RECT, maintenant));
+    }
+
+    #[test]
+    fn le_fond_expire_apres_le_delai() {
+        let pris_a = Instant::now();
+        let maintenant = pris_a + BACKDROP_REFRESH;
+        assert!(fond_perime(Some((RECT, pris_a)), true, RECT, maintenant));
+    }
+
+    /// L'infobulle suit l'icône pendant la magnification : un fond pris pour
+    /// un autre emplacement se verrait, mais un déplacement de quelques pixels
+    /// ne justifie pas les ~6 ms d'une nouvelle capture.
+    #[test]
+    fn un_petit_deplacement_garde_le_fond_un_grand_le_rafraichit() {
+        let maintenant = Instant::now();
+        let proche = [RECT[0] + BACKDROP_TOLERANCE_PX, RECT[1] - BACKDROP_TOLERANCE_PX, RECT[2], RECT[3]];
+        assert!(!fond_perime(Some((RECT, maintenant)), true, proche, maintenant));
+        let loin = [RECT[0] + BACKDROP_TOLERANCE_PX + 1, RECT[1], RECT[2], RECT[3]];
+        assert!(fond_perime(Some((RECT, maintenant)), true, loin, maintenant));
+    }
+
+    #[test]
+    fn un_changement_de_taille_ou_une_reapparition_rafraichit_le_fond() {
+        let maintenant = Instant::now();
+        let autre_taille = [RECT[0], RECT[1], RECT[2] + 1, RECT[3]];
+        assert!(fond_perime(Some((RECT, maintenant)), true, autre_taille, maintenant));
+        assert!(fond_perime(Some((RECT, maintenant)), false, RECT, maintenant));
+        assert!(fond_perime(None, true, RECT, maintenant));
+    }
 }

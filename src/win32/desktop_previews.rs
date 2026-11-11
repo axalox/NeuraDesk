@@ -90,10 +90,10 @@ use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GetWindowRect, GetWindowThreadProcessId, RegisterClassExW, SetWindowPos,
-    ShowWindow, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-    WS_POPUP,
+    CreateWindowExW, DefWindowProcW, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, RegisterClassExW,
+    SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 use crate::gfx::device::GfxDevice;
@@ -585,6 +585,13 @@ impl DesktopPreviewWindow {
         unsafe {
             let _ = SetWindowPos(self.hwnd, insert_after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
+    }
+
+    /// L'aperçu est-il à l'écran ? — lue par `app::run` pour ne réaffirmer le
+    /// rang du dock que lorsque quelque chose a pu passer devant (voir le
+    /// commentaire de ce bloc : la remontée coûte ~6 ms, mesurée).
+    pub fn is_visible(&self) -> bool {
+        unsafe { IsWindowVisible(self.hwnd).as_bool() }
     }
 
     /// Engage la DISPARITION de l'aperçu — la fenêtre n'est PAS cachée ici :

@@ -6494,6 +6494,19 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     // motif que les deux traqueurs ci-dessus.
     let mut pending_overflow: Option<[i32; 4]> = None;
     let mut last_applied_overflow: Option<[i32; 4]> = None;
+    // ⭐ **QUAND LE DOCK A ÉTÉ REMONTÉ POUR LA DERNIÈRE FOIS À CAUSE D'UN ÉLÉMENT
+    // AGRANDI** (voir le bloc de remontée en fin de frame) : le débordement posé,
+    // et l'échéance du rappel de précaution. Sans ces deux traqueurs, la remontée
+    // était refaite à CHAQUE frame — ~6 ms mesurés, qui faisaient tomber le survol
+    // à 68 images/s sur un écran à 143 Hz (DÉFAUT SIGNALÉ : « les animations
+    // saccadent même en mettant les performances sur qualité »).
+    let mut dernier_overflow_remonte: Option<[i32; 4]> = None;
+    let mut prochaine_remontee = Instant::now();
+    /// Cadence du rappel de précaution de la remontée — la même que celle que
+    /// `ombre_barre::synchroniser` applique à son propre rangement, pour qu'un
+    /// élément agrandi ne puisse pas rester derrière une fenêtre de l'application
+    /// plus d'un quart de seconde.
+    const REMONTEE_PERIODIQUE: Duration = Duration::from_millis(250);
     // Le rayon des congés de la zone libre posé dans la région (voir
     // `Window::set_rayon_conge`) — il suit l'option ET le style.
     let mut last_applied_rayon_conge = 0;
@@ -17876,7 +17889,36 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // après rendrait la première image de la magnification fausse.
             let magnifie = last_applied_overflow.is_some();
             let vient_de_retomber = dock::set_magnification_en_cours(magnifie) && !magnifie;
-            if magnifie {
+            // ⭐ **ON NE REMONTE QUE QUAND QUELQUE CHOSE A PU PASSER DEVANT** —
+            // MESURÉ le 2026-11-11 : ce bloc coûtait **~6 ms par frame**, dont
+            // ~5 ms pour `raise_to_top` seul (fenêtre plein écran, plus les coins
+            // et les ombres). Rejoué à chaque frame pendant un survol, il faisait
+            // tomber la boucle à **68 images/s sur un écran à 143 Hz** : une
+            // frame sur deux perdue, et la magnification saccadait — DÉFAUT
+            // SIGNALÉ : « les animations saccadent même en mettant les
+            // performances sur qualité ».
+            //
+            // Le dock est DÉJÀ en tête de la bande topmost. Le refaire n'a de sens
+            // que si :
+            // - l'élément agrandi vient d'apparaître ou a CHANGÉ (`dernier_…`) ;
+            // - une de nos fenêtres qui SE REPOSE elle-même chaque frame est
+            //   visible — c'était la raison du rappel par frame : l'aperçu des
+            //   fenêtres (`PreviewPanel`) et l'aperçu des bureaux virtuels se
+            //   replacent sans nous demander ;
+            // - ou par précaution toutes les `REMONTEE_PERIODIQUE`, même
+            //   cadence que `ombre_barre::synchroniser`.
+            //
+            // Ce qui n'a PAS besoin de ce rappel : une infobulle, un menu ou un
+            // panneau qui s'ouvre s'affirme lui-même au bon rang (`tooltip::show`,
+            // `cef_popup::raise_above_tooltips`, `sous_le_dock`) ; il suffit de
+            // replacer les deux fenêtres ci-dessus QUAND on remonte vraiment.
+            let a_remonter = dernier_overflow_remonte != last_applied_overflow
+                || preview_panel.is_visible()
+                || desktop_preview.is_visible()
+                || Instant::now() >= prochaine_remontee;
+            if magnifie && a_remonter {
+                dernier_overflow_remonte = last_applied_overflow;
+                prochaine_remontee = Instant::now() + REMONTEE_PERIODIQUE;
                 window.raise_to_top();
                 // ...ET LES MENUS SE POSENT SOUS LE DOCK, ELLE AUSSI — voir
                 // `raise_visible_popups` : il consulte le même drapeau et glisse

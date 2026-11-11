@@ -126,6 +126,23 @@ impl SwapChain {
     pub fn present(&self) -> Result<()> {
         unsafe { self.swapchain.Present(1, DXGI_PRESENT(0)).ok() }
     }
+
+    /// Présente SANS ATTENDRE le prochain rafraîchissement (`Present(0)`).
+    ///
+    /// Pour les petites fenêtres dont le contenu n'a aucune raison de suivre
+    /// le rythme de l'écran — l'INFOBULLE, et elle seule pour l'instant (voir
+    /// `win32::tooltip::TooltipWindow::show`).
+    ///
+    /// ⚠️ **CE N'EST PAS ELLE QUI A RÉGLÉ LA SACCADE.** Mesuré le 2026-11-11 :
+    /// présenter la fenêtre d'infobulle coûte ~6 ms À CHAQUE APPEL, même en
+    /// `Present(0)` — la désynchronisation n'y change donc presque rien. Ce
+    /// qui a rendu les 143 images/s, c'est de NE PLUS PRÉSENTER à chaque
+    /// frame (voir `TooltipWindow::show`, qui ne redessine que si son image
+    /// change). Cet appel-ci évite seulement d'ajouter une attente de vsync
+    /// aux rares redessins qui restent.
+    pub fn present_sans_attente(&self) -> Result<()> {
+        unsafe { self.swapchain.Present(0, DXGI_PRESENT(0)).ok() }
+    }
 }
 
 fn create_rtv(device: &ID3D11Device, swapchain: &IDXGISwapChain1) -> Result<ID3D11RenderTargetView> {
