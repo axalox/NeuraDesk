@@ -2402,7 +2402,7 @@ fn tooltip_label_for_icon(
         i if i == scanner_icon_index => "Scanner un document (NAPS2)".to_string(),
         i if i == shaders_icon_index => "Éditeur de shaders — motifs des dégradés animés".to_string(),
         i if i == phonetique_icon_index => "Symboles phonétiques (français, anglais)".to_string(),
-        i if i == maths_icon_index => "Symboles mathématiques".to_string(),
+        i if i == maths_icon_index => "Symboles techniques".to_string(),
         i if i == lueurs_icon_index => "Éditeur des lueurs".to_string(),
         i if i == textures_icon_index => "Éditeur des textures".to_string(),
         i if i == narrateur_icon_index => "Démarrer ou arrêter le Narrateur".to_string(),
@@ -23811,11 +23811,13 @@ fn a_zone_row_offers_the_action_its_nature_allows() {
     assert_eq!(phonetique.arg, "phonetique");
     assert_eq!(phonetique.label, "Symboles phonétiques (français, anglais)");
 
-    // 28. LES SYMBOLES MATHÉMATIQUES, en rang 38 : leurs jumeaux, même action.
+    // 28. LES SYMBOLES TECHNIQUES (ex-« mathématiques », renommés le
+    //     2026-11-11), en rang 38 : leurs jumeaux, même action. ⚠️
+    //     L'IDENTIFIANT reste `maths` — il est persisté (config, profils).
     let maths = row(38);
     assert_eq!(maths.action, "hide");
     assert_eq!(maths.arg, "maths");
-    assert_eq!(maths.label, "Symboles mathématiques");
+    assert_eq!(maths.label, "Symboles techniques");
 
     // 29. L'ÉDITEUR DES LUEURS, en rang 39 : un DASH, même action.
     let lueurs = row(39);

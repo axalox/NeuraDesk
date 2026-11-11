@@ -1,13 +1,18 @@
 <!doctype html>
 <!--
-  win32::cef_maths — la fenêtre des symboles mathématiques.
+  win32::cef_maths — la fenêtre de l'applet « Symboles techniques »
+  (ex-« mathématiques », renommée le 2026-11-11 ; l'identifiant `maths` ne
+  bouge pas, il est persisté dans la config et les profils).
 
   DEMANDE EXPLICITE (2026-10-12) : « une nouvelle applet dans la zone intégrés
   pour ouvrir une fenêtre permettant d'insérer les caractères mathématiques ».
 
   ⚠️ **LA JUMELLE DE `phonetique.html`** — bande de titre qui DÉPLACE la fenêtre,
   punaise `◇`/`◆`, croix `✕`, mêmes verbes, ONGLETS et GRILLE de cases égales. Ce
-  qui change : six onglets, le NOM du symbole sous lui, aucune ligne de source.
+  qui change : QUATRE catégories principales — Mathématiques, Physique,
+  Mécanique, Technologie (DEMANDE EXPLICITE, 2026-11-11) — les anciens onglets
+  étant devenus les sous-catégories de Mathématiques, le NOM du symbole sous lui,
+  aucune ligne de source.
 
   ⛔ **AUCUN `menu.js`** : c'est une FENÊTRE, sa taille ne se négocie pas.
 
@@ -81,8 +86,8 @@
     opacity: 1;
   }
   /* LES ONGLETS — des BOUTONS (jamais de `<select>` dans une page CEF). */
-  /* ⚠️ Six onglets : sur un écran étroit ils PASSENT À LA LIGNE — la liste, en
-     `flex: 1`, défile d'autant, rien n'est perdu. */
+  /* ⚠️ Quatre onglets ; sur un écran très étroit ils PASSENT À LA LIGNE — la
+     liste, en `flex: 1`, défile d'autant, rien n'est perdu. */
   #onglets {
     flex: 0 0 auto;
     display: flex;
@@ -163,7 +168,7 @@
 </head>
 <body>
   <div id="barre">
-    <span id="titre">Symboles mathématiques</span>
+    <span id="titre">Symboles techniques</span>
     <!-- Caractères ÉCRITS EN CLAIR : un `\uXXXX` ne s'interprète pas dans du HTML. -->
     <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
     <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>

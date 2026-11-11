@@ -1,5 +1,9 @@
-//! **LA FENÊTRE DES SYMBOLES MATHÉMATIQUES** — six onglets, et un clic qui insère
-//! le symbole dans l'autre programme. La table est `win32::maths`.
+//! **LA FENÊTRE DE L'APPLET « SYMBOLES TECHNIQUES »** (ex-« mathématiques »,
+//! renommée le 2026-11-11) — QUATRE catégories principales (Mathématiques,
+//! Physique, Mécanique, Technologie ; DEMANDE EXPLICITE, 2026-11-11), les
+//! anciens onglets étant devenus les sous-catégories de Mathématiques, et un
+//! clic qui insère le symbole dans l'autre programme. La table est
+//! `win32::maths`.
 //!
 //! DEMANDE EXPLICITE (2026-10-12) : « une nouvelle applet dans la zone intégrés
 //! pour ouvrir une fenêtre permettant d'insérer les caractères mathématiques ».
@@ -10,7 +14,7 @@
 //! pièges de cette famille sont écrits dans `cef_caracteres` et s'appliquent ici —
 //! surtout : sans `render_if_visible`, la fenêtre est INVISIBLE mais prend le focus.
 //!
-//! Ce qui change : six onglets au lieu de deux, le NOM du symbole sous lui au lieu
+//! Ce qui change : QUATRE onglets au lieu de deux, le NOM du symbole sous lui au lieu
 //! d'un exemple, et aucune ligne de source.
 
 use std::cell::{Cell, RefCell};
@@ -36,7 +40,7 @@ thread_local! {
 
 const SPEC: PopupSpec = PopupSpec {
     class_name: w!("NeuraDeskMathsWindow"),
-    window_title: w!("NeuraDesk — Symboles mathématiques"),
+    window_title: w!("NeuraDesk — Symboles techniques"),
     html_file: "maths.html",
     wndproc: Some(wndproc),
     above_a_magnified_dock: false,
@@ -331,11 +335,14 @@ mod tests {
     /// onglets puis groupes, dans l'ordre du JSON. Sinon un clic écrirait le symbole
     /// du voisin, ce qui ne se verrait qu'à l'usage.
     #[test]
-    fn l_etat_porte_les_six_onglets_et_l_index_designe_le_bon() {
+    fn l_etat_porte_les_quatre_categories_et_l_index_designe_le_bon() {
         let json: serde_json::Value = serde_json::from_str(&etat_json()).expect("un JSON valide");
         let onglets = json["onglets"].as_array().expect("un tableau d'onglets");
         let noms: Vec<&str> = onglets.iter().filter_map(|o| o["nom"].as_str()).collect();
-        assert_eq!(noms, ["Opérateurs", "Relations", "Ensembles", "Grec", "Exposants", "Divers"]);
+        // ⚠️ **CE SONT LES CATÉGORIES PRINCIPALES** (2026-11-11) : les anciens
+        // onglets mathématiques sont devenus ses SOUS-CATÉGORIES, donc des
+        // `groupes` de Mathématiques — ils ne doivent plus apparaître ici.
+        assert_eq!(noms, ["Mathématiques", "Physique", "Mécanique", "Technologie"]);
         let mut rang = 0;
         for onglet in onglets {
             for groupe in onglet["groupes"].as_array().expect("des groupes") {
@@ -363,13 +370,17 @@ mod tests {
         assert_eq!(colonnes(1920), 4);
     }
 
-    /// La hauteur d'un onglet compte ses titres et ses lignes — le grec, à huit
-    /// colonnes : 24 minuscules (3 lignes), 6 variantes (1), 11 majuscules (2).
+    /// La hauteur d'un onglet compte ses titres et ses lignes — Technologie, à
+    /// huit colonnes : ordinateur (19 cases, 3 lignes), clavier (17, 3),
+    /// programmation (20, 3), média (8), réseau (5), appareils (3), système et
+    /// fichiers (9, 2), électricité (15, 2), sécurité (6) et dessin technique
+    /// (7), une ligne chacun.
     #[test]
     fn la_hauteur_d_un_onglet_compte_titres_et_lignes() {
-        let lignes = 3 + 1 + 2;
-        let espaces_internes = (2 + 0 + 1) * ESPACE;
-        let attendu = 3 * (HAUTEUR_TITRE + ESPACE_GROUPE) + lignes * HAUTEUR_CASE + espaces_internes;
+        let lignes = 3 + 3 + 3 + 1 + 1 + 1 + 2 + 2 + 1 + 1;
+        let espaces_internes = (3 - 1) + (3 - 1) + (3 - 1) + (2 - 1) + (2 - 1);
+        let attendu =
+            10 * (HAUTEUR_TITRE + ESPACE_GROUPE) + lignes * HAUTEUR_CASE + espaces_internes * ESPACE;
         assert_eq!(hauteur_onglet(&ONGLETS[3], 8), attendu);
     }
 
