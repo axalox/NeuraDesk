@@ -5,6 +5,7 @@ pub mod desktop_labels;
 pub mod dock;
 pub mod empilement;
 pub mod icones;
+pub mod performances;
 pub mod reserve_epingles;
 pub mod vignettes_dossiers;
 pub mod style;

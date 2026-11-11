@@ -3224,6 +3224,35 @@ pub fn save_survol_fond(actif: bool, couleur: [f32; 4]) {
     write_config("survol_fond.txt", format!("{},{r},{g},{b},{a}", u8::from(actif)));
 }
 
+/// **LA PRESSION SUR LE PROCESSEUR ET LE GPU** (voir `ui::performances`) :
+/// `cadence,économie`. `None` tant que l'utilisateur n'a jamais touché le
+/// réglage — les défauts de `ui::performances` s'appliquent alors (aucun
+/// plafond, mode économie coupé), c'est-à-dire le comportement d'avant.
+///
+/// ⚠️ **LES DEUX VALEURS DANS UN SEUL FICHIER**, même raison que
+/// `load_survol_fond` : un profil pose les deux d'un coup, et deux fichiers
+/// pourraient se désynchroniser (une cadence d'hier avec l'état de ce matin).
+/// Un fichier unique ne peut pas être à moitié écrit.
+///
+/// ⚠️ **UNE VALEUR NON FINIE ANNULE TOUT LE FICHIER** plutôt que d'être bornée :
+/// `"nan".parse::<f32>()` réussit, et une cadence NaN traverserait le plafond
+/// sans que personne ne le voie. On préfère les défauts à un réglage corrompu.
+pub fn load_performances() -> Option<(u32, bool)> {
+    let v = read_config_floats("performances.txt")?;
+    if v.len() < 2 || !v[..2].iter().all(|x| x.is_finite()) {
+        return None;
+    }
+    Some((v[0].max(0.0) as u32, v[1] == 1.0))
+}
+
+/// Sauvegarde la cadence et le mode économie, repris au prochain lancement (voir
+/// `load_performances`). Les valeurs écrites sont celles DÉJÀ BORNÉES par
+/// `ui::performances` (relues de ses cellules), jamais celles reçues du panneau
+/// — même discipline que `save_survol_fond`.
+pub fn save_performances(cadence: u32, economie: bool) {
+    write_config("performances.txt", format!("{cadence},{}", u8::from(economie)));
+}
+
 /// Relit le multiplicateur de TRANSPARENCE des éléments des panneaux (voir
 /// `win32::cef_popup::popup_alpha`) — même convention que `load_hover_scale` :
 /// `None` tant que l'utilisateur n'a jamais touché le curseur, auquel cas c'est

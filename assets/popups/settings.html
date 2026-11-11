@@ -5273,6 +5273,41 @@
         box.appendChild(el("p", { class: "hint" }, ["N'agit que si l'option ci-dessus est cochée. Une application qui y répond mal peut perdre son icône dans la barre des tâches jusqu'à son redémarrage. Pris en compte au prochain lancement."]));
       });
 
+      // ⭐ **LA PRESSION SUR LE PROCESSEUR ET LE GPU** — DEMANDE EXPLICITE
+      // (2026-11-11) : « serait-il possible d'avoir un réglage pour gérer la
+      // pression sur le processeur et le gpu ? ». Trois profils qui posent les
+      // deux leviers d'un coup, puis le réglage fin : la CADENCE des images
+      // présentées, et le MODE ÉCONOMIE.
+      //
+      // ⚠️ **LE PROFIL N'EST PAS UNE VALEUR MÉMORISÉE** : `performancesPreset`
+      // est recalculé côté Rust en relisant les deux leviers
+      // (`ui::performances::preset_courant`), et vaut "" dès qu'un curseur est
+      // déplacé à la main — aucun bouton allumé dit alors la vérité.
+      //
+      // ⚠️ **LA VALEUR 0 (« suivre l'écran ») N'ENTRE PAS DANS UN CURSEUR** :
+      // elle vient du profil Qualité, et le curseur montre alors son maximum
+      // avec un indice qui le dit — plutôt qu'un second contrôle à tenir
+      // cohérent avec le premier.
+      section(scroll, (box) => {
+        box.appendChild(el("h2", {}, ["Performances"]));
+        segmented(box, {
+          label: "Profil",
+          options: [
+            { value: "economie", label: "Économie" },
+            { value: "equilibre", label: "Équilibré" },
+            { value: "qualite", label: "Qualité" },
+          ],
+          value: state.performancesPreset,
+          dataKey: "performances-preset",
+          onSelect: (v) => go("performances-preset", v),
+        });
+        box.appendChild(el("p", { class: "hint" }, ["Économie : 15 images par seconde et animations suspendues quand la souris n'est pas sur les barres. Équilibré : 30 images par seconde. Qualité : suit la fréquence de l'écran."]));
+        slider(box, { label: "Images par seconde (maximum)", min: 10, max: 144, step: 5, value: state.performancesCadence || 144, valueLabel: (v) => v + " i/s", dataKey: "performances-cadence", onInput: (v) => go("performances-cadence", v) });
+        box.appendChild(el("p", { class: "hint" }, ["Plafonne les images présentées quand une animation tourne (dégradé, logo, textures, magnification) : c'est là que le processeur et le GPU travaillent. Le survol et les clics gardent leur réactivité. Au maximum, NeuraDesk suit la fréquence de l'écran, comme avant ce réglage."]));
+        checkboxRow(box, state.performancesEconomie, "Suspendre les animations quand la souris n'est pas sur les barres", (checked) => go("performances-economie", checked ? "1" : "0"));
+        box.appendChild(el("p", { class: "hint" }, ["Les animations reprennent dès que la souris entre sur une barre, et restent actives tant qu'un panneau est ouvert. Une image est présentée dès que quelque chose change : seul le mouvement permanent s'arrête."]));
+      });
+
       // ⭐ **LES NOTIFICATIONS DE WINDOWS SOUS L'HORLOGE** (voir
       // `win32::toast_veille`) — SECTION À PART, ET C'EST LE CORRECTIF DU
       // 2026-10-08 AU SOIR : la case vivait dans « Animation au survol », où
@@ -6040,6 +6075,11 @@
       // fait rien — la section n'est reconstruite qu'au changement de
       // structure, et c'est `survolFondActif` qui la déclenche.
       updateSlider("survol-fond-opacite", state.survolFondOpacitePercent, (v) => v + "%");
+      // La pression sur le processeur et le GPU (voir sa section). Le profil
+      // peut devenir "" quand un curseur est déplacé : `updateSegmented` éteint
+      // alors tous les boutons, ce qui est exactement ce qu'il faut dire.
+      updateSegmented("performances-preset", state.performancesPreset);
+      updateSlider("performances-cadence", state.performancesCadence || 144, (v) => v + " i/s");
       updateSlider("tooltip-scale", state.tooltipScalePercent, (v) => v + "%");
       updateSlider("tooltip-fade-ms", state.tooltipFadeMs, (v) => v + " ms");
       updateSlider("tooltip-delay", state.tooltipDelaySecs, (v) => v + " s");

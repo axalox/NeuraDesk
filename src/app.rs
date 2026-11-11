@@ -4321,9 +4321,16 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     // donc le curseur agit à chaud sans variable locale à tenir ici.
     if let Some(alpha) = config::load_popup_alpha() {
         crate::win32::cef_popup::set_popup_alpha(alpha);
-    }
-    if let Some(alpha) = config::load_popup_fond_alpha() {
+    }    if let Some(alpha) = config::load_popup_fond_alpha() {
         crate::win32::cef_popup::set_popup_fond_alpha(alpha);
+    }
+    // ⭐ **LA PRESSION SUR LE PROCESSEUR ET LE GPU** (voir `ui::performances`) —
+    // GLOBALE, relue par la boucle à chaque frame : la poser ici suffit, rien à
+    // transmettre au dock. Jamais réglée : les défauts des cellules (aucun
+    // plafond, économie coupée) reproduisent exactement le comportement d'avant.
+    if let Some((cadence, economie)) = config::load_performances() {
+        crate::ui::performances::set_cadence(cadence);
+        crate::ui::performances::set_economie(economie);
     }
     // Taille/arrondi des menus contextuels natifs (voir `win32::menu::
     // set_menu_scale`/`set_menu_corner_radius`, réglables dans le panneau de
@@ -18320,12 +18327,32 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             peintures_cef_vues = peintures_cef;
             presenter_jusqua = Instant::now() + PRESENTATION_APRES_ACTIVITE;
         }
-        let anime_sans_fin = crate::gfx::degrade::is_enabled()
+        let anime = crate::gfx::degrade::is_enabled()
             || crate::ui::dock::logo_animation_enabled()
             || crate::gfx::texture_perso::INTERFACE.anime()
             || crate::gfx::texture_perso::TERMINAUX.anime()
             || dock.magnified_index().is_some();
-        let presenter = anime_sans_fin
+        // ⭐ **LE MODE ÉCONOMIE SUSPEND LES ANIMATIONS CONTINUES** (voir
+        // `ui::performances`, DEMANDE EXPLICITE 2026-11-11 : « gérer la pression
+        // sur le processeur et le gpu »). Deux conditions pour les suspendre,
+        // parce que ce sont les deux moments où l'utilisateur les REGARDE :
+        // la souris est sur une barre (`mouse_pos`), ou un panneau est visible
+        // (il regarde alors la page). Partout ailleurs, une image reste
+        // présentée dès que quelque chose change — seul le mouvement permanent
+        // s'arrête.
+        let anime_sans_fin = anime
+            && !(crate::ui::performances::economie()
+                && dock.mouse_pos().is_none()
+                && !crate::win32::cef_popup::une_fenetre_visible());
+        // ⭐ **LA CADENCE MAXIMALE NE PORTE QUE SUR LES ANIMATIONS CONTINUES.**
+        // Elle borne les images PRÉSENTÉES, jamais la réaction à un message :
+        // une salve d'activité (`presenter_jusqua`) et le secours de 250 ms
+        // gardent leur rythme, sinon le survol et les clics paraîtraient lents.
+        // Le `Present` est le poste dominant (~13 ms de CPU en 4K, et le GPU
+        // peint derrière), donc c'est lui qui porte le plafond.
+        let periode_max = crate::ui::performances::periode();
+        let cadence_atteinte = periode_max.is_none_or(|p| derniere_presentation.elapsed() >= p);
+        let presenter = (anime_sans_fin && cadence_atteinte)
             || debug_capture.active()
             || Instant::now() < presenter_jusqua
             || derniere_presentation.elapsed() >= PRESENTATION_SECOURS;
@@ -18355,7 +18382,16 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // ⛔ **SANS `Present(1)`, PLUS RIEN NE CADENCE LA BOUCLE** : sans ce
             // sommeil elle dessinerait à vide aussi vite que possible, et le CPU
             // resterait à 100 % — le contraire du but.
-            let reste = PERIODE_SANS_PRESENT.saturating_sub(now.elapsed());
+            //
+            // ⭐ **ET LE SOMMEIL VA JUSQU'À LA PROCHAINE IMAGE AUTORISÉE** quand
+            // une cadence est réglée (voir `ui::performances`) : dormir 16 ms
+            // ferait tourner la scène à 60 Hz pour n'en présenter que 15. La
+            // période est le seul plafond ; passer de 60 à 15 images/s divise
+            // aussi le DESSIN, pas seulement le `Present`.
+            let reste = match periode_max {
+                Some(p) => p.saturating_sub(derniere_presentation.elapsed()),
+                None => PERIODE_SANS_PRESENT.saturating_sub(now.elapsed()),
+            };
             if !reste.is_zero() {
                 std::thread::sleep(reste);
             }
@@ -25137,6 +25173,45 @@ fn la_magnification_met_le_dock_devant_ombres_et_menus() {
     assert!(
         source.contains("crate::win32::ombre_barre::remonter();"),
         "les ombres et les menus ne reprennent pas leur place quand la magnification retombe"
+    );
+}
+
+/// ⭐ **LA PRESSION SUR LE PROCESSEUR ET LE GPU EST LUE PAR LA BOUCLE** — DEMANDE
+/// EXPLICITE (2026-11-11) : « serait-il possible d'avoir un réglage pour gérer
+/// la pression sur le processeur et le gpu ? ».
+///
+/// Un réglage que la boucle n'applique pas est un réglage qui ment : le panneau
+/// afficherait une cadence et une économie sans effet. Ce test lit donc `run` et
+/// vérifie les deux moitiés :
+/// - la cadence plafonne les images PRÉSENTÉES, et le sommeil va jusqu'à la
+///   prochaine image autorisée (sinon la scène tournerait toujours à 60 Hz) ;
+/// - le mode économie suspend les animations continues hors survol, en gardant
+///   une image dès que quelque chose change (la condition sur `mouse_pos` et
+///   sur une fenêtre visible est ce qui empêche la suspension pendant qu'on
+///   REGARDE).
+///
+/// **MUTATION** : retirer `cadence_atteinte` ou la condition `economie()` — le
+/// test le nomme.
+#[test]
+fn la_boucle_respecte_la_cadence_et_le_mode_economie() {
+    let source = include_str!("app.rs");
+    assert!(
+        source.contains("let cadence_atteinte = periode_max.is_none_or(|p| derniere_presentation.elapsed() >= p);"),
+        "la cadence réglée ne plafonne plus la présentation"
+    );
+    assert!(
+        source.contains("(anime_sans_fin && cadence_atteinte)"),
+        "le plafond est posé mais non appliqué : l'animation présenterait à chaque frame"
+    );
+    assert!(
+        source.contains("crate::ui::performances::economie()")
+            && source.contains("dock.mouse_pos().is_none()"),
+        "le mode économie ne suspend plus les animations hors survol"
+    );
+    assert!(
+        source.contains("Some(p) => p.saturating_sub(derniere_presentation.elapsed()),"),
+        "le sommeil de la boucle n'attend plus la prochaine image autorisée : \
+         la scène serait dessinée à la fréquence de l'écran pour un présent plafonné"
     );
 }
 

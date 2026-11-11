@@ -2793,6 +2793,46 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
                     );
                 }
             }
+            // ⭐ **LA PRESSION SUR LE PROCESSEUR ET LE GPU** — DEMANDE EXPLICITE
+            // (2026-11-11) : « serait-il possible d'avoir un réglage pour gérer
+            // la pression sur le processeur et le gpu ? ». GLOBAL comme les
+            // réglages de survol ci-dessus (voir `ui::performances`), donc sans
+            // passer par `refs`. Le profil n'est PAS mémorisé : il pose les deux
+            // leviers, et la page le reconnaît en les relisant (voir
+            // `performances::preset_courant`).
+            //
+            // ⚠️ **LES TROIS VERBES ENREGISTRENT L'ÉTAT COMPLET** (cadence ET
+            // économie) : trois contrôles règlent les deux moitiés du même
+            // fichier, et n'écrire que la sienne effacerait l'autre entre deux
+            // lancements (même piège que `survol-fond`).
+            ["performances-cadence", fps] => {
+                if let Ok(fps) = fps.parse::<u32>() {
+                    // La valeur DÉJÀ BORNÉE est relue de la cellule, jamais celle
+                    // reçue du panneau — même discipline que `hover-scale`.
+                    crate::ui::performances::set_cadence(fps);
+                    config::save_performances(
+                        crate::ui::performances::cadence(),
+                        crate::ui::performances::economie(),
+                    );
+                }
+            }
+            ["performances-economie", flag] => {
+                crate::ui::performances::set_economie(*flag == "1");
+                config::save_performances(
+                    crate::ui::performances::cadence(),
+                    crate::ui::performances::economie(),
+                );
+            }
+            ["performances-preset", nom] => {
+                // Un nom inconnu ne touche à rien (voir `appliquer_preset`) : la
+                // page CEF peut envoyer n'importe quelle chaîne.
+                if crate::ui::performances::appliquer_preset(nom) {
+                    config::save_performances(
+                        crate::ui::performances::cadence(),
+                        crate::ui::performances::economie(),
+                    );
+                }
+            }
             ["dash-icon-scale", percent] => {
                 if let Ok(percent) = percent.parse::<u32>() {
                     let scale = percent as f32 / 100.0;
@@ -5733,6 +5773,15 @@ fn push_state(refs: &SettingsRefs) {
         objet.insert("survolFondActif".into(), json!(crate::ui::dock::survol_fond_actif()));
         objet.insert("survolFondColor".into(), json!(hex([r, g, b])));
         objet.insert("survolFondOpacitePercent".into(), json!((opacite * 100.0).round() as i32));
+        // ⭐ **LA PRESSION SUR LE PROCESSEUR ET LE GPU** (voir
+        // `ui::performances`) — AJOUTÉES ICI pour la même raison que ci-dessus :
+        // le `json!` a atteint sa limite de récursion. Le profil n'est pas une
+        // valeur mémorisée : la page le reçoit VIDE quand les deux leviers ne
+        // forment aucun des trois (`preset_courant`), et n'allume alors aucun
+        // bouton.
+        objet.insert("performancesCadence".into(), json!(crate::ui::performances::cadence()));
+        objet.insert("performancesEconomie".into(), json!(crate::ui::performances::economie()));
+        objet.insert("performancesPreset".into(), json!(crate::ui::performances::preset_courant()));
     }
     // Lit le dock : hors d'`etat_ajoute`, qui n'a pas `refs`.
     if let Some(objet) = payload.as_object_mut() {
@@ -6071,7 +6120,7 @@ mod tests {
                 "la rangée « {cle} » n'est jamais rafraîchie par `updateSegmented`"
             );
         }
-        assert_eq!(vues, 16, "nombre de rangées de boutons dans la page (la texture de l'interface, puis celle des terminaux, le 2026-10-15 ; la couleur des ombres, le 2026-10-19 ; les coins du centre de la barre du haut, le 2026-10-31 ; la forme du retour à la fermeture, le 2026-11-04 ; les formes de l'ouverture, de la réduction et de l'agrandissement, le 2026-11-05)");
+        assert_eq!(vues, 17, "nombre de rangées de boutons dans la page (la texture de l'interface, puis celle des terminaux, le 2026-10-15 ; la couleur des ombres, le 2026-10-19 ; les coins du centre de la barre du haut, le 2026-10-31 ; la forme du retour à la fermeture, le 2026-11-04 ; les formes de l'ouverture, de la réduction et de l'agrandissement, le 2026-11-05 ; le PROFIL de performances, le 2026-11-11)");
     }
 
     #[test]
@@ -6411,6 +6460,47 @@ mod tests {
             PAGE.contains("survolFondActif: state.survolFondActif"),
             "la case n'est pas dans `computeStructureKey` : cocher ne ferait pas apparaître ses réglages"
         );
+    }
+
+    /// ⭐ **LA PRESSION SUR LE PROCESSEUR ET LE GPU EST CÂBLÉE DES DEUX CÔTÉS** —
+    /// DEMANDE EXPLICITE (2026-11-11) : « serait-il possible d'avoir un réglage
+    /// pour gérer la pression sur le processeur et le gpu ? ».
+    ///
+    /// Mêmes deux défauts que pour `survol-fond` : un verbe émis sans bras ne
+    /// fait RIEN (le panneau paraît réglé, la cadence ne bouge pas), un état
+    /// poussé sans clé lue laisse un contrôle figé sur son défaut.
+    ///
+    /// **MUTATION** : retirer un des trois bras, une des trois clés de
+    /// `push_state`, ou l'appel `updateSegmented`/`updateSlider` de
+    /// `updateValues` — le test nomme la moitié manquante.
+    #[test]
+    fn les_performances_sont_cablees_des_deux_cotes() {
+        const PAGE: &str = include_str!("../../assets/popups/settings.html");
+        let dispatch = include_str!("cef_settings.rs").split("#[cfg(test)]").next().unwrap_or("");
+
+        // La page ÉMET les trois verbes.
+        for verbe in ["performances-preset", "performances-cadence", "performances-economie"] {
+            assert!(PAGE.contains(&format!("go(\"{verbe}\"")), "aucun contrôle n'émet `{verbe}`");
+        }
+        // Le Rust les REÇOIT.
+        for bras in
+            ["[\"performances-preset\", nom]", "[\"performances-cadence\", fps]", "[\"performances-economie\", flag]"]
+        {
+            assert!(dispatch.contains(bras), "RIEN ne reçoit `{bras}`");
+        }
+
+        // L'état voyage dans les deux sens — les trois clés sont insérées APRÈS
+        // le `json!` (limite de récursion de la macro), donc en littéraux
+        // `"...".into()`, comme `survolFondActif`.
+        for cle in ["performancesCadence", "performancesEconomie", "performancesPreset"] {
+            assert!(dispatch.contains(&format!("\"{cle}\"")), "push_state ne pousse pas `{cle}`");
+            assert!(PAGE.contains(&format!("state.{cle}")), "la page ne lit pas `{cle}`");
+        }
+        // ⚠️ Sans ces deux rafraîchissements, choisir un profil n'allumerait
+        // aucun bouton et déplacer le curseur n'y changerait pas l'affichage
+        // tant que le panneau n'est pas rouvert.
+        assert!(PAGE.contains("updateSegmented(\"performances-preset\""), "le profil ne se rafraîchit pas");
+        assert!(PAGE.contains("updateSlider(\"performances-cadence\""), "le curseur ne se rafraîchit pas");
     }
 }
 
