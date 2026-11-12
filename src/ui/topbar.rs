@@ -456,6 +456,7 @@ pub fn desktop_dot_instance(
     left_offset: f32,
     dot_size: f32,
     hover_scale: f32,
+    hover: f32,
 ) -> QuadInstance {
     let rect = presented_desktop_dot_rect(desktop_dot_rect(layout, index, left_offset, dot_size), hover_scale, layout);
     let color = desktop_dot_color(active, accent, dark_mode);
@@ -465,7 +466,12 @@ pub fn desktop_dot_instance(
     // Elle BALAIE comme les icônes et l'applet « afficher le bureau » (voir
     // `show_desktop_instance`) : une pastille est un élément de la barre, pas un
     // texte — c'est donc `hover_wobble_angle` (±45°), jamais la variante texte.
-    instance.rotation = crate::ui::dock::hover_wobble_angle(hover_scale);
+    //
+    // ⚠️ **`hover` ET NON `hover_scale`** : la rotation suit l'AVANCEMENT DU
+    // SURVOL (voir `dock::HoverAnimator::hover`), l'échelle ne servant qu'à la
+    // géométrie. À magnification 100 %, seule la première dit que la pastille
+    // est survolée — et c'est ce qui la fait balancer sans grossir.
+    instance.rotation = crate::ui::dock::hover_wobble_angle(hover);
     instance
 }
 
@@ -903,10 +909,10 @@ pub fn show_desktop_hit(x: f32, y: f32, layout: &DockLayout, left_offset: f32, s
 /// `gfx::texture::SHOW_DESKTOP_ICON_PNG`), teintée par `color` — `TexMode::
 /// Glyph`, donc seul le canal alpha du PNG compte, la couleur vient d'ici.
 ///
-/// **`hover_scale` ne sert QU'À la rotation de balancement** (voir
-/// `dock::hover_wobble_angle`) : elle vaut `1.0` au repos, donc aucune rotation —
-/// c'est sa seule forme correcte pour un écran secondaire, qui ne magnifie
-/// jamais.
+/// **`hover` ne sert QU'À la rotation de balancement** (voir
+/// `dock::hover_wobble_angle`) : c'est l'AVANCEMENT DU SURVOL, `0.0` au repos donc
+/// aucune rotation — et `0.0` aussi sur un écran secondaire, qui ne reçoit jamais
+/// la souris primaire et ne balance donc jamais.
 ///
 /// **L'ÉCHELLE D'INSTANCE RESTE `1.0`, ET CE N'EST PAS UN OUBLI** : `rect` est le
 /// rectangle PRÉSENTÉ, qui porte DÉJÀ la magnification — c'est la convention des
@@ -919,12 +925,12 @@ pub fn show_desktop_hit(x: f32, y: f32, layout: &DockLayout, left_offset: f32, s
 /// décision inverse écrite ici même (« pas de magnification au survol, décision
 /// explicite ») : voir `HOVER_SHOW_DESKTOP_INDEX`, qui raconte ce qui est advenu
 /// de ses deux motifs.
-pub fn show_desktop_instance(rect: [f32; 4], color: [f32; 3], hover_scale: f32) -> QuadInstance {
+pub fn show_desktop_instance(rect: [f32; 4], color: [f32; 3], hover: f32) -> QuadInstance {
     // ⚠️ **PAS `new_glyph_scaled` EN DUR : c'est une APPLET.** Un thème d'icônes
     // en COULEUR doit passer par `instance_icone`, sinon l'emoji est réduit à son
     // alpha et peint dans la teinte — « Afficher le bureau » s'affichait en CARRÉ
     // BLANC (l'alpha de l'emoji fenêtre EST un carré). Signalé par l'utilisateur.
-    crate::ui::dock::Dock::instance_icone(rect, color, hover_scale)
+    crate::ui::dock::Dock::instance_icone(rect, color, hover)
 }
 
 // ---------------------------------------------------------------------------
@@ -989,13 +995,13 @@ pub fn bell_hit(x: f32, y: f32, layout: &DockLayout, clock_w: f32, clock_h: f32,
 /// seul le canal alpha du PNG compte et **la couleur vient d'ici** : c'est ce qui
 /// permet au clignotement de la faire changer de couleur sans changer d'icône.
 ///
-/// **`hover_scale` ne sert QU'À la rotation de balancement**, comme
-/// `show_desktop_instance` : elle vaut `1.0` au repos, donc aucune rotation — sa
-/// seule forme correcte pour un écran secondaire, qui ne magnifie jamais.
+/// **`hover` ne sert QU'À la rotation de balancement**, comme
+/// `show_desktop_instance` : c'est l'AVANCEMENT DU SURVOL, `0.0` au repos donc
+/// aucune rotation — et `0.0` sur un écran secondaire, qui ne balance jamais.
 ///
 /// **L'ÉCHELLE D'INSTANCE RESTE `1.0`** : `rect` est le rectangle PRÉSENTÉ, qui
 /// porte DÉJÀ la magnification. La passer aussi ici la doublerait.
-pub fn bell_instance(rect: [f32; 4], color: [f32; 3], hover_scale: f32) -> QuadInstance {
+pub fn bell_instance(rect: [f32; 4], color: [f32; 3], hover: f32) -> QuadInstance {
     // ⛔ **CELLE-CI NE SUIT PAS LE THÈME, ET C'EST DÉLIBÉRÉ** — voir sa doc
     // ci-dessus : **sa teinte EST sa fonction.** Le clignotement la fait changer
     // de couleur pour signaler un rappel dû, et c'est ce que `TexMode::Glyph`
@@ -1006,7 +1012,7 @@ pub fn bell_instance(rect: [f32; 4], color: [f32; 3], hover_scale: f32) -> QuadI
     // alors que ses voisines sont colorées. C'est le SEUL widget dans ce cas, et
     // l'échange — une alerte contre une couleur — se fait dans ce sens-là.
     let mut instance = QuadInstance::new_glyph_scaled(rect, color, 1.0);
-    instance.rotation = crate::ui::dock::hover_wobble_angle(hover_scale);
+    instance.rotation = crate::ui::dock::hover_wobble_angle(hover);
     instance
 }
 
@@ -1053,10 +1059,11 @@ pub fn minuteur_hit(x: f32, y: f32, layout: &DockLayout, clock_w: f32, clock_h: 
 /// Instance de quad (le MÊME PNG que l'applet de la barre, voir
 /// `gfx::texture::MINUTEUR_ICON_PNG`) — même convention que `bell_instance` :
 /// la couleur vient d'ici, l'échelle d'instance reste `1.0`.
-pub fn minuteur_instance(rect: [f32; 4], color: [f32; 3], hover_scale: f32) -> QuadInstance {
+pub fn minuteur_instance(rect: [f32; 4], color: [f32; 3], hover: f32) -> QuadInstance {
     // Même règle que `show_desktop_instance` : c'est une APPLET, donc la source
-    // de l'icône suit le thème.
-    crate::ui::dock::Dock::instance_icone(rect, color, hover_scale)
+    // de l'icône suit le thème. `hover` est l'avancement du survol, pas une
+    // échelle — voir `Dock::instance_icone`.
+    crate::ui::dock::Dock::instance_icone(rect, color, hover)
 }
 
 // ---------------------------------------------------------------------------
@@ -1288,10 +1295,11 @@ pub fn note_hit(x: f32, y: f32, layout: &DockLayout, clock_w: f32, clock_h: f32,
 ///
 /// **L'ÉCHELLE D'INSTANCE RESTE `1.0`** : `rect` est le rectangle PRÉSENTÉ, qui
 /// porte DÉJÀ la magnification. La passer aussi ici la doublerait.
-pub fn note_instance(rect: [f32; 4], color: [f32; 3], hover_scale: f32) -> QuadInstance {
+pub fn note_instance(rect: [f32; 4], color: [f32; 3], hover: f32) -> QuadInstance {
     // Même règle que `show_desktop_instance` : c'est une APPLET, donc la source
-    // de l'icône suit le thème (voir `Dock::instance_icone`).
-    crate::ui::dock::Dock::instance_icone(rect, color, hover_scale)
+    // de l'icône suit le thème (voir `Dock::instance_icone`). `hover` est
+    // l'avancement du survol, pas une échelle.
+    crate::ui::dock::Dock::instance_icone(rect, color, hover)
 }
 
 /// Contrôles multimédias (voir `win32::media`) : précédent/lecture-pause/

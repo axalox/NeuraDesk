@@ -510,6 +510,29 @@ pub const MIN_HOVER_EASE_SPEED: f32 = 2.0;
 /// supprimer l'animation (un saut sec d'un coup).
 pub const MAX_HOVER_EASE_SPEED: f32 = 60.0;
 
+// --- Balancement au survol -----------------------------------------------
+// DEMANDE EXPLICITE (2026-11-12) : « un réglage supplémentaire qui permette de
+// gérer le balancement de l'icône indépendant de la magnification quand un
+// élément est survolé ». Le balancement ne se déduit donc plus du tout de la
+// magnification : il suit l'AVANCEMENT DU SURVOL (`HoverAnimator::hover`), si
+// bien qu'il a lieu même quand « Magnification au survol » vaut 100 %.
+// Portée choisie : les ICÔNES **et** le TEXTE magnifié des horloges, la même
+// ampleur pour les deux (chacun garde son amplitude de base — ±45° pour une
+// icône, ±6° pour des chiffres, qui doivent rester lisibles).
+
+/// Ampleur par DÉFAUT du balancement — `1.0`, et c'est le SEUL défaut qui ne
+/// change rien : avant ce réglage, une icône magnifiée balançait déjà à pleine
+/// amplitude. Un défaut plus bas aurait fait disparaître une animation que
+/// l'utilisateur voit tous les jours.
+pub const DEFAULT_HOVER_SWAY: f32 = 1.0;
+/// Borne BASSE du curseur « Balancement au survol » : plus aucune rotation, les
+/// icônes grandissent sans tourner.
+pub const MIN_HOVER_SWAY: f32 = 0.0;
+/// Borne HAUTE du même curseur : l'amplitude historique (`HOVER_WOBBLE_DEGREES`),
+/// pas davantage — au-delà, une icône carrée se retourne complètement dans un
+/// survol, ce que personne n'a demandé et qui se lit comme un défaut.
+pub const MAX_HOVER_SWAY: f32 = 1.0;
+
 // --- Magnification des HORLOGES ------------------------------------------
 // Réglage DISTINCT de celui des icônes (voir `CLOCK_HOVER_SCALE`) — DEMANDE
 // EXPLICITE : « pouvoir régler sa taille agrandie ». Le défaut est celui des
@@ -538,6 +561,25 @@ pub const MAX_CLOCK_HOVER_SCALE: f32 = 3.50;
 /// Opacité par DÉFAUT du fond au survol (35 %) : assez pour se lire derrière
 /// l'icône, assez peu pour qu'elle reste la première chose vue.
 pub const DEFAULT_SURVOL_FOND_OPACITE: f32 = 0.35;
+
+/// **LA TAILLE DU FOND AU SURVOL** — DEMANDE EXPLICITE (2026-11-13) : « gérer
+/// la couleur d'accentuation de l'icône indépendant de la magnification quand
+/// un élément est survolé et pouvoir gérer la taille de l'effet ». La couleur et
+/// l'opacité existaient déjà ; ce qui manquait, c'est l'ÉTENDUE du carré
+/// arrondi — et le fait qu'il n'apparaissait QUE sous une icône magnifiée.
+///
+/// `1.0` = l'apparence historique : une demi-case d'écartement de chaque côté
+/// (voir `icon_halo_for`). `0.0` = le carré de l'icône elle-même, sans marge.
+pub const DEFAULT_SURVOL_FOND_TAILLE: f32 = 1.0;
+/// Borne BASSE du curseur « Taille de l'effet » : aucune marge, le fond épouse
+/// exactement la boîte de l'icône (toujours visible, mais sans débord).
+pub const MIN_SURVOL_FOND_TAILLE: f32 = 0.0;
+/// Borne HAUTE du même curseur : trois fois l'écartement de la barre. Au-delà,
+/// le fond avalerait les icônes voisines et la région de la fenêtre devrait
+/// s'étendre d'autant — ce n'est plus une accentuation, c'est un pavé.
+/// ⚠️ La RÉGION suit (voir `Dock::magnified_boxes`), donc une grande taille ne
+/// rogne rien.
+pub const MAX_SURVOL_FOND_TAILLE: f32 = 3.0;
 
 /// **LA MAGNIFICATION EST-ELLE EN COURS, dans la fenêtre du dock ?** — vrai dès
 /// qu'un élément de la barre (icône, pastille, horloge) déborde de sa barre,
@@ -616,6 +658,13 @@ thread_local! {
     /// La VITESSE d'approche, elle, reste partagée avec les icônes
     /// (`HOVER_EASE_SPEED`) : la demande ne portait que sur la taille.
     static CLOCK_HOVER_SCALE: Cell<f32> = const { Cell::new(DEFAULT_CLOCK_HOVER_SCALE) };
+    /// **L'AMPLEUR DU BALANCEMENT AU SURVOL** (voir `DEFAULT_HOVER_SWAY`) —
+    /// GLOBALE, comme `HOVER_SCALE`, et pour exactement la même raison : le
+    /// dessin des icônes vit dans `Dock`, celui des horloges dans `topbar` et
+    /// `win32::fullscreen_clock`, et `app::run` ne peut pas leur transmettre un
+    /// état commun autrement. Une seule cellule pour les DEUX familles : la
+    /// demande portait sur un réglage, pas sur un par élément.
+    static HOVER_SWAY: Cell<f32> = const { Cell::new(DEFAULT_HOVER_SWAY) };
     /// **LE FOND AU SURVOL** — ACTIF ou non (voir `survol_fond`), et sa couleur
     /// complète (RGB + opacité) dans `SURVOL_FOND_COULEUR` ci-dessous.
     ///
@@ -632,6 +681,11 @@ thread_local! {
     /// l'utilisateur.
     static SURVOL_FOND_COULEUR: Cell<[f32; 4]> =
         const { Cell::new([1.0, 1.0, 1.0, DEFAULT_SURVOL_FOND_OPACITE]) };
+    /// **L'ÉTENDUE DU FOND AU SURVOL** (voir `DEFAULT_SURVOL_FOND_TAILLE`) —
+    /// GLOBALE pour la même raison que les deux cellules ci-dessus : le dessin
+    /// vit dans `app::run` et la région dans `Dock::magnified_boxes`, aucun des
+    /// deux ne partage d'état avec le panneau Réglages.
+    static SURVOL_FOND_TAILLE: Cell<f32> = const { Cell::new(DEFAULT_SURVOL_FOND_TAILLE) };
 }
 
 /// Facteur de magnification au survol actuel — voir `HOVER_SCALE`.
@@ -849,6 +903,22 @@ pub fn set_hover_ease_speed(speed: f32) {
     HOVER_EASE_SPEED.with(|s| s.set(speed.clamp(MIN_HOVER_EASE_SPEED, MAX_HOVER_EASE_SPEED)));
 }
 
+/// Ampleur du balancement au survol — voir `HOVER_SWAY`. Vaut pour les ICÔNES
+/// comme pour le TEXTE magnifié des horloges.
+pub fn hover_sway() -> f32 {
+    HOVER_SWAY.with(Cell::get)
+}
+
+/// Change l'ampleur du balancement, bornée à [`MIN_HOVER_SWAY`,
+/// `MAX_HOVER_SWAY`] — voir `set_hover_scale` pour le pourquoi du bornage ici
+/// plutôt que dans l'accesseur, et pour le cas du NaN.
+pub fn set_hover_sway(sway: f32) {
+    if sway.is_nan() {
+        return;
+    }
+    HOVER_SWAY.with(|s| s.set(sway.clamp(MIN_HOVER_SWAY, MAX_HOVER_SWAY)));
+}
+
 /// Facteur de magnification au survol du TEXTE des horloges — voir
 /// `CLOCK_HOVER_SCALE`. Distinct de [`hover_scale`], qui régit les icônes.
 pub fn clock_hover_scale() -> f32 {
@@ -937,6 +1007,21 @@ pub fn set_survol_fond_opacite(alpha: f32) {
     });
 }
 
+/// Étendue actuelle du fond au survol — voir `SURVOL_FOND_TAILLE`.
+pub fn survol_fond_taille() -> f32 {
+    SURVOL_FOND_TAILLE.with(Cell::get)
+}
+
+/// Change l'étendue du fond au survol, bornée à [`MIN_SURVOL_FOND_TAILLE`,
+/// `MAX_SURVOL_FOND_TAILLE`] — voir `set_survol_fond_rgb` pour le cas du NaN et
+/// `set_hover_scale` pour le pourquoi du bornage ici plutôt que dans l'accesseur.
+pub fn set_survol_fond_taille(taille: f32) {
+    if taille.is_nan() {
+        return;
+    }
+    SURVOL_FOND_TAILLE.with(|c| c.set(taille.clamp(MIN_SURVOL_FOND_TAILLE, MAX_SURVOL_FOND_TAILLE)));
+}
+
 /// Écart d'échelle sous lequel l'animation RECOLLE à sa cible au lieu de
 /// continuer à l'approcher (voir `HoverAnimator::update`) — sans quoi elle ne
 /// l'atteint jamais en `f32`. Au-delà de la précision visuelle : pour une icône
@@ -964,13 +1049,33 @@ const SCALE_SNAP_EPSILON: f32 = 1e-4;
 /// index qui devrait alors être tenue dans la structure et maintenue en phase
 /// avec `rects` (dont un simple changement de longueur réinitialise tout,
 /// voir `update`).
+///
+/// **Elle anime AUSSI l'avancement du survol** (`hovers`) : depuis que le
+/// balancement est réglable et indépendant de la magnification (voir
+/// `hover_sway`), l'échelle ne dit plus à elle seule qu'un élément est survolé
+/// — à 100 % elle ne bouge même pas. Les deux tableaux sont avancés du même
+/// `ease`, si bien que le balancement garde exactement la courbe qu'il avait.
 pub struct HoverAnimator {
     scales: Vec<f32>,
+    /// **L'AVANCEMENT DU SURVOL, ET C'EST LUI QUI DONNE LE BALANCEMENT** — 0.0
+    /// au repos, 1.0 pleinement survolé, avec la même horloge d'approche que
+    /// `scales` (même `ease`, même recollement). Il existe parce que
+    /// l'échelle ne suffit plus : à « Magnification au survol » = 100 %, elle
+    /// reste exactement à `1.0` du début à la fin, donc elle ne dit plus qu'un
+    /// élément est survolé — et le balancement, lui, doit avoir lieu
+    /// (DEMANDE EXPLICITE, voir `DEFAULT_HOVER_SWAY`).
+    ///
+    /// ⚠️ **CE N'EST PAS UN DOUBLON DE `scales`** : quand la magnification est
+    /// active, les deux suivent la même courbe — `(scale - 1) / (cible - 1)`
+    /// vaut exactement cet avancement, puisque l'échelle est
+    /// `1 + (cible - 1) · avancement`. C'est ce qui garantit que le
+    /// balancement est IDENTIQUE à ce qu'il était avant ce réglage.
+    hovers: Vec<f32>,
 }
 
 impl HoverAnimator {
     pub fn new() -> Self {
-        Self { scales: Vec::new() }
+        Self { scales: Vec::new(), hovers: Vec::new() }
     }
 
     /// Avance l'animation d'un pas `dt` (secondes) vers l'état survolé/non
@@ -1005,6 +1110,11 @@ impl HoverAnimator {
     ) {
         if self.scales.len() != rects.len() {
             self.scales = vec![1.0; rects.len()];
+            // Les deux tampons DOIVENT garder la même longueur : ils sont
+            // parcourus ensemble juste en dessous, et une entrée manquante dans
+            // `hovers` laisserait l'un des deux indices non avancés sans que rien
+            // ne le signale.
+            self.hovers = vec![0.0; rects.len()];
         }
         let hovered = mouse_pos.and_then(|(mx, my)| rects.iter().position(|r| hit(r, mx, my)));
 
@@ -1013,8 +1123,14 @@ impl HoverAnimator {
         // une frame mélangeant une ancienne vitesse et une nouvelle cible. La
         // cible, elle, arrive en paramètre — déjà résolue par l'appelant.
         let ease = (dt * hover_ease_speed()).clamp(0.0, 1.0);
-        for (i, scale) in self.scales.iter_mut().enumerate() {
-            let target = if Some(i) == hovered { target_scale } else { 1.0 };
+        // `zip` plutôt qu'un second parcours : les deux tampons font la même
+        // longueur (voir le redimensionnement ci-dessus), et l'avancement du
+        // survol doit être avancé du MÊME `ease` que l'échelle pour que
+        // `(scale - 1) / (cible - 1)` vaille exactement `hover` — c'est ce qui
+        // garde le balancement identique à ce qu'il était avant ce réglage.
+        for (i, (scale, hover)) in self.scales.iter_mut().zip(self.hovers.iter_mut()).enumerate() {
+            let sur = Some(i) == hovered;
+            let target = if sur { target_scale } else { 1.0 };
             *scale += (target - *scale) * ease;
             // RECOLLAGE à la cible dès que l'écart devient imperceptible — DÉFAUT
             // RÉEL TROUVÉ PAR UN TEST : l'approche exponentielle ci-dessus
@@ -1030,6 +1146,15 @@ impl HoverAnimator {
             if (target - *scale).abs() < SCALE_SNAP_EPSILON {
                 *scale = target;
             }
+            // Même recollement, même seuil, même raison : sans lui l'avancement
+            // resterait à quelques ULP au-dessus de 0 après le premier survol, et
+            // `hover() > 0.0` — le critère qui garde la boîte de région d'une
+            // icône qui balance sans grossir — resterait VRAI pour toujours.
+            let cible_survol = if sur { 1.0 } else { 0.0 };
+            *hover += (cible_survol - *hover) * ease;
+            if (cible_survol - *hover).abs() < SCALE_SNAP_EPSILON {
+                *hover = cible_survol;
+            }
         }
     }
 
@@ -1037,6 +1162,18 @@ impl HoverAnimator {
     /// dimensionné par `update` — sûr d'appeler avant le premier `update`).
     pub fn scale(&self, index: usize) -> f32 {
         self.scales.get(index).copied().unwrap_or(1.0)
+    }
+
+    /// Avancement du SURVOL de l'élément `index` — 0.0 au repos, 1.0 quand il
+    /// est pleinement survolé, avec la même courbe d'approche que `scale`.
+    /// `0.0` hors bornes : un index inconnu n'est pas survolé, et c'est aussi ce
+    /// qu'un dock secondaire veut entendre (il ne reçoit jamais la souris
+    /// primaire, voir `app::topbar_hit_scales`).
+    ///
+    /// C'est la seule grandeur qui dise encore « cet élément est survolé »
+    /// quand la magnification est à 100 % — voir `HoverAnimator`, doc de type.
+    pub fn hover(&self, index: usize) -> f32 {
+        self.hovers.get(index).copied().unwrap_or(0.0)
     }
 }
 
@@ -4727,6 +4864,33 @@ impl Dock {
             .max_by(|&a, &b| self.hover.scale(a).total_cmp(&self.hover.scale(b)))
     }
 
+    /// Index de l'icône la plus SURVOLÉE, même si elle ne grossit pas — le
+    /// pendant de `magnified_index` pour le premier plan, quand la
+    /// magnification est à 100 % ou que le réglage de balancement est seul en
+    /// jeu.
+    ///
+    /// **Pourquoi l'avancement du survol et non la position de la souris** :
+    /// même raison que `magnified_index` — au moment d'un clic, la position
+    /// peut être en retard d'une frame alors que l'enveloppe est déjà celle de
+    /// l'icône sous le curseur. Et c'est la grandeur qui décide déjà du
+    /// balancement, donc les deux ne peuvent pas diverger.
+    ///
+    /// **Pourquoi elle existe** : le FOND AU SURVOL (voir `survol_fond`) était
+    /// accroché à `magnified_index`, donc il n'apparaissait jamais à
+    /// magnification 100 % — c'est précisément le « indépendant de la
+    /// magnification » demandé. `app::run` met au premier plan l'icône rendue
+    /// par `magnified_index().or_else(|| hovered_index())`, et c'est ce même
+    /// index qui reçoit le fond.
+    ///
+    /// Les ESPACES sont exclus, comme dans `magnified_index` et pour la même
+    /// raison : leur marqueur ne doit ni passer au premier plan ni recevoir de
+    /// fond.
+    pub fn hovered_index(&self) -> Option<usize> {
+        (0..self.icons.len())
+            .filter(|&i| !self.icons[i].is_spacer && self.hover.hover(i) > 0.0)
+            .max_by(|&a, &b| self.hover.hover(a).total_cmp(&self.hover.hover(b)))
+    }
+
     /// Rectangles (coordonnées fenêtre) à faire DÉBORDER de la région pour
     /// toutes les icônes actuellement magnifiées, à l'échelle **VISÉE**, avec la
     /// BARRE qui porte chacune (pour savoir quel fond lui donner — voir
@@ -4748,10 +4912,30 @@ impl Dock {
     /// deux DOIVENT être calculées de la même façon, sinon l'écart entre elles
     /// laisse apparaître les pixels noirs de la fenêtre (un swap chain en modèle
     /// flip n'a pas de transparence par pixel, voir `app::run`).
+    ///
+    /// ⚠️ **UNE ICÔNE QUI BALANCE SANS GROSSIR EN FAIT PARTIE AUSSI** — voir
+    /// `HoverAnimator::hover` : à « Magnification au survol » = 100 %, l'échelle
+    /// reste à `1.0` du début à la fin, donc l'ancien critère `scale > 1.0`
+    /// laisserait ses coins penchés HORS de la région, donc rognés. Le critère est
+    /// donc « s'écarte du repos de quelque façon » : elle grossit, ou elle
+    /// balance.
+    ///
+    /// ⚠️ **ET LE FOND AU SURVOL, MÊME SANS BALANCEMENT NI MAGNIFICATION** —
+    /// voir `survol_fond` : à 100 % de magnification et 0 % de balancement,
+    /// l'icône ne s'écarte pas du repos, mais son fond est DESSINÉ quand même
+    /// (demande explicite : il ne dépend plus de la magnification). Au-delà de
+    /// 100 % de « Taille de l'effet », ce fond dépasse la boîte de l'icône et
+    /// serait rogné s'il ne figurait pas dans la région — d'où le second critère
+    /// ci-dessous.
     pub fn magnified_boxes(&self, layout: &DockLayout) -> Vec<([f32; 4], Side)> {
         let target = hover_scale();
+        let fond_actif = survol_fond().is_some();
         (0..self.icons.len())
-            .filter(|&i| !self.icons[i].is_spacer && self.hover.scale(i) > 1.0)
+            .filter(|&i| {
+                !self.icons[i].is_spacer
+                    && (doit_deborder(self.hover.scale(i), self.hover.hover(i))
+                        || (fond_actif && self.hover.hover(i) > 0.0))
+            })
             .filter_map(|i| {
                 let barre = BarreTirage::de_la_side(self.icon_side(i)?);
                 let rect = presented_rect_pour_la_barre(self.icon_rect(i, layout)?, target, layout, barre);
@@ -4759,7 +4943,26 @@ impl Dock {
                 // couvrir les COINS de l'icône dans toutes ses positions de
                 // balancement, sinon ils seraient rognés en tournant (voir
                 // `occupied_rect_for`).
-                Some((occupied_rect_for(rect), self.icon_side(i)?))
+                let mut boite = occupied_rect_for(rect);
+                // ⭐ **LE FOND AU SURVOL PEUT DÉPASSER CETTE BOÎTE** — DEMANDE
+                // EXPLICITE (2026-11-13) : « pouvoir gérer la taille de
+                // l'effet ». À 300 %, sa marge (1,5 écartement) dépasse celle de
+                // la boîte occupée (37,5 % du côté) dès que l'écartement est
+                // grand — sans cette réunion, les bords du fond seraient ROGNÉS
+                // par la région de la fenêtre. Le rectangle est celui VISÉ, comme
+                // le reste : la boîte reste un majorant constant pendant
+                // l'animation, donc la région n'est pas reposée à chaque frame.
+                //
+                // ⚠️ Le dock ne sait pas si l'icône est FERMÉE (c'est
+                // `app::icone_fermee`, qui lit l'état des programmes) : la boîte
+                // couvre donc aussi le fond d'une icône OUVERTE, où il n'est pas
+                // dessiné. C'est un léger excès de région pendant le seul survol,
+                // et le prix serait inverse — un fond rogné — si l'on s'en
+                // passait.
+                if fond_actif {
+                    boite = union_rect(boite, halo_rect(rect, self.icon_gap_de(i), survol_fond_taille()));
+                }
+                Some((boite, self.icon_side(i)?))
             })
             .collect()
     }
@@ -7267,8 +7470,10 @@ impl Dock {
         let mut instance = QuadInstance::new_textured(rect, icon_radius(), 1.0);
         // BALANCEMENT au survol (voir `hover_wobble_angle`) — appliqué à la
         // source, donc à TOUTES les familles d'icônes d'un coup, y compris la
-        // copie que `app::run` repousse en dernier.
-        instance.rotation = hover_wobble_angle(self.hover.scale(index));
+        // copie que `app::run` repousse en dernier. L'AVANCEMENT DU SURVOL, et
+        // non l'échelle : à magnification 100 % l'échelle ne bouge pas, alors
+        // que le balancement doit avoir lieu.
+        instance.rotation = hover_wobble_angle(self.hover.hover(index));
         Some(instance)
     }
 
@@ -7319,12 +7524,14 @@ impl Dock {
         }
         // ⭐ Une icône REPLIÉE : entière, basculée (voir `bascule_de`).
         if let Some((entiere, angle)) = self.bascule_de(index, layout) {
-            let mut instance = Self::instance_icone(entiere, color, 1.0);
+            // Balancement `0.0` : la rotation est REMPLACÉE par la bascule juste
+            // en dessous, et une icône repliée ne se balance pas.
+            let mut instance = Self::instance_icone(entiere, color, 0.0);
             instance.rotation = 0.0;
             instance.bascule = angle;
             return Some(instance);
         }
-        Some(Self::instance_icone(rect, color, self.hover.scale(index)))
+        Some(Self::instance_icone(rect, color, self.hover.hover(index)))
     }
 
     /// **L'INSTANCE D'UNE ICÔNE D'APPLET — LE POINT UNIQUE.**
@@ -7350,7 +7557,13 @@ impl Dock {
     /// Les autres fonctions de `topbar` dessinent du TEXTE (horloge, débit
     /// d'images, titre du média) : elles n'appellent pas ceci, et n'ont pas à le
     /// faire.
-    pub fn instance_icone(rect: [f32; 4], color: [f32; 3], hover_scale: f32) -> QuadInstance {
+    /// `hover` est l'AVANCEMENT DU SURVOL (0.0 au repos, 1.0 pleinement
+    /// survolé), **pas une échelle** : c'est la seule grandeur qui dise encore
+    /// « survolé » quand la magnification vaut 100 %, et le balancement doit
+    /// avoir lieu dans ce cas aussi (voir `hover_wobble_angle` et
+    /// `HoverAnimator::hover`). Un dock secondaire, qui ne reçoit jamais la
+    /// souris primaire, passe `0.0`.
+    pub fn instance_icone(rect: [f32; 4], color: [f32; 3], hover: f32) -> QuadInstance {
         let mut instance = if crate::ui::icones::est_couleur() {
             QuadInstance::new_textured(rect, icon_radius(), 1.0)
         } else {
@@ -7358,7 +7571,7 @@ impl Dock {
         };
         // Voir `external_icon_instance` : le balancement s'applique à la source,
         // donc à toutes les familles d'icônes.
-        instance.rotation = hover_wobble_angle(hover_scale);
+        instance.rotation = hover_wobble_angle(hover);
         instance
     }
 
@@ -7532,9 +7745,10 @@ impl Dock {
                     };
                     // Voir `external_icon_instance` : le balancement s'applique à
                     // la source, donc à toutes les familles d'icônes.
+                    // L'avancement du SURVOL, pas `scale` : voir `hover_wobble_angle`.
                     match bascule {
                         Some((_, angle)) => instance.bascule = angle,
-                        None => instance.rotation = hover_wobble_angle(scale),
+                        None => instance.rotation = hover_wobble_angle(self.hover.hover(i)),
                     }
                     Some(instance)
                 };
@@ -9124,15 +9338,66 @@ pub fn icon_zone_for(dock: &Dock, layout: &DockLayout, index: usize, color: [f32
 /// animer le fond du logo quand c'est le logo circulaire qui est choisi ». Le
 /// disque est invariant par rotation, donc le logo peut tourner dessus sans
 /// que le fond ait à le suivre.
-pub fn icon_halo_for(dock: &Dock, layout: &DockLayout, index: usize, rond: bool, color: [f32; 4]) -> Option<QuadInstance> {
-    let [x, y, w, h] = dock.presented_rect(index, layout)?;
+///
+/// `taille` : l'étendue de la marge, en multiples de l'écartement de la barre
+/// (voir `survol_fond_taille`) — `1.0` pour le fond animé du LOGO, qui n'est
+/// pas concerné par ce réglage.
+pub fn icon_halo_for(
+    dock: &Dock,
+    layout: &DockLayout,
+    index: usize,
+    rond: bool,
+    color: [f32; 4],
+    taille: f32,
+) -> Option<QuadInstance> {
+    let presented = dock.presented_rect(index, layout)?;
     // L'écartement de SA barre, comme `icon_zone_for`.
     let gap = dock.icon_gap_de(index);
-    let margin = gap * 0.5;
-    let radius = if rond { (w.min(h) + gap) * 0.5 } else { icon_radius() + margin };
-    let mut instance = QuadInstance::new([x - margin, y - margin, w + gap, h + gap], color, radius, 1.0);
-    instance.rotation = hover_wobble_angle(dock.hover.scale(index));
+    let marge = gap * 0.5 * taille;
+    let radius = if rond {
+        (presented[2].min(presented[3]) + gap * taille) * 0.5
+    } else {
+        icon_radius() + marge
+    };
+    let mut instance = QuadInstance::new(halo_rect(presented, gap, taille), color, radius, 1.0);
+    instance.rotation = hover_wobble_angle(dock.hover.hover(index));
     Some(instance)
+}
+
+/// **LA BOÎTE DU FOND, à partir d'un rectangle PRÉSENTÉ et d'un écartement** —
+/// PURE, et c'est la seule définition : le dessin (`icon_halo_for`) et la boîte
+/// ajoutée à la RÉGION de la fenêtre (`Dock::magnified_boxes`) doivent dériver
+/// d'ici, sinon un fond agrandi déborderait de la région et serait rogné.
+///
+/// Le rectangle est celui de l'ICÔNE (sa boîte présentée), élargi de
+/// `écartement · taille / 2` de chaque côté. `taille = 1.0` donne exactement la
+/// forme historique (une demi-case de marge).
+pub fn halo_rect(presented: [f32; 4], gap: f32, taille: f32) -> [f32; 4] {
+    let marge = gap * 0.5 * taille;
+    [
+        presented[0] - marge,
+        presented[1] - marge,
+        presented[2] + 2.0 * marge,
+        presented[3] + 2.0 * marge,
+    ]
+}
+
+/// Union de deux rectangles `[x, y, largeur, hauteur]` — le plus petit qui les
+/// contienne tous les deux.
+///
+/// Sert à la boîte de DÉBORDEMENT (voir `Window::set_overflow`) : plusieurs
+/// éléments peuvent être magnifiés ou balancer au même instant (le temps que
+/// l'animation croise entre celui qu'on quitte et celui qu'on survole), et la
+/// région doit les couvrir TOUS. Vit ici plutôt que dans `app` parce que
+/// `Dock::magnified_boxes` en a besoin pour réunir la boîte occupée d'une icône
+/// et celle de son FOND, qui peut être plus large (voir `halo_rect`) — la
+/// dépendance va dans le sens `app → ui::dock`, jamais l'inverse.
+pub fn union_rect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let x = a[0].min(b[0]);
+    let y = a[1].min(b[1]);
+    let right = (a[0] + a[2]).max(b[0] + b[2]);
+    let bottom = (a[1] + a[3]).max(b[1] + b[3]);
+    [x, y, right - x, bottom - y]
 }
 
 /// Hauteur PAR DÉFAUT (px, PAS proportionnelle à `icon_size_for`) d'un
@@ -9810,7 +10075,7 @@ impl Dock {
         // Rotation de l'ICÔNE (nulle au repos) : une forme qui ENTOURE doit la
         // suivre, sinon l'icône magnifiée se balance (voir `hover_wobble_angle`)
         // et ses coins traversent la bande de l'anneau deux fois par période.
-        let icon_rotation = hover_wobble_angle(self.hover.scale(index));
+        let icon_rotation = hover_wobble_angle(self.hover.hover(index));
         Some(match shape.placement() {
             DotPlacement::Around => {
                 let (mut rect, radius, thickness) = ring_box(icon, size, self.icon_gap_de(index));
@@ -10422,12 +10687,24 @@ pub fn couleur_indicateur(
 /// de notification (voir `notification_blink_color_at`) : deux icônes qui se
 /// balanceraient avec leur propre phase se liraient comme un défaut.
 ///
-/// **Pondérée par l'avancement du survol** (`scale`, voir `HoverAnimator`) :
-/// nulle au repos, maximale à pleine magnification. L'icône se met donc à
-/// balancer en grandissant et s'arrête en rétrécissant, au lieu de démarrer et
-/// de stopper d'un coup.
-pub fn hover_wobble_angle(scale: f32) -> f32 {
-    hover_wobble_angle_at(hover_wobble_elapsed(), scale, HOVER_WOBBLE_DEGREES, hover_scale())
+/// **Pondérée par l'avancement du SURVOL** (`hover`, voir
+/// `HoverAnimator::hover`) : nulle au repos, maximale quand l'élément est
+/// pleinement survolé. L'icône se met donc à balancer en s'approchant et
+/// s'arrête en s'en allant, au lieu de démarrer et de stopper d'un coup.
+///
+/// ⚠️ **ET NON PAR LA MAGNIFICATION** — DEMANDE EXPLICITE (2026-11-12) : « un
+/// réglage supplémentaire qui permette de gérer le balancement de l'icône
+/// indépendant de la magnification ». L'échelle ne pouvait plus servir de
+/// mesure : à « Magnification au survol » = 100 % elle ne bouge pas d'un iota,
+/// et le balancement aurait été muet alors qu'il est justement le seul effet
+/// restant. La pondération par l'avancement du survol redonne EXACTEMENT
+/// l'ancienne courbe quand la magnification est active — l'échelle vaut
+/// `1 + (cible - 1) · avancement` — donc le réglage ne change rien à ce qui
+/// existait, il ajoute la possibilité de balancement sans grossissement.
+///
+/// `hover` est la progression du survol : `HoverAnimator::hover(index)`.
+pub fn hover_wobble_angle(hover: f32) -> f32 {
+    hover_wobble_angle_at(hover_wobble_elapsed(), hover, HOVER_WOBBLE_DEGREES * hover_sway())
 }
 
 /// Instant de départ PARTAGÉ par tous les balancements — icônes comme textes.
@@ -10445,30 +10722,25 @@ fn hover_wobble_elapsed() -> std::time::Duration {
 /// raison : une fonction qui lit l'horloge en interne ne se teste qu'en
 /// bornage, jamais sur sa forme.
 ///
-/// `degrees` porte l'amplitude ; `full` est la magnification RÉGLÉE **de
-/// l'élément considéré**, c'est elle qui donne `progress`, donc l'amplitude
-/// relative en cours de croissance.
-///
-/// **`full` est un PARAMÈTRE, et ce n'est pas cosmétique** : icônes et horloges
-/// ont désormais deux réglages distincts (`hover_scale` / `clock_hover_scale`).
-/// Relire le global des icônes ici ferait SATURER `progress` à `1.0` dès ~40 %
-/// de la croissance d'une horloge réglée plus grande qu'eux — le balancement
-/// prendrait toute son amplitude d'un coup, puis n'évoluerait plus — et,
-/// inversement, une horloge réglée plus petite n'atteindrait jamais la sienne.
+/// `degrees` porte l'amplitude DÉJÀ pondérée par le réglage de balancement
+/// (`hover_sway`) ; `progress` est l'avancement du survol (0 → 1, voir
+/// `HoverAnimator::hover`). Plus de dénominateur de magnification : la
+/// progression est donnée directement, si bien qu'un élément peut balancer
+/// alors même qu'il ne grossit pas du tout.
 pub fn hover_wobble_angle_at(
     elapsed: std::time::Duration,
-    scale: f32,
+    progress: f32,
     degrees: f32,
-    full: f32,
 ) -> f32 {
-    // `!(full > 1.0)` plutôt que `full <= 1.0` : écarte aussi le NaN, qui
-    // rendrait `progress` NaN et l'angle avec. L'infini, lui, passe et donne
-    // `progress = 0` — inoffensif.
-    if !(full > 1.0) || scale <= 1.0 {
+    // `!(…) > 0.0` plutôt que `<= 0.0` : écarte aussi le NaN, qui rendrait
+    // l'angle NaN et figerait la rotation de l'instance. Une amplitude ou une
+    // progression négative (impossible par les appelants, qui bornent) ne doit
+    // pas inverser le sens du balancement non plus.
+    if !(progress > 0.0) || !(degrees > 0.0) {
         return 0.0;
     }
     let turns = elapsed.as_secs_f32() / HOVER_WOBBLE_PERIOD.as_secs_f32();
-    let progress = ((scale - 1.0) / (full - 1.0)).clamp(0.0, 1.0);
+    let progress = progress.clamp(0.0, 1.0);
     degrees.to_radians() * progress * (turns * std::f32::consts::TAU).sin()
 }
 
@@ -10500,17 +10772,17 @@ const TEXT_WOBBLE_HEADROOM: f32 = 1.20;
 
 /// Angle de balancement d'un texte magnifié — voir `TEXT_WOBBLE_DEGREES`.
 ///
-/// Le dénominateur de `progress` est le réglage des HORLOGES
-/// (`clock_hover_scale`), pas celui des icônes : c'est ce qui fait que le texte
-/// atteint sa pleine amplitude exactement quand il a fini de grandir, quel que
-/// soit le facteur choisi pour lui.
-pub fn hover_text_wobble_angle(scale: f32) -> f32 {
-    hover_wobble_angle_at(
-        hover_wobble_elapsed(),
-        scale,
-        TEXT_WOBBLE_DEGREES,
-        clock_hover_scale(),
-    )
+/// `hover` est l'avancement du SURVOL (`HoverAnimator::hover`), et non plus
+/// l'échelle des horloges : le texte atteint donc sa pleine amplitude exactement
+/// quand le survol est installé, quel que soit le facteur de magnification
+/// choisi — y compris 100 %, où il balance sans grossir.
+///
+/// **Le réglage de balancement (`hover_sway`) s'applique ici AUSSI**, à la même
+/// ampleur relative (DEMANDE EXPLICITE : « icônes + horloges ») : les ±6° de
+/// base des chiffres restent plus doux que les ±45° des icônes, mais 0 % les
+/// fige et 100 % les fait balancer comme avant.
+pub fn hover_text_wobble_angle(hover: f32) -> f32 {
+    hover_wobble_angle_at(hover_wobble_elapsed(), hover, TEXT_WOBBLE_DEGREES * hover_sway())
 }
 
 /// Boîte OCCUPÉE par une icône magnifiée : la sienne, élargie de ce qu'il faut
@@ -10530,6 +10802,26 @@ pub fn hover_text_wobble_angle(scale: f32) -> f32 {
 /// donc qui avale des clics au-delà du nécessaire pendant le survol).
 pub(crate) fn occupied_rect_for(presented: [f32; 4]) -> [f32; 4] {
     magnified_box(presented, WOBBLE_HEADROOM)
+}
+
+/// **CET ÉLÉMENT DOIT-IL AGRANDIR LA RÉGION DE LA FENÊTRE ?** — `true` s'il
+/// grossit (`scale > 1.0`) ou s'il **balance** (`hover > 0.0` alors que le
+/// réglage de balancement n'est pas à 0 %). `scale` et `hover` viennent du MÊME
+/// `HoverAnimator` et du MÊME index que le dessin.
+///
+/// ⚠️ **UNE FONCTION, ET PAS `scale > 1.0` RECOPIÉ** : la condition est répétée
+/// à une dizaine d'endroits d'`app::run` (les widgets de la barre du haut ont
+/// chacun leur propre animateur) et une fois ici. C'est exactement le genre de
+/// `if` qu'un des dix finirait par ne pas recevoir — et un élément qui tourne
+/// sans figurer dans l'union de la région a ses coins ROGNÉS, sans qu'aucun test
+/// ne puisse le dire (la région est une API de fenêtre).
+///
+/// **Le réglage de balancement compte** : à 0 %, `hover` monte quand même (il
+/// n'y a simplement plus de rotation), et faire déborder la boîte élargie
+/// agrandirait inutilement la région cliquable. Ce n'est donc pas une erreur de
+/// copie, c'est ce qui empêche le réglage à 0 % d'avoir un coût caché.
+pub fn doit_deborder(scale: f32, hover: f32) -> bool {
+    scale > 1.0 || (hover > 0.0 && hover_sway() > 0.0)
 }
 
 /// Boîte OCCUPÉE par un TEXTE magnifié (les deux horloges) — le pendant de
@@ -11213,6 +11505,17 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
         set_clock_hover_scale(previous);
     }
 
+    /// Pose l'AMPLEUR DU BALANCEMENT pour la durée du corps, puis la remet —
+    /// `HOVER_SWAY` est GLOBALE au fil, donc un test qui la laisserait à 0 %
+    /// rendrait muets tous ceux qui comptent sur la rotation.
+    fn with_hover_sway<R>(sway: f32, body: impl FnOnce() -> R) -> R {
+        let previous = hover_sway();
+        set_hover_sway(sway);
+        let resultat = body();
+        set_hover_sway(previous);
+        resultat
+    }
+
     /// Rend les deux cellules du fond au survol à leur état d'avant le test —
     /// ces réglages sont GLOBAUX au fil, donc un test qui les laisse actifs
     /// changerait ce que les suivants observent.
@@ -11225,6 +11528,16 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
         set_survol_fond_actif(previous_actif);
         set_survol_fond_rgb([previous[0], previous[1], previous[2]]);
         set_survol_fond_opacite(previous[3]);
+    }
+
+    /// Restaure l'étendue du fond au survol — même raison que `with_survol_fond`
+    /// (réglage global au fil).
+    fn with_survol_fond_taille<R>(taille: f32, body: impl FnOnce() -> R) -> R {
+        let previous = survol_fond_taille();
+        set_survol_fond_taille(taille);
+        let resultat = body();
+        set_survol_fond_taille(previous);
+        resultat
     }
 
     /// Le bornage est ce qui empêche un fichier de configuration corrompu
@@ -11609,7 +11922,7 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
         dock.set_icon_gap(8.0);
         let gap = dock.icon_gap_de(0);
         let icone = dock.presented_rect(0, &layout).expect("le logo a un emplacement");
-        let halo = icon_halo_for(&dock, &layout, 0, false, [1.0, 0.0, 0.0, 1.0]).unwrap();
+        let halo = icon_halo_for(&dock, &layout, 0, false, [1.0, 0.0, 0.0, 1.0], 1.0).unwrap();
         // Centré sur l'icône, débordant de `gap / 2` de chaque côté.
         assert_eq!(halo.rect, [icone[0] - 4.0, icone[1] - 4.0, icone[2] + gap, icone[3] + gap]);
         // Et PAS la largeur de la barre : c'était la demande.
@@ -11617,9 +11930,50 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
         assert!(halo.rect[2] * halo.rect[3] < pleine.rect[2] * pleine.rect[3]);
         assert!((halo.radius - icon_radius() - 4.0).abs() < 1e-3);
         // Pour l'icône circulaire, le même carré devient un DISQUE.
-        let disque = icon_halo_for(&dock, &layout, 0, true, [1.0, 0.0, 0.0, 1.0]).unwrap();
+        let disque = icon_halo_for(&dock, &layout, 0, true, [1.0, 0.0, 0.0, 1.0], 1.0).unwrap();
         assert_eq!(disque.rect, halo.rect);
         assert!((disque.radius - disque.rect[2] * 0.5).abs() < 1e-3);
+    }
+
+    /// **LA TAILLE DU FOND AU SURVOL EST UNE MARGE, PAS UNE SECONDE
+    /// MAGNIFICATION** — DEMANDE EXPLICITE (2026-11-13) : « pouvoir gérer la
+    /// taille de l'effet ». `0 %` épouse exactement la boîte de l'icône, `100 %`
+    /// donne l'apparence historique, `200 %` double la marge — et le fond reste
+    /// CENTRÉ, donc l'icône ne bouge pas.
+    #[test]
+    fn la_taille_du_fond_au_survol_est_une_marge_autour_de_l_icone() {
+        let icone = [100.0, 200.0, 48.0, 48.0];
+        let gap = 12.0;
+        let a = halo_rect(icone, gap, 0.0);
+        assert_eq!(a, icone, "0 % : la boîte de l'icône, sans marge");
+        let b = halo_rect(icone, gap, 1.0);
+        assert_eq!(b, [94.0, 194.0, 60.0, 60.0], "100 % : une demi-case de chaque côté");
+        let c = halo_rect(icone, gap, 2.0);
+        assert_eq!(c, [88.0, 188.0, 72.0, 72.0], "200 % : deux demi-cases");
+        // Même centre dans les trois cas.
+        for r in [a, b, c] {
+            assert!((r[0] + r[2] * 0.5 - (icone[0] + icone[2] * 0.5)).abs() < 1e-4, "centré : {r:?}");
+            assert!((r[1] + r[3] * 0.5 - (icone[1] + icone[3] * 0.5)).abs() < 1e-4, "centré : {r:?}");
+        }
+    }
+
+    /// Le BORNAGE du réglage de taille — même discipline que `hover_sway` : un
+    /// fichier corrompu ne doit jamais atteindre le dessin, et un NaN est IGNORÉ
+    /// (borné, il deviendrait la borne basse ou haute selon l'implémentation, et
+    /// figerait l'effet sans rien dire).
+    #[test]
+    fn la_taille_du_fond_au_survol_est_bornee() {
+        let previous = survol_fond_taille();
+        set_survol_fond_taille(1.0);
+        set_survol_fond_taille(-2.0);
+        assert_eq!(survol_fond_taille(), MIN_SURVOL_FOND_TAILLE);
+        set_survol_fond_taille(9.0);
+        assert_eq!(survol_fond_taille(), MAX_SURVOL_FOND_TAILLE);
+        set_survol_fond_taille(f32::NAN);
+        assert_eq!(survol_fond_taille(), MAX_SURVOL_FOND_TAILLE, "NaN ignoré, pas propagé");
+        set_survol_fond_taille(DEFAULT_SURVOL_FOND_TAILLE);
+        assert_eq!(survol_fond_taille(), 1.0);
+        set_survol_fond_taille(previous);
     }
 
     #[test]
@@ -11862,18 +12216,27 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
         assert_eq!(occupied[1] + occupied[3] * 0.5, icon[1] + icon[3] * 0.5);
     }
 
-    /// Le balancement est fonction du temps et de l'avancement du survol : NUL au
+    /// Le balancement est fonction du temps et de l'AVANCEMENT DU SURVOL : NUL au
     /// repos — sinon toutes les icônes du dock seraient penchées en permanence —
-    /// et borné par l'amplitude demandée.
+    /// et borné par l'amplitude demandée. Le réglage à 0 % doit tout éteindre,
+    /// quelle que soit la progression : c'est sa raison d'être.
     #[test]
     fn hover_wobble_is_bounded_and_idle_at_rest() {
-        assert_eq!(hover_wobble_angle(1.0), 0.0, "aucune rotation au repos");
-        let amplitude = HOVER_WOBBLE_DEGREES.to_radians();
-        for step in 0..200 {
-            let scale = 1.0 + step as f32 * 0.01;
-            let angle = hover_wobble_angle(scale);
-            assert!(angle.abs() <= amplitude + 1e-4, "angle {angle} hors de l'amplitude");
-        }
+        with_hover_sway(1.0, || {
+            assert_eq!(hover_wobble_angle(0.0), 0.0, "aucune rotation au repos");
+            let amplitude = HOVER_WOBBLE_DEGREES.to_radians();
+            for step in 0..=100 {
+                let progress = step as f32 * 0.01;
+                let angle = hover_wobble_angle(progress);
+                assert!(angle.abs() <= amplitude + 1e-4, "angle {angle} hors de l'amplitude");
+            }
+        });
+        with_hover_sway(0.0, || {
+            for step in 0..=20 {
+                let angle = hover_wobble_angle(step as f32 * 0.05);
+                assert_eq!(angle, 0.0, "à 0 % le balancement doit être éteint");
+            }
+        });
     }
 
     /// Disposition de référence des tests de géométrie — celle de la machine de
@@ -12400,24 +12763,23 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
     /// la paire `notification_blink_color_at`/`notification_blink_color`.
     #[test]
     fn hover_wobble_angle_at_is_periodic_and_bounded() {
-        // Le dénominateur de `progress` est passé EXPLICITEMENT (c'est le sens
-        // du quatrième paramètre) : ce test ne dépend donc plus d'aucune cellule
-        // globale, et n'a plus besoin d'en poser une.
-        const FULL: f32 = 2.0;
+        // La progression du survol est passée EXPLICITEMENT : ce test ne dépend
+        // donc d'aucune cellule globale — ni de la magnification, qui n'entre
+        // plus dans le calcul.
         let mut opposites = 0;
         for step in 0..40u32 {
             let elapsed = HOVER_WOBBLE_PERIOD * step / 40;
-            let angle = hover_wobble_angle_at(elapsed, 2.0, HOVER_WOBBLE_DEGREES, FULL);
+            let angle = hover_wobble_angle_at(elapsed, 1.0, HOVER_WOBBLE_DEGREES);
             assert!(angle.abs() <= HOVER_WOBBLE_DEGREES.to_radians() + 1e-4, "hors bornes : {angle}");
 
-            let later = hover_wobble_angle_at(elapsed + HOVER_WOBBLE_PERIOD, 2.0, HOVER_WOBBLE_DEGREES, FULL);
+            let later = hover_wobble_angle_at(elapsed + HOVER_WOBBLE_PERIOD, 1.0, HOVER_WOBBLE_DEGREES);
             assert!((angle - later).abs() < 1e-4, "période : {angle} puis {later}");
 
             // Un demi-tour plus tard il est de l'autre côté — sauf aux deux
             // instants où il repasse par zéro, qu'on ne compte pas.
             if angle.abs() > 0.05 {
                 let opposite =
-                    hover_wobble_angle_at(elapsed + HOVER_WOBBLE_PERIOD / 2, 2.0, HOVER_WOBBLE_DEGREES, FULL);
+                    hover_wobble_angle_at(elapsed + HOVER_WOBBLE_PERIOD / 2, 1.0, HOVER_WOBBLE_DEGREES);
                 assert!(angle * opposite < 0.0, "{angle} et {opposite} devraient être opposés");
                 opposites += 1;
             }
@@ -12438,47 +12800,41 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
     /// proche de zéro.
     #[test]
     fn hover_text_wobble_angle_is_wired_to_the_text_amplitude() {
-        // Le réglage posé est celui des HORLOGES, et c'est important : depuis que
-        // `hover_text_wobble_angle` lit `clock_hover_scale()` comme dénominateur,
-        // ce test tournerait sinon avec la valeur par défaut de l'horloge. Il
-        // passerait encore — `progress` étant borné à 1.0, une assertion « angle
-        // ≤ 6° » ne peut pas échouer — mais il ne testerait plus rien.
-        with_clock_hover_scale(2.0, || {
-            assert_eq!(hover_text_wobble_angle(1.0), 0.0, "nul au repos");
-            for scale in [1.2_f32, 1.5, 2.0] {
-                let angle = hover_text_wobble_angle(scale).abs();
-                assert!(angle <= TEXT_WOBBLE_DEGREES.to_radians() + 1e-4, "amplitude {angle} à l'échelle {scale}");
+        // Le réglage de balancement est POSÉ explicitement : c'est lui qui donne
+        // l'amplitude, et le test ne doit pas dépendre de la valeur qu'un autre
+        // test aurait laissée dans la cellule globale.
+        with_hover_sway(1.0, || {
+            assert_eq!(hover_text_wobble_angle(0.0), 0.0, "nul au repos");
+            for progress in [0.2_f32, 0.5, 1.0] {
+                let angle = hover_text_wobble_angle(progress).abs();
+                assert!(angle <= TEXT_WOBBLE_DEGREES.to_radians() + 1e-4, "amplitude {angle} à {progress}");
             }
         });
+        // Le réglage s'applique AUX TEXTES AUSSI — DEMANDE EXPLICITE (« icônes +
+        // horloges ») : à 0 %, les chiffres ne tournent plus du tout.
+        with_hover_sway(0.0, || assert_eq!(hover_text_wobble_angle(1.0), 0.0, "0 % doit figer le texte"));
     }
 
-    /// **Le test qui verrouille le dénominateur** — celui sans lequel relire le
-    /// global des icônes dans `hover_text_wobble_angle` passerait inaperçu.
+    /// **La progression du survol EST l'amplitude relative** — le test qui
+    /// remplace celui du dénominateur de magnification, disparu avec lui.
     ///
-    /// L'assertion doit être prise À MI-COURSE et avec une horloge réglée PLUS
-    /// GRANDE que les icônes, parce que c'est le seul régime où les deux
-    /// dénominateurs diffèrent visiblement : `progress` est borné à 1.0, donc
-    /// une horloge plus PETITE que les icônes plafonne de toute façon et un
-    /// mauvais dénominateur y reste invisible. Ici, à l'échelle 1.9 sur une cible
-    /// de 2.5, le bon `progress` vaut 0.6 — l'amplitude ne doit donc PAS être
-    /// pleine. Avec le global des icônes laissé à 1.3, `progress` saturerait à
-    /// 1.0 et l'angle atteindrait son maximum.
+    /// À mi-survol, la moitié de l'amplitude ; à pleine progression, toute. Une
+    /// pondération qui resterait accrochée à l'échelle (ou saturerait) ferait
+    /// basculer le texte à sa pleine amplitude dès l'approche, ce qui se voit.
     #[test]
-    fn text_wobble_progress_uses_the_clock_denominator() {
+    fn text_wobble_progress_is_the_hover_progress() {
         let quarter_turn = HOVER_WOBBLE_PERIOD / 4; // le sinus y vaut 1
         let full = TEXT_WOBBLE_DEGREES.to_radians();
 
-        let partway = hover_wobble_angle_at(quarter_turn, 1.9, TEXT_WOBBLE_DEGREES, 2.5).abs();
+        let partway = hover_wobble_angle_at(quarter_turn, 0.6, TEXT_WOBBLE_DEGREES).abs();
         assert!(
-            partway < full * 0.99,
-            "amplitude {partway} : `progress` a saturé au lieu de valoir 0,6 (plafond {full})"
+            (partway - full * 0.6).abs() < 1e-4,
+            "amplitude {partway} au lieu de 60 % de {full}"
         );
-        assert!(partway > full * 0.5, "amplitude {partway} : `progress` a été écrasé");
 
-        // Au bout de la croissance, l'amplitude est bien PLEINE — c'est l'autre
-        // moitié du contrat, et elle interdit de « corriger » le problème en
-        // divisant par autre chose.
-        let complete = hover_wobble_angle_at(quarter_turn, 2.5, TEXT_WOBBLE_DEGREES, 2.5).abs();
+        // Au bout du survol, l'amplitude est bien PLEINE — c'est l'autre moitié
+        // du contrat.
+        let complete = hover_wobble_angle_at(quarter_turn, 1.0, TEXT_WOBBLE_DEGREES).abs();
         assert!((complete - full).abs() < 1e-4, "amplitude {complete} au lieu de {full}");
     }
 
@@ -12508,19 +12864,139 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
     /// une horloge non survolée tournerait sur elle-même.
     #[test]
     fn text_wobble_is_much_weaker_than_icon_wobble() {
-        // Dénominateur explicite (voir `hover_wobble_angle_at`) : plus aucune
+        // Progression explicite (voir `hover_wobble_angle_at`) : plus aucune
         // cellule globale n'entre ici.
-        const FULL: f32 = 2.0;
         let quarter_turn = HOVER_WOBBLE_PERIOD / 4;
-        let icon = hover_wobble_angle_at(quarter_turn, 2.0, HOVER_WOBBLE_DEGREES, FULL).abs();
-        let text = hover_wobble_angle_at(quarter_turn, 2.0, TEXT_WOBBLE_DEGREES, FULL).abs();
+        let icon = hover_wobble_angle_at(quarter_turn, 1.0, HOVER_WOBBLE_DEGREES).abs();
+        let text = hover_wobble_angle_at(quarter_turn, 1.0, TEXT_WOBBLE_DEGREES).abs();
         assert!(text > 0.0, "le texte doit tout de même balancer");
         assert!(text < icon / 4.0, "le texte ({text}) doit rester discret devant l'icône ({icon})");
 
-        for scale in [1.0_f32, 0.5] {
-            assert_eq!(hover_wobble_angle_at(quarter_turn, scale, HOVER_WOBBLE_DEGREES, FULL), 0.0);
-            assert_eq!(hover_wobble_angle_at(quarter_turn, scale, TEXT_WOBBLE_DEGREES, FULL), 0.0);
-        }
+        // Au repos, les deux sont nuls — sinon une icône ou une horloge non
+        // survolée tournerait sur elle-même.
+        assert_eq!(hover_wobble_angle_at(quarter_turn, 0.0, HOVER_WOBBLE_DEGREES), 0.0);
+        assert_eq!(hover_wobble_angle_at(quarter_turn, 0.0, TEXT_WOBBLE_DEGREES), 0.0);
+    }
+
+    /// **LE RÉGLAGE DE BALANCEMENT EST COMMUN AUX DEUX FAMILLES** — DEMANDE
+    /// EXPLICITE (« icônes + horloges ») : le même pourcentage règle l'icône ET
+    /// le texte, chacun gardant son amplitude de base. Et il est INDÉPENDANT de
+    /// la magnification : les deux amplitudes composées ici ne consultent
+    /// aucune échelle.
+    ///
+    /// ⚠️ **PASSER PAR `hover_wobble_angle_at` ET NON PAR LES FONCTIONS
+    /// PUBLIQUES** : celles-ci lisent l'horloge réelle, si bien que deux appels
+    /// successifs tombent à des phases différentes — et une assertion de RAPPORT
+    /// (« la moitié du réglage donne la moitié de l'angle ») y échouerait au
+    /// hasard de quelques microsecondes.
+    #[test]
+    fn le_balancement_regle_les_icones_et_les_textes_ensemble() {
+        let quarter_turn = HOVER_WOBBLE_PERIOD / 4; // sinus = 1
+        // L'amplitude EFFECTIVE, telle que `hover_wobble_angle` et
+        // `hover_text_wobble_angle` la composent : `degrés × réglage`.
+        let amplitude = |sway: f32, degrees: f32| {
+            with_hover_sway(sway, || {
+                hover_wobble_angle_at(quarter_turn, 1.0, degrees * hover_sway()).abs()
+            })
+        };
+        let icone = HOVER_WOBBLE_DEGREES.to_radians();
+        let texte = TEXT_WOBBLE_DEGREES.to_radians();
+        assert!((amplitude(1.0, HOVER_WOBBLE_DEGREES) - icone).abs() < 1e-4);
+        assert!((amplitude(1.0, TEXT_WOBBLE_DEGREES) - texte).abs() < 1e-4);
+        // La moitié du réglage donne la moitié de l'angle, pour les deux.
+        assert!((amplitude(0.5, HOVER_WOBBLE_DEGREES) - icone * 0.5).abs() < 1e-4, "icône à 50 %");
+        assert!((amplitude(0.5, TEXT_WOBBLE_DEGREES) - texte * 0.5).abs() < 1e-4, "texte à 50 %");
+        // Zéro éteint vraiment les deux.
+        assert_eq!(amplitude(0.0, HOVER_WOBBLE_DEGREES), 0.0);
+        assert_eq!(amplitude(0.0, TEXT_WOBBLE_DEGREES), 0.0);
+    }
+
+    /// Le BORNAGE du réglage lui-même — un fichier `hover_sway.txt` hors bornes
+    /// ou corrompu ne doit jamais atteindre l'animation (même discipline que
+    /// `set_hover_scale`, dont le NaN figerait la rotation pour de bon).
+    #[test]
+    fn le_reglage_du_balancement_est_borne() {
+        with_hover_sway(1.0, || {
+            set_hover_sway(-3.0);
+            assert_eq!(hover_sway(), MIN_HOVER_SWAY);
+            set_hover_sway(5.0);
+            assert_eq!(hover_sway(), MAX_HOVER_SWAY);
+            set_hover_sway(f32::NAN);
+            assert_eq!(hover_sway(), MAX_HOVER_SWAY, "NaN doit être ignoré, pas propagé");
+            // Et la valeur par défaut laisse l'animation historique intacte.
+            set_hover_sway(DEFAULT_HOVER_SWAY);
+            assert_eq!(hover_sway(), 1.0);
+        });
+    }
+
+    /// **UNE ICÔNE QUI BALANCE SANS GROSSIR DOIT DÉBORDER DE LA RÉGION** — c'est
+    /// le critère qui remplace `scale > 1.0` dans l'union d'`app::run` et dans
+    /// `Dock::magnified_boxes`. Le réglage à 0 % ne doit en revanche rien faire
+    /// déborder : sinon un curseur éteint élargirait quand même la région
+    /// cliquable du dock.
+    #[test]
+    fn une_icone_qui_balance_sans_grossir_doit_deborder() {
+        with_hover_sway(1.0, || {
+            assert!(!doit_deborder(1.0, 0.0), "au repos, non");
+            assert!(doit_deborder(1.0, 0.5), "balancement sans magnification : oui");
+            assert!(doit_deborder(1.3, 0.0), "magnification seule : oui");
+            assert!(doit_deborder(1.3, 1.0), "les deux : oui");
+        });
+        with_hover_sway(0.0, || {
+            assert!(!doit_deborder(1.0, 1.0), "balancement éteint : rien à déborder");
+            assert!(doit_deborder(1.3, 0.0), "la magnification, elle, déborde toujours");
+        });
+    }
+
+    /// **LE FOND AU SURVOL ENTRE DANS LA RÉGION MÊME QUAND RIEN NE BALANCE NI NE
+    /// GROSSIT** — DEMANDE EXPLICITE (2026-11-13) : le fond est indépendant de la
+    /// magnification, donc il s'affiche à 100 % de magnification ET 0 % de
+    /// balancement. Or `doit_deborder` est alors FAUX (l'icône ne s'écarte pas du
+    /// repos) : sans le second critère d'`magnified_boxes`, un fond à 200 %
+    /// dépasserait la barre et serait ROGNÉ. Le test vérifie les trois choses :
+    /// aucune boîte au repos, une boîte au survol malgré le balancement éteint,
+    /// et une boîte qui CONTIENT le fond (plus large que la boîte occupée).
+    #[test]
+    fn le_fond_au_survol_elargit_la_region_meme_sans_balancement() {
+        let layout = geometry_layout();
+        with_hover_settings(1.0, DEFAULT_HOVER_EASE_SPEED, || {
+            with_hover_sway(0.0, || {
+                with_survol_fond(true, [1.0, 0.0, 0.0], DEFAULT_SURVOL_FOND_OPACITE, || {
+                    with_survol_fond_taille(2.0, || {
+                        let mut dock = Dock::new([0.0, 0.0, 0.0, 1.0], 0);
+                        const LOGO: usize = 0;
+                        assert!(dock.magnified_boxes(&layout).is_empty(), "au repos : aucune boîte");
+
+                        let rect = dock.icon_rect(LOGO, &layout).expect("le logo est placé");
+                        let (cx, cy) = (rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5);
+                        dock.on_mouse_move(cx, cy, HWND(std::ptr::null_mut()));
+                        for _ in 0..120 {
+                            dock.update(1.0 / 60.0, &layout);
+                        }
+                        // Prémisse : ni magnification ni balancement — l'ancien
+                        // critère seul n'aurait produit AUCUNE boîte.
+                        assert!(!doit_deborder(dock.hover.scale(LOGO), dock.hover.hover(LOGO)));
+
+                        let boites = dock.magnified_boxes(&layout);
+                        let (boite, _) = boites.into_iter().next().expect("le fond survolé élargit la région");
+                        let fond = halo_rect(rect, dock.icon_gap_de(LOGO), 2.0);
+                        assert!(boite[0] <= fond[0] + 1e-3, "bord gauche du fond couvert : {boite:?} vs {fond:?}");
+                        assert!(boite[1] <= fond[1] + 1e-3, "bord haut du fond couvert : {boite:?} vs {fond:?}");
+                        assert!(boite[0] + boite[2] >= fond[0] + fond[2] - 1e-3, "bord droit du fond couvert");
+                        assert!(boite[1] + boite[3] >= fond[1] + fond[3] - 1e-3, "bord bas du fond couvert");
+                        // Contre-épreuve : sans fond, ce même survol (100 % de
+                        // magnification, balancement éteint) n'élargit RIEN —
+                        // c'est bien le second critère, et lui seul, qui a
+                        // produit la boîte ci-dessus.
+                        set_survol_fond_actif(false);
+                        assert!(
+                            dock.magnified_boxes(&layout).is_empty(),
+                            "sans fond, la région doit rester au repos"
+                        );
+                    });
+                });
+            });
+        });
     }
 
     /// Une icône ENTIÈREMENT sortie de la fenêtre par le défilement ne doit
@@ -12830,6 +13306,37 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
             dock.update(1.0 / 60.0, &layout);
         }
         assert_eq!(dock.magnified_index(), None);
+    }
+
+    /// **`hovered_index` DÉSIGNE L'ICÔNE SURVOLÉE MÊME À MAGNIFICATION 100 %** —
+    /// c'est la propriété dont dépend le fond au survol « indépendant de la
+    /// magnification » (DEMANDE EXPLICITE, 2026-11-13). Sans elle, `app::run`
+    /// n'aurait aucun moyen de savoir quelle icône mettre au premier plan quand
+    /// `magnified_index()` rend `None`.
+    #[test]
+    fn hovered_index_survit_a_la_magnification() {
+        let layout = geometry_layout();
+        with_hover_settings(1.0, DEFAULT_HOVER_EASE_SPEED, || {
+            let mut dock = Dock::new([0.0, 0.0, 0.0, 1.0], 0);
+            const LOGO: usize = 0;
+            assert_eq!(dock.hovered_index(), None, "rien de survolé au départ");
+            let rect = dock.icon_rect(LOGO, &layout).expect("le logo est placé");
+            let (cx, cy) = (rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5);
+            dock.on_mouse_move(cx, cy, HWND(std::ptr::null_mut()));
+            for _ in 0..120 {
+                dock.update(1.0 / 60.0, &layout);
+            }
+            assert_eq!(dock.hovered_index(), Some(LOGO), "survolé, bien qu'invisible à l'échelle");
+            assert_eq!(dock.magnified_index(), None, "et POURTANT aucune magnification");
+
+            // Curseur sorti : l'enveloppe retombe à zéro, exactement comme
+            // l'échelle (même recollement), donc plus d'icône survolée.
+            dock.on_mouse_leave(HWND(std::ptr::null_mut()));
+            for _ in 0..600 {
+                dock.update(1.0 / 60.0, &layout);
+            }
+            assert_eq!(dock.hovered_index(), None);
+        });
     }
 
     /// L'échelle revient EXACTEMENT au repos, et pas « presque » — DÉFAUT RÉEL

@@ -626,8 +626,12 @@ impl FullscreenClockWindow {
         // région juste en dessous : la clé doit décrire les entrées d'
         // `apply_region`, donc changer de source pour l'une sans l'autre
         // laisserait une région périmée jusqu'au prochain survol.
+        // ⚠️ **LE BALANCEMENT COMPTE AUSSI** (voir `dock::doit_deborder`) : à
+        // « Magnification des horloges » = 100 %, l'échelle ne bouge pas, mais le
+        // texte TOURNE quand même — et ses coins penchés seraient coupés net par
+        // la région de la pilule sans cette boîte.
         let target = dock::clock_hover_scale();
-        let text_box = (hover_scale > 1.0).then(|| {
+        let text_box = dock::doit_deborder(hover_scale, self.hover.hover(0)).then(|| {
             dock::occupied_text_rect_for(dock::magnified_box_centred(text_rest, target))
         });
 
@@ -660,7 +664,9 @@ impl FullscreenClockWindow {
         // boîte porte déjà la magnification, comme partout ailleurs (voir
         // `dock::external_glyph_instance`) — et le balancement est posé à part.
         let mut text_instance = QuadInstance::new_glyph_scaled(presented, text_color(), 1.0);
-        text_instance.rotation = dock::hover_text_wobble_angle(hover_scale);
+        // L'avancement du SURVOL, pas l'échelle : voir
+        // `dock::hover_text_wobble_angle` — le texte balance même sans grossir.
+        text_instance.rotation = dock::hover_text_wobble_angle(self.hover.hover(0));
         let mut batches: Vec<QuadBatch> = Vec::new();
         if let Some(backdrop_tex) = &backdrop_tex {
             batches.push(QuadBatch::new(Some(&backdrop_tex.srv), std::slice::from_ref(&backdrop_instance)));

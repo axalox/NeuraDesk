@@ -71,6 +71,35 @@
   .ligne { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
   .onglets { display: flex; gap: 6px; padding: 0 16px 4px; }
   .onglets button { flex: 1 1 0; }
+  /* ⭐ L'ONGLET QUI GLISSE — DEMANDE EXPLICITE (2026-11-12) : « utiliser Modern
+     Web Guidance pour améliorer l'aspect ». La pastille pleine de l'onglet
+     choisi ne saute plus : elle est tirée par lui (`anchor-name`) et
+     `transition: inset` l'y amène. Le pseudo-élément du conteneur évite
+     d'ajouter un nœud au DOM ; les boutons passent au-dessus (`z-index: 1`)
+     pour que leur texte reste lisible.
+     ⚠️ Le fond du bouton choisi n'est effacé QUE si les ancres sont comprises
+     (`@supports`) : sans elles, la pastille n'existerait pas et l'onglet
+     courant serait invisible. */
+  .onglets { position: relative; isolation: isolate; }
+  .onglets button { position: relative; z-index: 1; }
+  .onglets button.actif { anchor-name: --nd-onglet-minuteur; }
+  .onglets::before {
+    content: "";
+    position: absolute;
+    position-anchor: --nd-onglet-minuteur;
+    inset-block-start: anchor(top);
+    inset-block-end: anchor(bottom);
+    inset-inline-start: anchor(left);
+    inset-inline-end: anchor(right);
+    border-radius: var(--nd-rayon-controle);
+    background: rgb(var(--popup-accent-solid-rgb));
+    transition: inset 0.22s ease;
+    z-index: 0;
+  }
+  @supports (anchor-name: --nd-sonde) {
+    .onglets button.actif { background: transparent; }
+  }
+  .onglets:not(:has(button.actif))::before { display: none; }
   .cache { display: none !important; }
 
   /* ---- LE BANDEAU DE SONNERIE ---- */
@@ -119,10 +148,10 @@
 </div>
 
 <div class="onglets">
-  <button id="onglet-comptes" class="actif" onclick="montrerOnglet('comptes')">Comptes à rebours</button>
-  <button id="onglet-chrono" onclick="montrerOnglet('chrono')">Chronomètre</button>
-  <button id="onglet-alarmes" onclick="montrerOnglet('alarmes')">Alarmes</button>
-  <button id="onglet-pomodoro" onclick="montrerOnglet('pomodoro')">Pomodoro</button>
+  <button id="onglet-comptes" class="actif" aria-pressed="true" onclick="montrerOnglet('comptes')">Comptes à rebours</button>
+  <button id="onglet-chrono" aria-pressed="false" onclick="montrerOnglet('chrono')">Chronomètre</button>
+  <button id="onglet-alarmes" aria-pressed="false" onclick="montrerOnglet('alarmes')">Alarmes</button>
+  <button id="onglet-pomodoro" aria-pressed="false" onclick="montrerOnglet('pomodoro')">Pomodoro</button>
 </div>
 
 <section id="page-comptes">
@@ -259,7 +288,11 @@
   function montrerOnglet(nom) {
     for (const o of ["comptes", "chrono", "alarmes", "pomodoro"]) {
       document.getElementById("page-" + o).classList.toggle("cache", o !== nom);
-      document.getElementById("onglet-" + o).classList.toggle("actif", o === nom);
+      const bouton = document.getElementById("onglet-" + o);
+      bouton.classList.toggle("actif", o === nom);
+      // La pastille ne dit rien à un lecteur d'écran : l'état est AUSSI dans
+      // l'arbre d'accessibilité.
+      bouton.setAttribute("aria-pressed", String(o === nom));
     }
   }
 

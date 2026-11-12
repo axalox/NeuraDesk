@@ -2728,6 +2728,19 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
                     config::save_hover_ease_speed(crate::ui::dock::hover_ease_speed());
                 }
             }
+            // "settings/hover-sway/<pourcent>" — **L'AMPLEUR DU BALANCEMENT AU
+            // SURVOL**, DEMANDE EXPLICITE (2026-11-12) : « un réglage
+            // supplémentaire qui permette de gérer le balancement de l'icône
+            // indépendant de la magnification ». GLOBAL comme `hover-scale`
+            // juste au-dessus, donc sans passer par `refs`, et c'est la valeur
+            // DÉJÀ BORNÉE (relue de la cellule) qu'on enregistre — jamais le
+            // pourcentage reçu.
+            ["hover-sway", percent] => {
+                if let Ok(percent) = percent.parse::<u32>() {
+                    crate::ui::dock::set_hover_sway(percent as f32 / 100.0);
+                    config::save_hover_sway(crate::ui::dock::hover_sway());
+                }
+            }
             // "settings/clock-hover-scale/<pourcent>" — magnification au survol
             // du TEXTE des deux horloges, DEMANDE EXPLICITE (« pouvoir régler sa
             // taille agrandie »). Même famille que `hover-scale` juste au-dessus
@@ -2791,6 +2804,21 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
                         crate::ui::dock::survol_fond_actif(),
                         crate::ui::dock::survol_fond_couleur(),
                     );
+                }
+            }
+            // "settings/survol-fond-taille/<pourcent>" — **L'ÉTENDUE DU FOND AU
+            // SURVOL**, DEMANDE EXPLICITE (2026-11-13) : « gérer la couleur
+            // d'accentuation de l'icône indépendant de la magnification quand un
+            // élément est survolé et pouvoir gérer la taille de l'effet ».
+            // GLOBAL comme les deux verbes ci-dessus. Fichier DISTINCT de
+            // `survol_fond.txt` : trois contrôles règlent le même effet, et un
+            // fichier commun aurait obligé chacun à réécrire l'état complet —
+            // c'est ici la taille seule qui est enregistrée, et la valeur est
+            // celle DÉJÀ BORNÉE par la cellule.
+            ["survol-fond-taille", percent] => {
+                if let Ok(percent) = percent.parse::<u32>() {
+                    crate::ui::dock::set_survol_fond_taille(percent as f32 / 100.0);
+                    config::save_survol_fond_taille(crate::ui::dock::survol_fond_taille());
                 }
             }
             // ⭐ **LA PRESSION SUR LE PROCESSEUR ET LE GPU** — DEMANDE EXPLICITE
@@ -5769,10 +5797,25 @@ fn push_state(refs: &SettingsRefs) {
     // `computeStructureKey` côté page, sans quoi cocher la case n'afficherait
     // pas ses réglages.
     if let Some(objet) = payload.as_object_mut() {
+        // L'ampleur du BALANCEMENT au survol (voir `ui::dock::hover_sway`) —
+        // GLOBALE elle aussi, et indépendante de la magnification : à 100 % la
+        // magnification ne change plus rien au balancement, à 0 % il disparaît.
+        // ⛔ AJOUTÉE APRÈS COUP, comme les clés voisines : le `json!` de
+        // `push_state` est à la limite de récursion de la macro, et y glisser une
+        // clé de plus ne compile pas (« recursion limit reached »).
+        objet.insert("hoverSwayPercent".into(), json!((crate::ui::dock::hover_sway() * 100.0).round() as i32));
         let [r, g, b, opacite] = crate::ui::dock::survol_fond_couleur();
         objet.insert("survolFondActif".into(), json!(crate::ui::dock::survol_fond_actif()));
         objet.insert("survolFondColor".into(), json!(hex([r, g, b])));
         objet.insert("survolFondOpacitePercent".into(), json!((opacite * 100.0).round() as i32));
+        // L'ÉTENDUE de ce fond (voir `ui::dock::survol_fond_taille`) — DEMANDE
+        // EXPLICITE (2026-11-13) : « pouvoir gérer la taille de l'effet ».
+        // GLOBALE comme les deux clés ci-dessus, et ajoutée ICI pour la même
+        // raison : le `json!` de `push_state` est à la limite de récursion.
+        objet.insert(
+            "survolFondTaillePercent".into(),
+            json!((crate::ui::dock::survol_fond_taille() * 100.0).round() as i32),
+        );
         // ⭐ **LA PRESSION SUR LE PROCESSEUR ET LE GPU** (voir
         // `ui::performances`) — AJOUTÉES ICI pour la même raison que ci-dessus :
         // le `json!` a atteint sa limite de récursion. Le profil n'est pas une
@@ -6439,9 +6482,19 @@ mod tests {
             "aucun curseur n'émet `survol-fond-opacite`"
         );
         assert!(PAGE.contains("colorPicker(box, \"survol\""), "aucun sélecteur ne vise la cible `survol`");
+        // ⭐ La TAILLE de l'effet (2026-11-13) — le troisième contrôle du même
+        // fond, et le seul qui manquait pour « gérer la taille de l'effet ».
+        assert!(
+            PAGE.contains("go(\"survol-fond-taille\""),
+            "aucun curseur n'émet `survol-fond-taille`"
+        );
         // Le Rust les REÇOIT.
         assert!(dispatch.contains("[\"survol-fond\", flag]"), "RIEN ne reçoit la case");
         assert!(dispatch.contains("[\"survol-fond-opacite\", percent]"), "RIEN ne reçoit le curseur");
+        assert!(
+            dispatch.contains("[\"survol-fond-taille\", percent]"),
+            "RIEN ne reçoit la taille de l'effet"
+        );
         assert!(dispatch.contains("\"survol\" =>"), "RIEN ne reçoit la couleur (cible `survol`)");
 
         // L'état voyage dans les deux sens. ⚠️ Les trois clés sont insérées
@@ -6453,9 +6506,14 @@ mod tests {
             dispatch.contains("\"survolFondOpacitePercent\""),
             "push_state ne pousse pas l'opacité"
         );
+        assert!(
+            dispatch.contains("\"survolFondTaillePercent\""),
+            "push_state ne pousse pas la taille de l'effet"
+        );
         assert!(PAGE.contains("state.survolFondActif"), "la page ne lit pas la case");
         assert!(PAGE.contains("state.survolFondColor"), "la page ne lit pas la couleur");
         assert!(PAGE.contains("state.survolFondOpacitePercent"), "la page ne lit pas l'opacité");
+        assert!(PAGE.contains("state.survolFondTaillePercent"), "la page ne lit pas la taille de l'effet");
         assert!(
             PAGE.contains("survolFondActif: state.survolFondActif"),
             "la case n'est pas dans `computeStructureKey` : cocher ne ferait pas apparaître ses réglages"

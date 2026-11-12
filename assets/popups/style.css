@@ -194,6 +194,108 @@ button:active:not(:disabled) {
   inset: min(0px, calc((100% - 24px) / 2));
 }
 
+/* ⭐ TYPOGRAPHIE — DEMANDE EXPLICITE (2026-11-12) : « utiliser Modern Web
+   Guidance pour améliorer l'aspect ». Deux réglages de coupure de ligne, rien
+   d'autre :
+   - `balance` sur les TITRES : ils se partagent en lignes de longueur voisine
+     au lieu de laisser un mot seul ("Material You (fond d'écran) / sombre"). Le
+     navigateur ne le fait que sur les blocs courts (≤ 6 lignes), donc une règle
+     par titre est sans coût pour un long paragraphe.
+   - `pretty` sur le TEXTE COURANT : évite les orphelins (un mot unique rejeté
+     sur la dernière ligne) sans réordonner les lignes précédentes.
+   Ce sont des indications, pas des contraintes : sans support, la coupure
+   redevient celle d'avant, sans rien casser. */
+h1,
+h2,
+h3,
+legend {
+  text-wrap: balance;
+}
+p,
+.hint,
+.note,
+.small-label,
+.voir-aussi {
+  text-wrap: pretty;
+}
+
+/* ⭐ LE DÉFILEMENT QUI S'ANNONCE — un fondu de quelques pixels sur le bord qui
+   cache encore du contenu, et rien du tout au bord atteint. Aucun écouteur de
+   défilement, aucun élément ajouté au DOM : le fondu est un `mask` dont la
+   hauteur est animée par la position de défilement elle-même (`scroll(self
+   block)`), donc il ne coûte que ce que la composition coûte déjà.
+   - SANS `@property`, les deux longueurs ne s'interpolent pas et le fondu
+     sauterait d'un état à l'autre : le fondu serait un clignotement.
+   - `animation-range` en DEUX plages : la première (0 → 10 px de défilement)
+     fait apparaître le fondu du haut, la seconde (fin − 10 px → fin) fait
+     disparaître celui du bas. Au repos et au bout, fondu = 0.
+   - Quand le contenu tient, la timeline de défilement est INACTIVE : aucun
+     fondu — c'est le comportement voulu, et c'est pour cela que la règle peut
+     viser des conteneurs dont on ne sait pas d'avance s'ils débordent.
+   - La liste de sélecteurs est en `:where()` (spécificité nulle) : n'importe
+     quelle règle de page la surcharge sans se battre.
+   ⚠️ Un élément COLLANT posé dans un de ces conteneurs (un en-tête qui reste
+   en haut) baignerait dans le fondu du bord : ne pas ajouter un tel sélecteur
+   sans vérifier.
+   ⚠️ ⛔ PAS de préfixe `--nd-` sur ces trois propriétés : ce préfixe est
+   RÉSERVÉ aux jetons du style (`src/ui/style.rs`), poussés depuis Rust — et
+   `style_css_porte_les_valeurs_de_la_base` exige que CHAQUE ligne de
+   `style.css` qui commence par `--nd-` existe dans `variables_js`. Ce sont des
+   constantes de page, pas des jetons de thème. */
+@property --defile-fondu-haut {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --defile-fondu-bas {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+:where(
+  .scroll, main, #corps, #liste, #droite, #cote, #code, #rapport, #compte-rendu,
+  #historique, #notif-liste, .list, .liste, .colonne, .grille, .sidebar, .menu,
+  .grid-pane, .categories-pane, .category-popup, .liste-calques, .category-nav,
+  .panel-choices, .sauvegardes-grille
+) {
+  --defile-fondu-taille: 10px;
+  mask:
+    linear-gradient(black, black) no-clip subtract,
+    linear-gradient(to bottom, black, transparent) 0 0 / 100% var(--defile-fondu-haut) no-repeat no-clip,
+    linear-gradient(to bottom, transparent, black) 0 100% / 100% var(--defile-fondu-bas) no-repeat no-clip;
+  animation: nd-fondu-haut linear both, nd-fondu-bas linear both;
+  animation-timeline: scroll(self block);
+  animation-range: 0 var(--defile-fondu-taille), calc(100% - var(--defile-fondu-taille)) 100%;
+}
+@keyframes nd-fondu-haut {
+  to {
+    --defile-fondu-haut: var(--defile-fondu-taille);
+  }
+}
+@keyframes nd-fondu-bas {
+  from {
+    --defile-fondu-bas: var(--defile-fondu-taille);
+  }
+}
+
+/* ⭐ L'OUVERTURE D'UN PANNEAU SE FOND — DEMANDE EXPLICITE (2026-11-12).
+   `@starting-style` donne son état de DÉPART à la première peinture de la page,
+   et la transition amène à l'état réel : un fondu de 180 ms au lieu du panneau
+   qui apparaît d'un coup. Rien à piloter depuis Rust. Un panneau PRÉCHARGÉ a
+   déjà peint son contenu pendant le préchargement, donc son fondu est passé
+   avant qu'on l'ouvre.
+   ⚠️ `opacity` sur `<html>` : la page reste transparente au-dessus du fond
+   flouté que Rust dessine dessous, donc c'est bien un fondu de l'interface,
+   pas un voile gris. */
+@starting-style {
+  html {
+    opacity: 0;
+  }
+}
+html {
+  transition: opacity 180ms ease-out;
+}
+
 /* ── ICÔNES (généré par tools/icones_phosphor.py — ne pas éditer à la main) ── */
 /* Phosphor Icons, MIT (c) 2023 Phosphor Icons — https://phosphoricons.com
    `<span class="ico ico-x"></span>` dans un bouton : l'icône prend la couleur

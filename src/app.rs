@@ -4312,6 +4312,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     if let Some(scale) = config::load_clock_hover_scale() {
         dock::set_clock_hover_scale(scale);
     }
+    // Le BALANCEMENT au survol (voir `dock::DEFAULT_HOVER_SWAY`) — GLOBAL lui
+    // aussi, et lu directement : il vaut pour les icônes du dock, celles de la
+    // barre du haut ET le texte des deux horloges, sans rien à transmettre.
+    if let Some(sway) = config::load_hover_sway() {
+        dock::set_hover_sway(sway);
+    }
     // ⭐ **LE FOND AU SURVOL DES ICÔNES FERMÉES** — DEMANDE EXPLICITE
     // (2026-11-11) : « ajouter un autre effet au survol d'une icône en ajoutant
     // un fond de couleur et de transparence paramétrable pour les programmes et
@@ -4333,6 +4339,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 dock::set_survol_fond_rgb(rgb);
             }
         }
+    }
+    // L'ÉTENDUE de ce fond (voir `dock::DEFAULT_SURVOL_FOND_TAILLE`) — fichier
+    // DISTINCT de `survol_fond.txt`, donc rien à faire quand il n'existe pas :
+    // le défaut de la cellule s'applique.
+    if let Some(taille) = config::load_survol_fond_taille() {
+        dock::set_survol_fond_taille(taille);
     }
     // Transparence des éléments des panneaux (voir `cef_popup::POPUP_ALPHA`) —
     // GLOBALE elle aussi, et relue à chaque frame par `push_window_palette`,
@@ -13952,7 +13964,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // serait JAMAIS prise : l'horloge magnifiée serait rognée par le bord
             // de la barre du haut, sans que rien n'échoue à la compilation ni aux
             // tests.
-            if features.clock && clock_hover.scale(0) > 1.0 {
+            if features.clock && dock::doit_deborder(clock_hover.scale(0), clock_hover.hover(0)) {
                 if let Some((_, w, h)) = &clock_texture {
                     boxes.push(dock::occupied_text_rect_for(topbar::presented_clock_rect(
                         &layout,
@@ -13976,7 +13988,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // Elle suit `hover_scale()`, le réglage des ICÔNES, comme les boutons
             // média et « afficher le bureau » — voir `bell_hover`, sa déclaration,
             // qui porte la raison (et le défaut que l'autre choix a causé).
-            if features.bell && bell_hover.scale(0) > 1.0 {
+            if features.bell && dock::doit_deborder(bell_hover.scale(0), bell_hover.hover(0)) {
                 if let Some((_, w, h)) = &clock_texture {
                     boxes.push(dock::occupied_rect_for(topbar::presented_bell_rect(
                         topbar::bell_rect(&layout, *w, *h),
@@ -13996,7 +14008,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // ⚠️ `occupied_rect_for` et NON `presented_rect_for` : une icône
             // BALANCE (±45°, voir `hover_wobble_angle`), donc ses coins demandent
             // plus de place que sa boîte droite.
-            if features.rappel_notes && note_hover.scale(0) > 1.0 {
+            if features.rappel_notes && dock::doit_deborder(note_hover.scale(0), note_hover.hover(0)) {
                 if let Some((_, w, h)) = &clock_texture {
                     boxes.push(dock::occupied_rect_for(topbar::presented_note_rect(
                         topbar::note_rect(&layout, *w, *h),
@@ -14007,7 +14019,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             }
             // L'ICÔNE DU MINUTEUR — même obligation : une icône qui grossit sans
             // figurer ici déborde hors de la région, donc rognée.
-            if minuteur_hover.scale(0) > 1.0 {
+            if dock::doit_deborder(minuteur_hover.scale(0), minuteur_hover.hover(0)) {
                 if let Some((_, w, h)) = &clock_texture {
                     boxes.push(dock::occupied_rect_for(topbar::presented_minuteur_rect(
                         topbar::minuteur_rect(&layout, *w, *h),
@@ -14027,7 +14039,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 }
             }
             // L'APPLET DE MASQUAGE — même obligation.
-            if features.reglages_secours && reglages_hover.scale(0) > 1.0 {
+            if features.reglages_secours && dock::doit_deborder(reglages_hover.scale(0), reglages_hover.hover(0)) {
                 if let Some((_, w, h)) = &clock_texture {
                     boxes.push(dock::occupied_rect_for(topbar::presented_reglages_rect(
                         topbar::reglages_rect(&layout, *w, *h),
@@ -14036,7 +14048,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     )));
                 }
             }
-            if features.masque && masque_hover.scale(0) > 1.0 {
+            if features.masque && dock::doit_deborder(masque_hover.scale(0), masque_hover.hover(0)) {
                 if let Some((_, w, h)) = &clock_texture {
                     boxes.push(dock::occupied_rect_for(topbar::presented_masque_rect(
                         topbar::masque_rect(&layout, *w, *h),
@@ -14063,7 +14075,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // **Boîte OCCUPÉE, et non la seule présentée** : comme l'horloge
             // ci-dessus, elle BALAIE (±45°, voir `show_desktop_instance`) — ses
             // coins penchés seraient coupés par la région sans ce majorant.
-            if features.show_desktop && topbar_hover.scale(3) > 1.0 {
+            if features.show_desktop && dock::doit_deborder(topbar_hover.scale(3), topbar_hover.hover(3)) {
                 boxes.push(dock::occupied_rect_for(topbar::presented_show_desktop_rect(
                     topbar::show_desktop_rect(&layout, top_left_offset),
                     target,
@@ -14075,7 +14087,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // barre du haut — donc leur boîte grossie doit agrandir la région, sans
             // quoi leur bas est rogné dès que la barre de gauche est masquée.
             for i in 0..dot_count {
-                if dots_hover.scale(i) > 1.0 {
+                if dock::doit_deborder(dots_hover.scale(i), dots_hover.hover(i)) {
                     boxes.push(dock::occupied_rect_for(topbar::presented_desktop_dot_rect(
                         topbar::desktop_dot_rect(&layout, i, dots_left, dot_size),
                         target,
@@ -14083,7 +14095,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     )));
                 }
             }
-            pending_overflow = boxes.into_iter().reduce(union_rect).map(|r| {
+            pending_overflow = boxes.into_iter().reduce(dock::union_rect).map(|r| {
                 [
                     r[0].floor() as i32,
                     r[1].floor() as i32,
@@ -15873,7 +15885,21 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // alpha laisserait une couture visible à l'ancienne ligne de
             // découpe (les pixels sous `top_thickness` recevraient
             // l'anticrénelage deux fois, ceux au-dessus une seule).
-            let magnified = dock.magnified_index();
+            let magnifiee = dock.magnified_index();
+            // **L'ICÔNE AU PREMIER PLAN** — celle qu'on RETIRE de son lot pour la
+            // dessiner en dernier, par-dessus tout le reste, et celle qui reçoit
+            // le FOND au survol (voir `hover_icon` plus bas). Ce n'est plus
+            // seulement l'icône GROSSIE : une icône qui balance ou qui reçoit son
+            // fond doit passer devant ses voisines même quand la magnification
+            // vaut 100 % — DEMANDE EXPLICITE (2026-11-13) : « gérer la couleur
+            // d'accentuation de l'icône INDÉPENDANT DE LA MAGNIFICATION quand un
+            // élément est survolé ».
+            //
+            // `magnifiee` reste à part pour les pastilles qui ENTOURENT l'icône
+            // (voir `running_dot_wraps_the_icon`) : elles ne se diffèrent que
+            // quand l'icône GRANDIT réellement, sa bande montant alors au-dessus
+            // de la barre — ce n'est pas le cas d'un simple balancement.
+            let premier_plan = magnifiee.or_else(|| dock.hovered_index());
             // L'ICÔNE MAGNIFIÉE NE REÇOIT PAS SA PASTILLE (voir les trois
             // boucles de pastilles plus bas) : elle la recouvre presque
             // entièrement, mais ses COINS ARRONDIS la laisseraient affleurer —
@@ -15915,13 +15941,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 batches: &mut Vec<QuadBatch<'a>>,
                 differes: &mut IconesDifferees<'a>,
                 hover_icon: &mut Option<(Option<&'a Texture>, &'a QuadInstance)>,
-                magnified: Option<usize>,
+                premier_plan: Option<usize>,
                 index: usize,
                 texture: &'a Texture,
                 instance: &'a QuadInstance,
                 clip: Option<[f32; 4]>,
             ) {
-                if Some(index) == magnified {
+                if Some(index) == premier_plan {
                     *hover_icon = Some((Some(texture), instance));
                 } else if let Some(&cle) = differes.ordre.get(&index) {
                     differes.icones.push((cle, texture, instance, clip));
@@ -16006,7 +16032,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             let clipped_for = |index: usize| clip_of(Some(index), dock.icon_side(index));
 
             for (index, side, instance) in &instances {
-                if Some(*index) == magnified {
+                if Some(*index) == premier_plan {
                     // Le logo est la SEULE texture de ce chemin (tout le reste
                     // y est un aplat de couleur unie) — même test `tex_mode` que
                     // la scission juste en dessous.
@@ -16091,6 +16117,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             dots_left_offset(dock.slot_widths(), &layout, &features, top_left_offset),
                             dot_size,
                             dots_hover.scale(i),
+                            // L'avancement du survol : la pastille balance même
+                            // quand elle ne grossit pas.
+                            dots_hover.hover(i),
                         );
                         // Centré sur `dot.rect`, la boîte PRÉSENTÉE : recalculer
                         // le rectangle ferait diverger le numéro de sa pastille
@@ -16158,7 +16187,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 if running || notified.is_some() {
                     let color = notified.map(|_| dock::notification_blink_color());
                     let dot = dock.running_dot_instance(index, &layout, color);
-                    if Some(index) == magnified && dock.running_dot_wraps_the_icon() {
+                    if Some(index) == magnifiee && dock.running_dot_wraps_the_icon() {
                         deferred_dot = dot;
                     } else if let (Some(instance), Some(side)) = (dot, dock.icon_side(index)) {
                         // ⭐ Icône d'une barre REPLIÉE : sa pastille est dessinée
@@ -16182,7 +16211,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 if running || notified.is_some() {
                     let color = notified.map(|_| dock::notification_blink_color());
                     let dot = dock.running_dot_instance(index, &layout, color);
-                    if Some(index) == magnified && dock.running_dot_wraps_the_icon() {
+                    if Some(index) == magnifiee && dock.running_dot_wraps_the_icon() {
                         deferred_dot = dot;
                     } else if let (Some(instance), Some(side)) = (dot, dock.icon_side(index)) {
                         // ⭐ Icône d'une barre REPLIÉE : sa pastille est dessinée
@@ -16208,7 +16237,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     let notified = dynamic_notified.get(i).filter(|aumids| !aumids.is_empty());
                     let color = notified.map(|_| dock::notification_blink_color());
                     let dot = dock.running_dot_instance(index, &layout, color);
-                    if Some(index) == magnified && dock.running_dot_wraps_the_icon() {
+                    if Some(index) == magnifiee && dock.running_dot_wraps_the_icon() {
                         deferred_dot = dot;
                     } else if let (Some(instance), Some(side)) = (dot, dock.icon_side(index)) {
                         // ⭐ Icône d'une barre REPLIÉE : sa pastille est dessinée
@@ -16258,7 +16287,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 let rgb = dock::logo_background_color(&palette);
                 let color = [rgb[0], rgb[1], rgb[2], dock::logo_background_alpha()];
                 let rond = dock::logo_is_circle();
-                if let Some(mut halo) = dock::icon_halo_for(&dock, &layout, APP_ICON_INDEX, rond, color) {
+                // `1.0` : le fond ANIMÉ du logo n'est PAS le fond au survol, il
+                // n'est donc pas concerné par le réglage de taille (voir
+                // `dock::survol_fond_taille`).
+                if let Some(mut halo) = dock::icon_halo_for(&dock, &layout, APP_ICON_INDEX, rond, color, 1.0) {
                     // Le fond suit la taille et le zoom du logo qu'il entoure.
                     let logo_scale = dock::logo_draw_scale();
                     halo.rect = dock::scale_rect_centered(halo.rect, logo_scale);
@@ -16509,7 +16541,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // média sont poussés APRÈS elle et la recouvriraient. Même règle,
             // et même raison, que l'icône magnifiée du dock. Au repos, en
             // revanche, l'ordre des lots ne bouge pas d'un iota.
-            let clock_deferred = features.clock && clock_hover_scale > 1.0;
+            // ⚠️ **LE BALANCEMENT COMPTE AUSSI** : à « Magnification des
+            // horloges » = 100 %, l'échelle ne bouge jamais, mais le texte
+            // TOURNE quand même — et ses coins penchés seraient recouverts par
+            // les lots poussés après lui sans cette différation.
+            let clock_deferred =
+                features.clock && (clock_hover_scale > 1.0 || clock_hover.hover(0) > 0.0);
             let clock_instance = if features.clock {
                 clock_texture.as_ref().map(|(_, w, h)| {
                     topbar::clock_instance(
@@ -16518,7 +16555,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         *h,
                         effective_topbar_text_color,
                         clock_hover_scale,
-                        dock::hover_text_wobble_angle(clock_hover_scale),
+                        // L'avancement du survol, pas l'échelle — voir
+                        // `dock::hover_text_wobble_angle`.
+                        dock::hover_text_wobble_angle(clock_hover.hover(0)),
                     )
                 })
             } else {
@@ -16687,7 +16726,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     topbar::bell_instance(
                         topbar::presented_bell_rect(topbar::bell_rect(&layout, *w, *h), bell_hover.scale(0), &layout),
                         bell_color,
-                        bell_hover.scale(0),
+                        // L'AVANCEMENT DU SURVOL, pas l'échelle : le balancement
+                        // a lieu même à « Magnification au survol » = 100 %.
+                        bell_hover.hover(0),
                     )
                 })
             } else {
@@ -16707,7 +16748,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     topbar::note_instance(
                         topbar::presented_note_rect(topbar::note_rect(&layout, *w, *h), note_hover.scale(0), &layout),
                         note_color,
-                        note_hover.scale(0),
+                        note_hover.hover(0),
                     )
                 })
             } else {
@@ -16724,7 +16765,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     topbar::minuteur_instance(
                         topbar::presented_minuteur_rect(topbar::minuteur_rect(&layout, *w, *h), minuteur_hover.scale(0), &layout),
                         [c[0], c[1], c[2]],
-                        minuteur_hover.scale(0),
+                        minuteur_hover.hover(0),
                     )
                 })
             } else {
@@ -16751,14 +16792,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 topbar::minuteur_instance(
                     topbar::presented_reglages_rect(topbar::reglages_rect(&layout, *w, *h), reglages_hover.scale(0), &layout),
                     effective_topbar_text_color,
-                    reglages_hover.scale(0),
+                    reglages_hover.hover(0),
                 )
             });
             let masque_render_instance = clock_texture.as_ref().filter(|_| features.masque).map(|(_, w, h)| {
                 topbar::minuteur_instance(
                     topbar::presented_masque_rect(topbar::masque_rect(&layout, *w, *h), masque_hover.scale(0), &layout),
                     effective_topbar_text_color,
-                    masque_hover.scale(0),
+                    masque_hover.hover(0),
                 )
             });
             // `if features.sys_monitor` : DEMANDE EXPLICITE ("le moniteur
@@ -16977,25 +17018,25 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // (`None` pendant qu'elle est ELLE-MÊME glissée, voir
             // `Dock::icon_rect` — même mécanique, raison différente).
             if let Some(instance) = &power_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, power_icon_index, &icones.power, instance, clipped_for(power_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, power_icon_index, &icones.power, instance, clipped_for(power_icon_index));
             }
             if let Some(instance) = &terminal_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, topbar_terminal_icon_index, &icones.terminal, instance, clipped_for(topbar_terminal_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, topbar_terminal_icon_index, &icones.terminal, instance, clipped_for(topbar_terminal_icon_index));
             }
             if let Some(instance) = &sound_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, sound_icon_index, &icones.sound, instance, clipped_for(sound_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, sound_icon_index, &icones.sound, instance, clipped_for(sound_icon_index));
             }
             if let Some(instance) = &network_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, network_icon_index, &icones.network, instance, clipped_for(network_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, network_icon_index, &icones.network, instance, clipped_for(network_icon_index));
             }
             if let Some(instance) = &voicemeeter_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, voicemeeter_icon_index, &icones.sound, instance, clipped_for(voicemeeter_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, voicemeeter_icon_index, &icones.sound, instance, clipped_for(voicemeeter_icon_index));
             }
             if let Some(instance) = &notes_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, notes_icon_index, &icones.notes, instance, clipped_for(notes_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, notes_icon_index, &icones.notes, instance, clipped_for(notes_icon_index));
             }
             if let Some(instance) = &theme_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, theme_toggle_icon_index, &icones.theme, instance, clipped_for(theme_toggle_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, theme_toggle_icon_index, &icones.theme, instance, clipped_for(theme_toggle_icon_index));
             }
             // **SA PROPRE CASE, ET SA PROPRE INSTANCE** — cette poussée était
             // restée COLLÉE dans le bloc `theme_instance` ci-dessus : la lune
@@ -17005,58 +17046,58 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // `night_light_instance`, calculé plus haut, restait inutilisé, ce
             // que le compilateur signalait.
             if let Some(instance) = &night_light_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, night_light_icon_index, &icones.night_light, instance, clipped_for(night_light_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, night_light_icon_index, &icones.night_light, instance, clipped_for(night_light_icon_index));
             }
             if let Some(instance) = &printer_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, printer_icon_index, &icones.printer, instance, clipped_for(printer_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, printer_icon_index, &icones.printer, instance, clipped_for(printer_icon_index));
             }
             if let Some(instance) = &calendar_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, calendar_icon_index, &icones.calendar, instance, clipped_for(calendar_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, calendar_icon_index, &icones.calendar, instance, clipped_for(calendar_icon_index));
             }
             if let Some(instance) = &image_editor_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, image_editor_icon_index, &icones.image_editor, instance, clipped_for(image_editor_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, image_editor_icon_index, &icones.image_editor, instance, clipped_for(image_editor_icon_index));
             }
             if let Some(instance) = &screen_capture_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, screen_capture_icon_index, &icones.screen_capture, instance, clipped_for(screen_capture_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, screen_capture_icon_index, &icones.screen_capture, instance, clipped_for(screen_capture_icon_index));
             }
             if let Some(instance) = &minuteur_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, minuteur_icon_index, &icones.minuteur, instance, clipped_for(minuteur_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, minuteur_icon_index, &icones.minuteur, instance, clipped_for(minuteur_icon_index));
             }
             if let Some(instance) = &surveillance_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, surveillance_icon_index, &icones.surveillance, instance, clipped_for(surveillance_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, surveillance_icon_index, &icones.surveillance, instance, clipped_for(surveillance_icon_index));
             }
             if let Some(instance) = &windows_update_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, windows_update_icon_index, &icones.windows_update, instance, clipped_for(windows_update_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, windows_update_icon_index, &icones.windows_update, instance, clipped_for(windows_update_icon_index));
             }
             if let Some(instance) = &device_manager_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, device_manager_icon_index, &icones.device_manager, instance, clipped_for(device_manager_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, device_manager_icon_index, &icones.device_manager, instance, clipped_for(device_manager_icon_index));
             }
             if let Some(instance) = &display_settings_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, display_settings_icon_index, &icones.display_settings, instance, clipped_for(display_settings_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, display_settings_icon_index, &icones.display_settings, instance, clipped_for(display_settings_icon_index));
             }
             if let Some(instance) = &calculatrice_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, calculatrice_icon_index, &icones.calculatrice, instance, clipped_for(calculatrice_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, calculatrice_icon_index, &icones.calculatrice, instance, clipped_for(calculatrice_icon_index));
             }
             if let Some(instance) = &ssh_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, ssh_icon_index, &icones.ssh, instance, clipped_for(ssh_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, ssh_icon_index, &icones.ssh, instance, clipped_for(ssh_icon_index));
             }
             if let Some(instance) = &couleurs_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, couleurs_icon_index, &icones.couleurs, instance, clipped_for(couleurs_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, couleurs_icon_index, &icones.couleurs, instance, clipped_for(couleurs_icon_index));
             }
             if let Some(instance) = &optional_features_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, optional_features_icon_index, &icones.optional_features, instance, clipped_for(optional_features_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, optional_features_icon_index, &icones.optional_features, instance, clipped_for(optional_features_icon_index));
             }
             if let Some(instance) = &notifications_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, notifications_icon_index, &icones.notifications, instance, clipped_for(notifications_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, notifications_icon_index, &icones.notifications, instance, clipped_for(notifications_icon_index));
             }
             if let Some(instance) = &recherche_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, recherche_icon_index, &icones.recherche, instance, clipped_for(recherche_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, recherche_icon_index, &icones.recherche, instance, clipped_for(recherche_icon_index));
             }
             if let Some(instance) = &automatisations_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, automatisations_icon_index, &icones.automatisations, instance, clipped_for(automatisations_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, automatisations_icon_index, &icones.automatisations, instance, clipped_for(automatisations_icon_index));
             }
             if let Some(instance) = &meteo_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, meteo_icon_index, &icones.meteo, instance, clipped_for(meteo_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, meteo_icon_index, &icones.meteo, instance, clipped_for(meteo_icon_index));
             }
             // ⛔ **SANS CE BLOC, L'APPLET N'A PAS D'ICÔNE** — et le symptôme est
             // exactement celui-là : elle occupe sa place dans la barre, elle répond
@@ -17065,53 +17106,53 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // (Manqué une fois — voir `neuradesk-ajouter-une-applet-action` : le
             // câblage se COPIE, il ne se récite pas.)
             if let Some(instance) = &aide_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, aide_icon_index, &icones.aide, instance, clipped_for(aide_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, aide_icon_index, &icones.aide, instance, clipped_for(aide_icon_index));
             }
             if let Some(instance) = &verrouillage_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, verrouillage_icon_index, &icones.verrouillage, instance, clipped_for(verrouillage_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, verrouillage_icon_index, &icones.verrouillage, instance, clipped_for(verrouillage_icon_index));
             }
             if let Some(instance) = &caracteres_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, caracteres_icon_index, &icones.caracteres, instance, clipped_for(caracteres_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, caracteres_icon_index, &icones.caracteres, instance, clipped_for(caracteres_icon_index));
             }
             if let Some(instance) = &kaomoji_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, kaomoji_icon_index, &icones.kaomoji, instance, clipped_for(kaomoji_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, kaomoji_icon_index, &icones.kaomoji, instance, clipped_for(kaomoji_icon_index));
             }
             if let Some(instance) = &proprietes_systeme_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, proprietes_systeme_icon_index, &icones.proprietes_systeme, instance, clipped_for(proprietes_systeme_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, proprietes_systeme_icon_index, &icones.proprietes_systeme, instance, clipped_for(proprietes_systeme_icon_index));
             }
             // ⛔ **LES DEUX MOITIÉS — L'INSTANCE *ET* LE DESSIN.** L'aide a appris
             // ça à ses dépens : l'instance seule ne dessine RIEN, et l'omission
             // compile sans un mot (voir la mémoire du dépôt).
             if let Some(instance) = &scanner_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, scanner_icon_index, &icones.scanner, instance, clipped_for(scanner_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, scanner_icon_index, &icones.scanner, instance, clipped_for(scanner_icon_index));
             }
             if let Some(instance) = &shaders_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, shaders_icon_index, &icones.shaders, instance, clipped_for(shaders_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, shaders_icon_index, &icones.shaders, instance, clipped_for(shaders_icon_index));
             }
             if let Some(instance) = &phonetique_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, phonetique_icon_index, &icones.phonetique, instance, clipped_for(phonetique_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, phonetique_icon_index, &icones.phonetique, instance, clipped_for(phonetique_icon_index));
             }
             if let Some(instance) = &maths_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, maths_icon_index, &icones.maths, instance, clipped_for(maths_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, maths_icon_index, &icones.maths, instance, clipped_for(maths_icon_index));
             }
             if let Some(instance) = &lueurs_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, lueurs_icon_index, &icones.lueurs, instance, clipped_for(lueurs_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, lueurs_icon_index, &icones.lueurs, instance, clipped_for(lueurs_icon_index));
             }
             if let Some(instance) = &textures_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, textures_icon_index, &icones.textures, instance, clipped_for(textures_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, textures_icon_index, &icones.textures, instance, clipped_for(textures_icon_index));
             }
             if let Some(instance) = &narrateur_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, narrateur_icon_index, &icones.narrateur, instance, clipped_for(narrateur_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, narrateur_icon_index, &icones.narrateur, instance, clipped_for(narrateur_icon_index));
             }
             if let Some(instance) = &loupe_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, loupe_icon_index, &icones.loupe, instance, clipped_for(loupe_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, loupe_icon_index, &icones.loupe, instance, clipped_for(loupe_icon_index));
             }
             if let Some(instance) = &observateur_evenements_instance {
                 push_dock_icon(
                     &mut batches,
                     &mut differes,
                     &mut hover_icon,
-                    magnified,
+                    premier_plan,
                     observateur_evenements_icon_index,
                     &icones.observateur_evenements,
                     instance,
@@ -17123,7 +17164,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     &mut batches,
                     &mut differes,
                     &mut hover_icon,
-                    magnified,
+                    premier_plan,
                     enregistrer_icon_index,
                     &icones.enregistrer,
                     instance,
@@ -17135,7 +17176,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     &mut batches,
                     &mut differes,
                     &mut hover_icon,
-                    magnified,
+                    premier_plan,
                     clavier_icon_index,
                     &icones.clavier,
                     instance,
@@ -17147,7 +17188,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     &mut batches,
                     &mut differes,
                     &mut hover_icon,
-                    magnified,
+                    premier_plan,
                     jeu2048_icon_index,
                     &icones.jeu2048,
                     instance,
@@ -17159,7 +17200,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     &mut batches,
                     &mut differes,
                     &mut hover_icon,
-                    magnified,
+                    premier_plan,
                     cinq_ou_plus_icon_index,
                     &icones.cinq_ou_plus,
                     instance,
@@ -17171,7 +17212,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     &mut batches,
                     &mut differes,
                     &mut hover_icon,
-                    magnified,
+                    premier_plan,
                     quadrapassel_icon_index,
                     &icones.quadrapassel,
                     instance,
@@ -17183,7 +17224,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     &mut batches,
                     &mut differes,
                     &mut hover_icon,
-                    magnified,
+                    premier_plan,
                     lightsoff_icon_index,
                     &icones.lightsoff,
                     instance,
@@ -17195,7 +17236,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     &mut batches,
                     &mut differes,
                     &mut hover_icon,
-                    magnified,
+                    premier_plan,
                     reversi_icon_index,
                     &icones.reversi,
                     instance,
@@ -17207,7 +17248,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     &mut batches,
                     &mut differes,
                     &mut hover_icon,
-                    magnified,
+                    premier_plan,
                     bovo_icon_index,
                     &icones.bovo,
                     instance,
@@ -17219,7 +17260,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     &mut batches,
                     &mut differes,
                     &mut hover_icon,
-                    magnified,
+                    premier_plan,
                     patience_icon_index,
                     &icones.patience,
                     instance,
@@ -17227,10 +17268,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 );
             }
             if let Some(instance) = &moniteur_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, moniteur_icon_index, &icones.moniteur, instance, clipped_for(moniteur_icon_index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, moniteur_icon_index, &icones.moniteur, instance, clipped_for(moniteur_icon_index));
             }
             if let Some(instance) = &settings_render_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, SETTINGS_ICON_INDEX, &icones.settings, instance, clipped_for(SETTINGS_ICON_INDEX));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, SETTINGS_ICON_INDEX, &icones.settings, instance, clipped_for(SETTINGS_ICON_INDEX));
             }
             if let (Some((texture, ..)), Some(instance)) = (&clock_texture, &clock_instance) {
                 // Sauf magnifiée : elle est alors poussée en DERNIER, pour
@@ -17285,7 +17326,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         &layout,
                     ),
                     effective_topbar_text_color,
-                    show_desktop_scale,
+                    // Avancement du survol, pas l'échelle : voir `hover_wobble_angle`.
+                    topbar_hover.hover(3),
                 )
             });
             // L'INSTANCE EST CONSTRUITE ICI MAIS POUSSÉE EN DERNIER, juste avant
@@ -17307,7 +17349,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             let clipboard_viewer_render_instance =
                 dock.external_glyph_instance(CLIPBOARD_VIEWER_ICON_INDEX, &layout, effective_topbar_text_color);
             if let Some(instance) = &clipboard_viewer_render_instance {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, CLIPBOARD_VIEWER_ICON_INDEX, &icones.clipboard, instance, clipped_for(CLIPBOARD_VIEWER_ICON_INDEX));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, CLIPBOARD_VIEWER_ICON_INDEX, &icones.clipboard, instance, clipped_for(CLIPBOARD_VIEWER_ICON_INDEX));
             }
 
             // Icônes des applications épinglées (voir `pinned_apps`) — même
@@ -17324,7 +17366,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 .collect();
             for (i, instance) in pinned_render_instances.iter().enumerate() {
                 if let (Some(texture), Some(instance)) = (&pinned_icon_textures[i], instance) {
-                    push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, PINNED_ICON_BASE + i, texture, instance, clipped_for(PINNED_ICON_BASE + i));
+                    push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, PINNED_ICON_BASE + i, texture, instance, clipped_for(PINNED_ICON_BASE + i));
                 }
             }
 
@@ -17342,7 +17384,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             for (i, instance) in winpin_render_instances.iter().enumerate() {
                 let Some(index) = dock.emplacement(crate::ui::dock::Plage::WinPins, i) else { continue };
                 if let (Some(texture), Some(instance)) = (&winpin_icon_textures[i], instance) {
-                    push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, index, texture, instance, clipped_for(index));
+                    push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, index, texture, instance, clipped_for(index));
                 }
             }
 
@@ -17368,7 +17410,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 let Some(index) = dock.emplacement(crate::ui::dock::Plage::Dossiers, i) else { continue };
                 let vignette = emplacements_dossiers.vignettes.get(i).and_then(|t| t.as_ref());
                 if let (Some(texture), Some(instance)) = (vignette, instance) {
-                    push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, index, texture, instance, clipped_for(index));
+                    push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, index, texture, instance, clipped_for(index));
                 }
             }
             // LA VIGNETTE DE SUBSTITUTION des dossiers qui n'en ont pas encore —
@@ -17386,7 +17428,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 let Some(index) = dock.emplacement(crate::ui::dock::Plage::Dossiers, i) else { continue };
                 let remplacement = emplacements_dossiers.remplacements.get(i).and_then(|t| t.as_ref());
                 if let (Some(texture), Some(instance)) = (remplacement, instance) {
-                    push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, index, texture, instance, clipped_for(index));
+                    push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, index, texture, instance, clipped_for(index));
                 }
             }
             // Le bouton « + », en fin de plage (voir `plus_dossier_index`).
@@ -17421,7 +17463,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 ))
             });
             if let (Some((index, instance)), Some(texture)) = (plus_instance.as_ref(), &plus_dossier_texture) {
-                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, *index, texture, instance, clipped_for(*index));
+                push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, *index, texture, instance, clipped_for(*index));
             }
             // ⛔ **PAS DE TEXTE SOUS LA VIGNETTE — DEMANDE EXPLICITE.**
             //
@@ -17452,7 +17494,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 for (i, instance) in dynamic_render_instances.iter().enumerate() {
                     let texture = dynamic_icon_textures.get(i).and_then(|texture| texture.as_ref());
                     if let (Some(texture), Some(instance)) = (texture, instance) {
-                        push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, base + i, texture, instance, clipped_for(base + i));
+                        push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, base + i, texture, instance, clipped_for(base + i));
                     }
                 }
             }
@@ -17474,7 +17516,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 for (offset, instance) in tray_render_instances.iter().enumerate() {
                     let texture = tray_icon_textures.get(offset).and_then(|texture| texture.as_ref());
                     if let (Some(texture), Some(instance)) = (texture, instance) {
-                        push_dock_icon(&mut batches, &mut differes, &mut hover_icon, magnified, base + offset, texture, instance, clipped_for(base + offset));
+                        push_dock_icon(&mut batches, &mut differes, &mut hover_icon, premier_plan, base + offset, texture, instance, clipped_for(base + offset));
                     }
                 }
             }
@@ -17585,20 +17627,35 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // ouverts ». Choix de l'utilisateur : épinglés fermés + applets
             // fermées, carré arrondi autour de l'icône (voir `icone_fermee`).
             //
-            // **APRÈS `premier_lot_libre`, JUSTE AVANT l'icône magnifiée** :
-            // d'une part il doit sortir de la barre avec elle quand on survole
-            // une icône de la barre du haut masquée (les lots d'avant sont
-            // découpés), d'autre part il doit rester DESSOUS — il n'est poussé
-            // que maintenant, donc l'icône le recouvre. Le fond est un aplat
-            // dont l'alpha se compose sur la barre déjà peinte (voir
+            // **APRÈS `premier_lot_libre`, JUSTE AVANT l'icône au premier
+            // plan** : d'une part il doit sortir de la barre avec elle quand on
+            // survole une icône de la barre du haut masquée (les lots d'avant
+            // sont découpés), d'autre part il doit rester DESSOUS — il n'est
+            // poussé que maintenant, donc l'icône le recouvre. Le fond est un
+            // aplat dont l'alpha se compose sur la barre déjà peinte (voir
             // `icon_halo_for`, même forme que le fond animé du logo) : il suit
-            // la magnification et le balancement de l'icône.
+            // la magnification, le balancement et l'ÉTENDUE réglée.
             //
-            // Il n'y a qu'une icône magnifiée : une seule requête par frame,
-            // et seulement quand le réglage est actif.
-            if let (Some(fond), Some(index)) = (dock::survol_fond(), magnified) {
+            // Il n'y a qu'une icône au premier plan : une seule requête par
+            // frame, et seulement quand le réglage est actif. **`premier_plan`,
+            // et non la seule icône MAGNIFIÉE** : c'est ce qui fait apparaître le
+            // fond à magnification 100 %, où l'icône ne grossit pas mais est
+            // survolée (DEMANDE EXPLICITE : « indépendant de la magnification »).
+            //
+            // La TAILLE de l'effet (voir `dock::survol_fond_taille`) est lue ici
+            // par `icon_halo_for` ; la même étendue est réunie à la boîte de
+            // RÉGION dans `Dock::magnified_boxes`, sinon un fond agrandi serait
+            // rogné par le bord de la fenêtre.
+            if let (Some(fond), Some(index)) = (dock::survol_fond(), premier_plan) {
                 if icone_fermee(&dock, index, &pinned_running, &winpin_running) {
-                    fond_survol_instance = dock::icon_halo_for(&dock, &layout, index, false, fond);
+                    fond_survol_instance = dock::icon_halo_for(
+                        &dock,
+                        &layout,
+                        index,
+                        false,
+                        fond,
+                        dock::survol_fond_taille(),
+                    );
                 }
             }
             if let Some(instance) = &fond_survol_instance {
@@ -18604,21 +18661,6 @@ fn dash_screen_origin_layout(
 /// libre. Les barres gauche/droite ont leur propre équivalent, `ui::dock::
 /// Dock::side_at`, plus simple car leurs seuls éléments cliquables (les
 /// icônes) passent déjà par `Dock::icon_at`.
-/// Union de deux rectangles `[x, y, largeur, hauteur]`.
-///
-/// Sert à la boîte de DÉBORDEMENT (voir `Window::set_overflow`) : ce sont
-/// plusieurs icônes qui peuvent être magnifiées au même instant — le temps que
-/// l'animation croise entre celle qu'on quitte et celle qu'on survole — et la
-/// région doit couvrir LES DEUX, sans quoi elle rognerait celle qu'elle ne
-/// couvre pas.
-fn union_rect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
-    let x = a[0].min(b[0]);
-    let y = a[1].min(b[1]);
-    let right = (a[0] + a[2]).max(b[0] + b[2]);
-    let bottom = (a[1] + a[3]).max(b[1] + b[3]);
-    [x, y, right - x, bottom - y]
-}
-
 /// Échelles de survol des HUIT éléments magnifiables de la barre du haut, pour les
 /// tests de clic — dans l'ordre des trois boutons média (précédent / lecture-pause
 /// / suivant), PUIS l'horloge (voir `topbar::HOVER_CLOCK_INDEX`), PUIS l'icône

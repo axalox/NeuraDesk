@@ -965,6 +965,184 @@
   .voir-aussi-lien:hover {
     background: rgba(var(--popup-fg-rgb), calc(0.13 * var(--popup-fond-alpha, 1)));
   }
+
+  /* ⭐ LES ONGLETS GLISSENT — DEMANDE EXPLICITE (2026-11-12) : « utiliser
+     Modern Web Guidance pour améliorer l'aspect ». Le trait d'accent ne saute
+     plus d'un onglet à l'autre : il est tiré par celui qui est choisi
+     (`anchor-name`) et `transition: inset` l'y amène.
+     - ⛔ PAS de `position-area` pour le poser : cette propriété ne s'interpole
+       pas, le trait sauterait — d'où les `anchor()` dans `inset`, qui, eux,
+       s'interpolent.
+     - Le trait est un pseudo-ÉLÉMENT du conteneur : aucun nœud ajouté au DOM,
+       et il ne peut pas se retrouver « entre » deux onglets lors d'un
+       `replaceChildren()` (`renderMainTabs` reconstruit la rangée à chaque
+       changement).
+     - La bordure de l'onglet choisi reste en place mais devient TRANSPARENTE :
+       elle garde sa place dans la boîte (la rangée ne saute pas d'un pixel) et
+       c'est le pseudo-élément qu'on voit.
+     - `display: none` quand rien n'est choisi (première frame, ou rangée
+       cachée) : sans ancre, un pseudo-élément positionné resterait planté à
+       l'origine du conteneur. */
+  #main-tabs {
+    position: relative;
+  }
+  #main-tabs button.selected {
+    anchor-name: --nd-onglet;
+  }
+  /* ⚠️ La bordure ne s'efface que si les ancres sont comprises (`@supports`) :
+     sans elles, le trait n'existerait pas et l'onglet courant serait nu. */
+  @supports (anchor-name: --nd-sonde) {
+    #main-tabs button.selected {
+      border-bottom-color: transparent;
+    }
+  }
+  #main-tabs::after {
+    content: "";
+    position: absolute;
+    position-anchor: --nd-onglet;
+    inset-block-start: calc(anchor(bottom) - 3px);
+    inset-inline-start: anchor(left);
+    inset-inline-end: anchor(right);
+    /* ⛔ Une BORDURE, pas un fond : le mode « couleurs forcées » de Windows
+       supprime les fonds et les ombres, pas les bordures — le trait resterait
+       alors invisible, donc absent, alors qu'il indique l'onglet courant. */
+    block-size: 0;
+    border-block-end: 3px solid rgb(var(--popup-accent-solid-rgb));
+    /* Même arrondi que la bordure qu'il remplace : sans lui, les bouts du
+       trait passeraient de ronds à coupés. */
+    border-radius: var(--nd-rayon-controle);
+    transition: inset 0.22s ease;
+  }
+  #main-tabs:not(:has(button.selected))::after {
+    display: none;
+  }
+
+  /* La MÊME mécanique pour les sous-onglets, sauf que ce qui glisse est la
+     pastille de fond (ils n'ont pas de trait) : un pseudo-élément derrière les
+     boutons (`z-index: -1`), à la taille exacte de celui qui est choisi. */
+  #group-tabs {
+    position: relative;
+    isolation: isolate;
+  }
+  #group-tabs button.selected {
+    anchor-name: --nd-sous-onglet;
+  }
+  @supports (anchor-name: --nd-sonde) {
+    #group-tabs button.selected {
+      background: transparent;
+    }
+  }
+  #group-tabs button {
+    position: relative;
+    z-index: 1;
+  }
+  #group-tabs::before {
+    content: "";
+    position: absolute;
+    position-anchor: --nd-sous-onglet;
+    inset-block-start: anchor(top);
+    inset-block-end: anchor(bottom);
+    inset-inline-start: anchor(left);
+    inset-inline-end: anchor(right);
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-accent-rgb), calc(0.26 * var(--popup-fond-alpha, 1)));
+    transition: inset 0.22s ease;
+    z-index: -1;
+  }
+  #group-tabs:not(:has(button.selected))::before {
+    display: none;
+  }
+
+  /* ⭐ LES ÉTIQUETTES DE THÈME NE SE COUPENT PLUS EN DEUX — DEMANDE EXPLICITE
+     (2026-11-12). Les tuiles font 108 px et leur libellé est coupé à 30 px de
+     haut (`overflow: hidden`) : une troisième ligne disparaît. `balance`
+     partage la coupure en lignes de longueur voisine, donc « Material You
+     (fond d'écran) sombre » tient en deux lignes égales au lieu de déborder. */
+  .theme-swatch .name {
+    text-wrap: balance;
+  }
+
+  /* ⭐ LE RYTHME VERTICAL DES RÉGLAGES — DEMANDE EXPLICITE (2026-11-12) :
+     « harmonise les espaces entre les éléments dans le dash réglages, certains
+     éléments sont collés les uns aux autres ». Le problème n'était pas UN
+     réglage mais l'ABSENCE de règle : les sections n'avaient aucun rythme, et
+     chaque bloc apportait sa marge au hasard (0 pour un `.row`, 2 px pour un
+     `.small-label`, 4 px pour un `.hint`). Résultat mesuré sur capture : deux
+     curseurs successifs se touchaient, et « FOND » ou « MES COULEURS »
+     collaient au contrôle d'en dessous.
+     Une échelle de QUATRE valeurs, et tout le panneau s'y range :
+       3 px  — un libellé et SON contrôle (ils forment un seul objet) ;
+       6 px  — une explication et ce qu'elle explique ;
+      12 px  — deux réglages distincts ;
+      18 px  — avant un sous-titre qui ouvre un groupe.
+     ⚠️ Les marges verticales de blocs FRÈRES se FUSIONNENT : la plus grande
+     l'emporte, elles ne s'additionnent pas. C'est ce qui permet d'écrire
+     « au moins 12 px » sans compter ce que chaque bloc pose déjà. */
+  :root {
+    --espace-controle: 3px;
+    --espace-proche: 6px;
+    --espace-bloc: 12px;
+    --espace-groupe: 18px;
+  }
+  /* Le libellé d'un curseur (`slider()` pose un `.row` avec son `<h2>`, puis un
+     second `.row` avec le `<input>`) reste collé à son curseur — et un libellé
+     de couleur, qui précède un `.picker` et non un `.row`, reste collé à son
+     sélecteur. Les deux règles nomment donc leur contrôle : un `+ *` nu serait
+     moins SPÉCIFIQUE que `.row + .row` ci-dessous et perdrait contre lui. */
+  .section > .row:has(> h2) + .row,
+  .section > .row:has(> h2) + .picker {
+    margin-block-start: var(--espace-controle);
+  }
+  /* …et deux réglages distincts se détachent. `label.check` et `.zone-row`
+     sont des LISTES (une ligne par élément, séparées d'un filet) : elles
+     gardent leur pas serré, c'est ce qui les fait lire comme une liste. */
+  .section > .row + .row {
+    margin-block-start: var(--espace-bloc);
+  }
+  /* Une explication se colle à ce qu'elle explique (6 px) et se détache de la
+     suite (12 px). Deux explications qui se suivent respirent un peu. */
+  .section > p.hint {
+    margin-block-start: var(--espace-proche);
+  }
+  .section > p.hint + * {
+    margin-block-start: var(--espace-bloc);
+  }
+  .section > p.hint + p.hint {
+    margin-block-start: var(--espace-proche);
+  }
+  /* Un sous-titre ouvre un groupe : plus d'air AU-DESSUS que dessous. */
+  .section > .small-label {
+    margin-block-start: var(--espace-groupe);
+    margin-block-end: var(--espace-proche);
+  }
+  .section > .row.heading-row {
+    margin-block-start: var(--espace-groupe);
+  }
+  /* Le sélecteur de couleur est UN objet : ses morceaux (carré, bande de
+     teinte, boutons, nuancier, « Mes couleurs ») sont espacés par une seule
+     règle, pas par cinq marges qui se contredisaient. */
+  .picker {
+    display: flex;
+    flex-direction: column;
+    gap: var(--espace-bloc);
+  }
+  .picker .gradient-picker,
+  .picker .swatch-grid,
+  .picker .small-label {
+    margin-block: 0;
+  }
+
+  /* ⭐ LE CHANGEMENT D'ONGLET SE FOND — `startViewTransition` (voir
+     `avecTransition` plus bas) : l'ancienne image et la nouvelle se croisent
+     au lieu de se remplacer d'un coup. La durée est posée ici, pas dans le
+     JS ; mouvement réduit ⇒ aucun fondu (voir la règle globale de
+     `style.css`, qui ramène toute durée à 1 ms). */
+  @media (prefers-reduced-motion: no-preference) {
+    ::view-transition-old(root),
+    ::view-transition-new(root) {
+      animation-duration: 160ms;
+    }
+  }
 </style>
 </head>
 <body>
@@ -3310,6 +3488,26 @@
       renderScroll();
     }
 
+    // ⭐ LE FONDU CROISÉ D'UN CHANGEMENT D'ONGLET (View Transitions API) —
+    // DEMANDE EXPLICITE (2026-11-12) : « utiliser Modern Web Guidance pour
+    // améliorer l'aspect ». `startViewTransition` photographie la page, exécute
+    // la fonction, puis croise l'ancienne image et la nouvelle : le fondu est
+    // une CONSÉQUENCE du nouveau rendu, il n'y a aucune animation à entretenir
+    // en parallèle des reconstructions. ⛔ Le fondu ne doit jamais retarder la
+    // pose de l'état : la fonction `fn` s'exécute SYNCHRONEMENT, avant que
+    // quoi que ce soit soit peint. Sans l'API (vieux Chromium) ou avec
+    // « Effets d'animation » coupé, on appelle simplement `fn`.
+    function avecTransition(fn) {
+      const demarrer = document.startViewTransition;
+      if (!demarrer || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        fn();
+        return;
+      }
+      // `.call(document, …)` — l'API refuse d'être détachée de son document
+      // (« Illegal invocation »).
+      demarrer.call(document, fn);
+    }
+
     // La rangée de SOUS-ONGLETS (groupes), sous l'onglet « Interface ». Cachée
     // pour les onglets d'écran — leurs sections ne sont pas groupées. Cliquer un
     // groupe POSE LE FILTRE sans tout reconstruire : il efface la recherche (pour
@@ -3327,14 +3525,19 @@
         container.appendChild(
           el("button", {
             class: activeGroup === id ? "selected" : "",
+            // La pastille qui glisse ne dit rien à un lecteur d'écran : l'état
+            // est AUSSI dans l'arbre d'accessibilité.
+            "aria-pressed": activeGroup === id ? "true" : "false",
             onclick: () => {
               if (activeGroup === id) return;
-              activeGroup = id;
-              const champ = document.getElementById("category-search");
-              if (champ) champ.value = "";
-              renderGroupTabs();
-              renderCategoryNav();
-              document.getElementById("scroll").scrollTop = 0;
+              avecTransition(() => {
+                activeGroup = id;
+                const champ = document.getElementById("category-search");
+                if (champ) champ.value = "";
+                renderGroupTabs();
+                renderCategoryNav();
+                document.getElementById("scroll").scrollTop = 0;
+              });
             },
           }, [el("span", { class: `ico ico-${ico}` }), el("span", {}, [nom])]),
         );
@@ -3364,7 +3567,7 @@
       }
       const addTab = (key, label) => {
         container.appendChild(
-          el("button", { class: activeMainTab === key ? "selected" : "", onclick: () => { activeMainTab = key; rebuild(); } }, [label]),
+          el("button", { class: activeMainTab === key ? "selected" : "", "aria-pressed": activeMainTab === key ? "true" : "false", onclick: () => avecTransition(() => { activeMainTab = key; rebuild(); }) }, [label]),
         );
       };
       addTab("interface", "Interface");
@@ -5366,6 +5569,16 @@
       section(scroll, (box) => {
         box.appendChild(el("h2", {}, ["Survol et magnification"]));
         slider(box, { label: "Magnification au survol", min: 100, max: 250, value: state.hoverScalePercent, valueLabel: (v) => v + "%", dataKey: "hover-scale", onInput: (v) => go("hover-scale", v) });
+        // LE BALANCEMENT AU SURVOL — **INDÉPENDANT DE LA MAGNIFICATION** (DEMANDE
+        // EXPLICITE, 2026-11-12) : « un réglage supplémentaire qui permette de
+        // gérer le balancement de l'icône indépendant de la magnification quand
+        // un élément est survolé ». À 0 % l'élément grandit sans tourner ; à
+        // 100 % il balance à pleine amplitude, MÊME quand la magnification
+        // ci-dessus vaut 100 % (il faut alors de la place autour de lui : au
+        // bord de l'écran, un coin peut être coupé). Le texte des horloges suit
+        // le même pourcentage, avec son amplitude propre, plus douce.
+        slider(box, { label: "Balancement au survol", min: 0, max: 100, value: state.hoverSwayPercent, valueLabel: (v) => v + "%", dataKey: "hover-sway", onInput: (v) => go("hover-sway", v) });
+        box.appendChild(el("p", { class: "hint" }, ["Indépendant de la magnification : à 100 %, l'élément se balance même s'il ne grossit pas — il lui faut alors de la place autour de lui, et au bord de l'écran un coin peut être coupé. À 0 %, il ne tourne plus du tout. Vaut aussi pour le texte des horloges, qui garde une amplitude plus douce."]));
         slider(box, { label: "Vitesse d'approche", min: 2, max: 60, value: state.hoverEaseSpeed, valueLabel: (v) => String(v), dataKey: "hover-ease-speed", onInput: (v) => go("hover-ease-speed", v) });
         // LE DÉCALAGE DES ICÔNES AGRANDIES — **UN RÉGLAGE PAR BARRE.** DEMANDE
         // EXPLICITE, en trois temps : « je veux que le décalage ... se décalent et
@@ -5435,7 +5648,16 @@
           box.appendChild(el("div", { class: "label" }, ["Couleur du fond"]));
           colorPicker(box, "survol", state.survolFondColor);
           slider(box, { label: "Opacité du fond", min: 0, max: 100, value: state.survolFondOpacitePercent, valueLabel: (v) => v + "%", dataKey: "survol-fond-opacite", onInput: (v) => go("survol-fond-opacite", v) });
-          box.appendChild(el("p", { class: "hint" }, ["100 % est un aplat derrière l'icône ; 0 % le rend invisible, comme si la case était décochée. La couleur et l'opacité sont conservées quand on décoche."]));
+          // LA TAILLE DE L'EFFET — DEMANDE EXPLICITE (2026-11-13) : « gérer la
+          // couleur d'accentuation de l'icône indépendant de la magnification
+          // quand un élément est survolé et pouvoir gérer la taille de l'effet ».
+          // 100 % = l'apparence d'avant (une demi-case d'écartement de chaque
+          // côté) ; 0 % = le carré de l'icône, sans marge ; au-delà, le fond
+          // déborde davantage — et la région de la fenêtre suit, donc rien n'est
+          // rogné. Le fond apparaît désormais MÊME quand l'icône ne grossit pas.
+          slider(box, { label: "Taille de l'effet", min: 0, max: 300, value: state.survolFondTaillePercent, valueLabel: (v) => v + "%", dataKey: "survol-fond-taille", onInput: (v) => go("survol-fond-taille", v) });
+          box.appendChild(el("p", { class: "hint" }, ["Indépendant de la magnification : le fond apparaît aussi quand l'icône ne grossit pas. À 100 %, il garde l'étendue d'origine ; au-delà, il déborde davantage autour de l'icône."]));
+          box.appendChild(el("p", { class: "hint" }, ["0 % le place exactement derrière l'icône, sans aucun débord ; 100 % est l'étendue d'origine. La couleur et l'opacité sont conservées quand on décoche la case."]));
         }
         voirAussi(box, ["Zone de notification"]);
       });
@@ -6233,6 +6455,7 @@
       // Ordre du DOM : "Survol et magnification" se place juste après "Menus"
       // ci-dessus (voir sa `section`).
       updateSlider("hover-scale", state.hoverScalePercent, (v) => v + "%");
+      updateSlider("hover-sway", state.hoverSwayPercent, (v) => v + "%");
       updateSlider("hover-ease-speed", state.hoverEaseSpeed, (v) => String(v));
       const tirages = state.tiragesPercent || [100, 100, 100];
       TIRAGES.forEach(([cle], rang) => updateSlider("tirage-" + cle, tirages[rang], (v) => v + "%"));
@@ -6242,6 +6465,7 @@
       // fait rien — la section n'est reconstruite qu'au changement de
       // structure, et c'est `survolFondActif` qui la déclenche.
       updateSlider("survol-fond-opacite", state.survolFondOpacitePercent, (v) => v + "%");
+      updateSlider("survol-fond-taille", state.survolFondTaillePercent, (v) => v + "%");
       // La pression sur le processeur et le GPU (voir sa section). Le profil
       // peut devenir "" quand un curseur est déplacé : `updateSegmented` éteint
       // alors tous les boutons, ce qui est exactement ce qu'il faut dire.

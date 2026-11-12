@@ -3175,6 +3175,22 @@ pub fn save_hover_ease_speed(speed: f32) {
     write_config("hover_ease_speed.txt", speed.to_string());
 }
 
+/// Relit **l'AMPLEUR DU BALANCEMENT AU SURVOL** (voir `ui::dock::hover_sway`) —
+/// `None` tant que l'utilisateur n'a jamais touché le curseur, auquel cas c'est
+/// `ui::dock::DEFAULT_HOVER_SWAY` qui s'applique. Même convention que
+/// `load_hover_scale` : un flottant dans son propre fichier.
+pub fn load_hover_sway() -> Option<f32> {
+    read_config_floats("hover_sway.txt")?.first().copied()
+}
+
+/// Sauvegarde l'ampleur du balancement au survol, reprise au prochain lancement
+/// (voir `load_hover_sway`). La valeur écrite est celle DÉJÀ BORNÉE par
+/// `ui::dock::set_hover_sway`, jamais le pourcentage reçu du panneau — comme
+/// `save_hover_scale`.
+pub fn save_hover_sway(sway: f32) {
+    write_config("hover_sway.txt", sway.to_string());
+}
+
 /// Relit le facteur de magnification au survol du TEXTE des horloges (voir
 /// `ui::dock::clock_hover_scale`) — réglage DISTINCT de celui des icônes, et
 /// même convention que `load_hover_scale` : `None` tant que l'utilisateur n'a
@@ -3222,6 +3238,24 @@ pub fn load_survol_fond() -> Option<(bool, [f32; 4])> {
 pub fn save_survol_fond(actif: bool, couleur: [f32; 4]) {
     let [r, g, b, a] = couleur;
     write_config("survol_fond.txt", format!("{},{r},{g},{b},{a}", u8::from(actif)));
+}
+
+/// Relit **LA TAILLE DU FOND AU SURVOL** (voir `ui::dock::survol_fond_taille`)
+/// — `None` tant que l'utilisateur n'a jamais touché le curseur, auquel cas
+/// c'est `ui::dock::DEFAULT_SURVOL_FOND_TAILLE` qui s'applique. Même convention
+/// que `load_hover_scale` : un flottant dans son propre fichier, DISTINCT de
+/// `survol_fond.txt` pour que les trois contrôles (case, couleur/opacité,
+/// taille) ne s'effacent pas l'un l'autre.
+pub fn load_survol_fond_taille() -> Option<f32> {
+    read_config_floats("survol_fond_taille.txt")?.first().copied()
+}
+
+/// Sauvegarde la taille du fond au survol, reprise au prochain lancement (voir
+/// `load_survol_fond_taille`). La valeur écrite est celle DÉJÀ BORNÉE par
+/// `ui::dock::set_survol_fond_taille`, jamais le pourcentage reçu du panneau —
+/// comme `save_hover_scale`.
+pub fn save_survol_fond_taille(taille: f32) {
+    write_config("survol_fond_taille.txt", taille.to_string());
 }
 
 /// **LA PRESSION SUR LE PROCESSEUR ET LE GPU** (voir `ui::performances`) :

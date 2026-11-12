@@ -1196,7 +1196,7 @@ impl DockInstance {
             // Échelle 1.0 EN DUR : un dock SECONDAIRE ne magnifie jamais, faute de
             // souris primaire (voir `app::topbar_hit_scales`, qui rend `[1.0; 8]`
             // dans ce cas). Le rectangle au repos est donc le rectangle dessiné.
-            topbar::show_desktop_instance(topbar::show_desktop_rect(&layout, top_left_offset), effective_topbar_text_color, 1.0)
+            topbar::show_desktop_instance(topbar::show_desktop_rect(&layout, top_left_offset), effective_topbar_text_color, 0.0)
         });
         if let Some(instance) = &show_desktop_instance {
             batches.push(QuadBatch::new(Some(&textures.show_desktop.srv), std::slice::from_ref(instance)));
@@ -1238,7 +1238,9 @@ impl DockInstance {
                         // ci-dessus : un écran secondaire ne magnifie jamais.
                         topbar::presented_bell_rect(topbar::bell_rect(&layout, w, h), 1.0, &layout),
                         couleur,
-                        1.0,
+                        // Balancement 0.0 : un écran secondaire ne reçoit
+                        // jamais la souris primaire, donc il ne se balance pas.
+                        0.0,
                     )
                 })
             })
@@ -1276,7 +1278,7 @@ impl DockInstance {
                         // Échelle 1.0 EN DUR : un écran secondaire ne magnifie jamais.
                         topbar::presented_note_rect(topbar::note_rect(&layout, w, h), 1.0, &layout),
                         couleur,
-                        1.0,
+                        0.0,
                     )
                 })
             })
@@ -1295,7 +1297,7 @@ impl DockInstance {
                     topbar::minuteur_instance(
                         topbar::presented_minuteur_rect(topbar::minuteur_rect(&layout, w, h), 1.0, &layout),
                         [c[0], c[1], c[2]],
-                        1.0,
+                        0.0,
                     )
                 })
             })
@@ -1309,7 +1311,7 @@ impl DockInstance {
             topbar::minuteur_instance(
                 topbar::presented_masque_rect(topbar::masque_rect(&layout, w, h), 1.0, &layout),
                 effective_topbar_text_color,
-                1.0,
+                0.0,
             )
         });
         if let Some(instance) = &masque_topbar_instance {
@@ -1364,6 +1366,8 @@ impl DockInstance {
                                 // dans ce cas. Le rectangle au repos est donc celui
                                 // qui est dessiné.
                                 1.0,
+                                // Balancement 0.0, pour la même raison.
+                                0.0,
                             )
                         })
                         .collect()

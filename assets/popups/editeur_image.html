@@ -145,6 +145,35 @@
   }
   #cote button { padding: 3px 6px; }
   .onglets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
+  /* ⭐ L'ONGLET QUI GLISSE — DEMANDE EXPLICITE (2026-11-12) : « utiliser Modern
+     Web Guidance pour améliorer l'aspect ». Même mécanique que le minuteur :
+     la pastille est un pseudo-élément du conteneur, tiré par l'onglet choisi
+     (`anchor-name`) et amené chez lui par `transition: inset`. Ici elle porte
+     aussi le filet, puisque `button.actif` en a un.
+     ⚠️ Fond et filet du bouton choisi ne s'effacent que si les ancres sont
+     comprises (`@supports`) : sans elles, l'onglet courant resterait nu. */
+  .onglets { position: relative; isolation: isolate; }
+  .onglets button { position: relative; z-index: 1; }
+  .onglets button.actif { anchor-name: --nd-onglet-editeur; }
+  .onglets::before {
+    content: "";
+    position: absolute;
+    position-anchor: --nd-onglet-editeur;
+    inset-block-start: anchor(top);
+    inset-block-end: anchor(bottom);
+    inset-inline-start: anchor(left);
+    inset-inline-end: anchor(right);
+    box-sizing: border-box;
+    border-radius: var(--nd-rayon-controle);
+    background: rgba(var(--popup-accent-rgb), calc(0.38 * var(--popup-fond-alpha, 1)));
+    border: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1)));
+    transition: inset 0.22s ease;
+    z-index: 0;
+  }
+  @supports (anchor-name: --nd-sonde) {
+    .onglets button.actif { background: transparent; border-color: transparent; }
+  }
+  .onglets:not(:has(button.actif))::before { display: none; }
   #calques, #geometrie, #fond { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
   #calques[hidden], #geometrie[hidden], #fond[hidden] { display: none; }
   #fond { overflow-y: auto; }
@@ -293,9 +322,9 @@
     </div>
     <aside id="cote">
       <div class="onglets">
-        <button data-onglet="calques" class="actif" title="Les calques de l'image">Calques</button>
-        <button data-onglet="geometrie" title="Pivoter, redimensionner, régler les couleurs">Image</button>
-        <button data-onglet="fond" title="Un fond de présentation : dégradé ou couleur, marge, coins arrondis, ombre">Fond</button>
+        <button data-onglet="calques" class="actif" aria-pressed="true" title="Les calques de l'image">Calques</button>
+        <button data-onglet="geometrie" aria-pressed="false" title="Pivoter, redimensionner, régler les couleurs">Image</button>
+        <button data-onglet="fond" aria-pressed="false" title="Un fond de présentation : dégradé ou couleur, marge, coins arrondis, ombre">Fond</button>
       </div>
       <div id="emoticones" hidden>
         <div class="titre-calques">Émoticônes</div>
@@ -1002,6 +1031,9 @@
   function montrerOnglet(nom) {
     for (const b of boutonsOnglets) {
       b.classList.toggle("actif", b.dataset.onglet === nom);
+      // La pastille ne dit rien à un lecteur d'écran : l'état est AUSSI dans
+      // l'arbre d'accessibilité.
+      b.setAttribute("aria-pressed", String(b.dataset.onglet === nom));
       $(b.dataset.onglet).hidden = b.dataset.onglet !== nom;
     }
   }
