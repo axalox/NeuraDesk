@@ -225,7 +225,7 @@
      libellé d'un curseur individuel (ex. "Icônes"/"Texte", voir `slider()`,
      qui utilise un `<h2>` comme cet en-tête de section) héritait de
      `.section h2` ci-dessus — DONC AUSSI GRAND/GRAS que le vrai titre de
-     section ("Taille du contenu des dashs") — alors que le sous-groupe
+     section ("Échelle de l'interface") — alors que le sous-groupe
      auquel il appartient (`.small-label`, "Dash"/"Presse-papiers"/
      "Réglages (ce panneau)" ci-dessous) restait, lui, minuscule et fondu :
      la hiérarchie visuelle attendue (titre > sous-groupe > libellé de
@@ -937,6 +937,34 @@
   input[type="range"]:hover::-webkit-slider-thumb {
     border-width: 4px;
   }
+  /* « Voir aussi » — un renvoi vers une rubrique voisine, sans dupliquer
+     aucun contrôle. Discret : c'est un raccourci, pas un réglage. */
+  .voir-aussi {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(var(--popup-fg-rgb), calc(0.16 * var(--popup-fond-alpha, 1)));
+  }
+  .voir-aussi-titre {
+    font-size: 12px;
+    opacity: calc(0.7 * max(1, var(--popup-alpha)));
+  }
+  .voir-aussi-lien {
+    padding: 3px 9px;
+    border-radius: var(--nd-rayon-controle);
+    border: 1px solid rgba(var(--popup-fg-rgb), calc(0.22 * var(--popup-fond-alpha, 1)));
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .voir-aussi-lien:hover {
+    background: rgba(var(--popup-fg-rgb), calc(0.13 * var(--popup-fond-alpha, 1)));
+  }
 </style>
 </head>
 <body>
@@ -1038,10 +1066,12 @@
     // tous les groupes, voir le prédicat de groupe qui s'efface dès qu'on cherche).
     const GROUPES = [
       { id: "apparence", nom: "Apparence", ico: "palette" },
-      { id: "barres", nom: "Barres & dock", ico: "squares-four" },
-      { id: "fenetres", nom: "Fenêtres & bureaux", ico: "app-window" },
-      { id: "horloge", nom: "Horloge & infos", ico: "clock" },
+      { id: "barres", nom: "Barres et dock", ico: "squares-four" },
+      { id: "fenetres", nom: "Fenêtres et bureaux", ico: "app-window" },
+      { id: "widgets", nom: "Widgets", ico: "clock" },
+      { id: "notifications", nom: "Notifications", ico: "bell" },
       { id: "terminaux", nom: "Terminaux", ico: "terminal-window" },
+      { id: "captures", nom: "Captures et partage", ico: "eye" },
       { id: "systeme", nom: "Système", ico: "gear" },
     ];
     // Le groupe d'une catégorie d'après son libellé — règles ORDONNÉES, première
@@ -1049,23 +1079,34 @@
     // réel, pas juste le mot : « Horloge plein écran » est un widget d'HORLOGE (sa
     // règle passe avant « plein écran » des fenêtres) ; la « Sphère des programmes »
     // pose les FENÊTRES ouvertes (≠ « sphère des terminaux ») ; « Défilement à la
-    // molette » et « Verrous » agissent sur les BARRES ; « Infobulles » et « Dash
-    // dossier » sont des réglages SYSTÈME, pas des widgets ni des fenêtres.
+    // molette » et « Verrous » agissent sur les BARRES ; les PASTILLES de bureaux
+    // virtuels sont un réglage de barre, pas de fenêtres ; « Infobulles » est une
+    // apparence ; « Dossiers » couvre la barre du bas et le dash dossier.
     const REGLES_GROUPES = [
       // Terminaux : ce qui nomme le terminal (la sphère DES PROGRAMMES n'en est pas).
       [/terminal|terminaux/, "terminaux"],
-      // Horloge & infos : l'horloge et les widgets d'info de la barre du haut.
-      // AVANT « fenêtres » pour que « Horloge plein écran » reste une horloge.
-      [/horloge|heure|calendrier|monde|fuseau|meteo|reseau|debit|num et| maj\b|notification|rappel|\bson\b|sonore|audio/, "horloge"],
-      // Fenêtres & bureaux : aperçus, ouverture/fondu, plein écran, bureaux
+      // Notifications : le bandeau Windows, la zone de notification et les sons
+      // de rappel — une famille à part, que l'on cherche ensemble.
+      [/notification|rappel|\bsons?\b|sonore|audio/, "notifications"],
+      // Widgets : l'horloge et les indicateurs de la barre du haut.
+      // AVANT « fenêtres » pour que « Horloge plein écran » reste un widget.
+      [/horloge|heure|calendrier|monde|fuseau|meteo|reseau|debit|num et| maj\b/, "widgets"],
+      // Les PASTILLES de bureaux virtuels : leur TAILLE est un réglage de barre.
+      // AVANT « fenêtres », dont la règle « bureaux virtuels » les attraperait.
+      [/pastille/, "barres"],
+      // Captures et partage : ce qui se produit après une capture, et les effets
+      // d'affichage réservés au mode capturable.
+      [/capture|lueur|degrade|shader|motif/, "captures"],
+      // Fenêtres et bureaux : aperçus, ouverture/fondu, plein écran, bureaux
       // virtuels, et la sphère des FENÊTRES ouvertes.
       [/apercu|ouverture|fondu|plein ecran|bureaux virtuels|sphere/, "fenetres"],
-      // Système : fonctionnalités, captures, sauvegarde, éditeur, infobulles,
-      // et le dash du dossier personnel.
-      [/fonctionnalite|capture|sauvegarde|configuration|editeur|infobulle|dossier personnel|dash dossier/, "systeme"],
-      // Barres & dock : barres, séparateurs, logo, indicateur, épingles, zones,
-      // empilement, écartement, défilement molette, verrous des barres, masquage.
-      [/barre|separateur|logo|indicateur|epingl|\bzone|empilement|ecartement|pastille|molette|defilement|verrou|masquage/, "barres"],
+      // Système : modules, performances, affichage/DPI, sauvegarde.
+      [/module|fonctionnalite|performance|dpi|sauvegarde|configuration|affichage/, "systeme"],
+      // Barres et dock : tout ce qui touche les barres, les icônes, les zones,
+      // les dossiers, la visibilité et les verrous. « icone » n'y figure PAS :
+      // « Jeu d'icônes » est une apparence, et les catégories d'icônes des
+      // barres contiennent déjà « barre » ou « pastille ».
+      [/barre|centre de la barre|separateur|logo|indicateur|epingl|\bzone|empilement|ecartement|molette|defilement|verrou|masquage|dossier|coins|arrondis/, "barres"],
     ];
     function groupeCategorie(label) {
       const t = label.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
@@ -1081,9 +1122,13 @@
     // repasse par Rust puis rebâtit la page ; sans ça on reviendrait au premier
     // panneau à chaque réglage).
     let activeAccentPanel = "dash";
-    // Même rôle que `activeAccentPanel`, mais pour la section « Couleur des
-    // menus » (voir `MENU_TARGETS`) — survit aux reconstructions de la page.
+    // Même rôle que `activeAccentPanel`, mais pour la partie « Couleur de chaque
+    // menu » de la section « Menus » (voir `MENU_TARGETS`) — survit aux
+    // reconstructions de la page.
     let activeMenuTarget = "context";
+    // La barre dont on édite la couleur dans « Couleurs des barres » — même
+    // mécanisme : le sélecteur doit survivre aux reconstructions.
+    let activeBarColor = "top";
 
     // ⭐ L'ORDRE CARTÉSIEN à l'INTÉRIEUR de chaque groupe — DEMANDE EXPLICITE
     // (2026-11-06) : « organiser tout ça de façon cartésienne ». Les sections sont
@@ -1096,17 +1141,21 @@
     // L'ordre va du GÉNÉRAL au PARTICULIER, et regroupe les sous-thèmes voisins.
     const ORDRE_GROUPES = {
       apparence: [
-        "Thèmes", "Style", "Icônes", "Texture de l'interface", "Ombres",
-        "Transparence et flou", "Apparence des menus", "Animation au survol",
-        "Taille des textes", "Taille du contenu des dashs", "Couleur de mise en avant",
+        "Thèmes", "Couleur de mise en avant", "Style", "Typographie",
+        "Jeu d'icônes", "Texture de l'interface", "Transparence et flou",
+        "Ombres", "Menus", "Survol et magnification", "Infobulles",
+        "Échelle de l'interface",
       ],
       barres: [
-        "Couleur de la barre", "Couleur du texte de la barre du haut",
-        "Taille du texte de la barre du haut", "Écartement des icônes",
-        "Couleur des séparateurs", "Taille des séparateurs", "Logo",
-        "Indicateur d'application ouverte", "Empilement des icônes",
-        "Défilement à la molette", "Zones de la barre de droite",
-        "Barre du bas — dossiers épinglés", "Visibilité des barres",
+        "Couleurs des barres", "Transparence des barres", "Taille des barres",
+        "Couleur du texte de la barre du haut",
+        "Taille du texte de la barre du haut",
+        "Centre de la barre du haut",
+        "Icônes des barres", "Écartement des icônes",
+        "Indicateur d'application ouverte",
+        "Séparateurs", "Logo", "Coins arrondis", "Empilement des icônes",
+        "Défilement à la molette", "Zones de la barre",
+        "Dossiers", "Pastilles de bureaux virtuels", "Visibilité des barres",
         "Masquage automatique", "Verrous",
       ],
       fenetres: [
@@ -1114,16 +1163,21 @@
         "Ouverture des fenêtres", "Fondu des fenêtres", "Plein écran",
         "Sphère des programmes",
       ],
-      horloge: [
-        "Horloge plein écran", "Calendrier", "Horloges du monde",
-        "Météo du calendrier", "Débit réseau", "Verr. num et Verr. maj",
-        "Notifications de Windows", "Sons des rappels",
+      widgets: [
+        "Horloge plein écran", "Calendrier", "Météo du calendrier",
+        "Horloges du monde", "Débit réseau", "Verr. num et Verr. maj",
       ],
-      terminaux: ["Texture des terminaux", "Vue sphère des terminaux"],
+      notifications: [
+        "Notifications de Windows", "Zone de notification", "Sons des rappels",
+      ],
+      terminaux: ["Police des terminaux", "Texture des terminaux", "Vue sphère des terminaux"],
+      captures: [
+        "Captures d'écran et éditeur",
+        "Lueurs", "Dégradé animé et motifs",
+      ],
       systeme: [
-        "Fonctionnalités", "Sauvegarde de la configuration",
-        "Visibilité dans les captures d'écran", "Infobulles",
-        "Dash dossier", "Éditeur d'image",
+        "Modules et applets", "Performances", "Affichage et DPI",
+        "Sauvegarde de la configuration",
       ],
     };
     function rangDansGroupe(label, groupe) {
@@ -1222,7 +1276,7 @@
     function updateSlider(dataKey, value, valueLabel) {
       const inputEl = document.querySelector(`input[data-key="${dataKey}"]`);
       // L'ÉTIQUETTE est protégée par la MÊME condition que la poignée — BUG
-      // RÉEL SIGNALÉ (« dans Taille du contenu des dashs, le curseur Contenu a
+      // RÉEL SIGNALÉ (« dans Échelle de l'interface, le curseur Contenu a
       // un fonctionnement erratique », précisé ensuite : « le chiffre ne suit
       // pas le déplacement du curseur de façon régulière »). La garde
       // n'existait QUE pour la poignée : pendant un glissement, l'évènement
@@ -1272,7 +1326,7 @@
     // sélecteur est en cours de glissement.
     let draggingGradientTarget = null;
     // Zone dont le bouton « Supprimer » a été armé mais pas confirmé (voir la section
-    // « Zones de la barre de droite »). Remis à zéro à chaque reconstruction de la
+    // « Zones de la barre »). Remis à zéro à chaque reconstruction de la
     // section : les boutons sont recréés, donc un « en attente » survivant désignerait
     // une zone dont le bouton n'existe plus.
     let zoneRemovePending = null;
@@ -3376,21 +3430,26 @@
       [/infobulle|\binfo\b/, "info"],
       [/sphere/, "sphere"],
       [/terminal|terminaux/, "terminal-window"],
+      [/typographie/, "pencil-simple"],
+      [/centre de la barre/, "selection"],
+      [/separateur/, "list"],
       [/empilement/, "stack-simple"],
       [/couleur|teinte|mise en avant/, "palette"],
       [/survol|animation/, "cursor-click"],
       [/capture/, "eye"],
       [/visibilite|masquage/, "eye"],
       [/bureaux virtuels|pastille/, "monitor"],
-      [/ecartement|taille|epaisseur|espacement/, "ruler"],
+      [/ecartement|taille|epaisseur|espacement|echelle/, "ruler"],
+      [/dpi|affichage/, "monitor"],
       [/apercu|indicateur|ouverture|fondu|fenetre/, "app-window"],
       [/ecran|moniteur/, "monitor"],
-      [/fonctionnalite/, "sliders-horizontal"],
+      [/module|fonctionnalite/, "sliders-horizontal"],
       [/zone/, "squares-four"],
       [/epingl/, "push-pin"],
       [/dossier/, "folder"],
       [/theme/, "palette"],
-      [/texture/, "paint-brush"],
+      [/texture|lueur|degrade|shader|motif/, "paint-brush"],
+      [/performance/, "sliders-horizontal"],
       [/\bstyle\b/, "swatches"],
       [/icone/, "squares-four"],
       [/menu/, "list"],
@@ -3418,6 +3477,45 @@
       nav.appendChild(el("div", { class: "category-vide", id: "category-vide" }, ["Aucun réglage trouvé."]));
       filtrerLesReglages();
       marquerLaCategorieCourante();
+    }
+
+    // « Voir aussi » — un renvoi vers une AUTRE rubrique des Réglages, désignée
+    // par son titre. Il sert aux familles volontairement éclatées (taille des
+    // textes, transparences, notifications) SANS dupliquer aucun contrôle : un
+    // second curseur pour le même réglage serait le défaut des quatre copies de
+    // « Fond » (voir la section « Transparence et flou »).
+    function rubriqueParTitre(titre) {
+      for (const box of document.querySelectorAll("#scroll > .section")) {
+        const h2 = box.querySelector("h2");
+        if (h2 && h2.textContent === titre) return box;
+      }
+      return null;
+    }
+    function voirAussi(box, titres) {
+      const row = el("div", { class: "voir-aussi" });
+      row.appendChild(el("span", { class: "voir-aussi-titre" }, ["Voir aussi :"]));
+      for (const titre of titres) {
+        row.appendChild(
+          el("button", {
+            class: "voir-aussi-lien",
+            onclick: () => {
+              const cible = rubriqueParTitre(titre);
+              if (!cible) return;
+              // Une rubrique d'un autre groupe est MASQUÉE : on bascule d'abord
+              // sur son groupe, sinon `scrollIntoView` n'aurait rien à montrer.
+              const champ = document.getElementById("category-search");
+              if (champ && champ.value) champ.value = "";
+              if (activeMainTab === "interface" && cible.dataset.groupe && cible.dataset.groupe !== activeGroup) {
+                activeGroup = cible.dataset.groupe;
+                renderGroupTabs();
+              }
+              filtrerLesReglages();
+              cible.scrollIntoView({ behavior: "smooth", block: "start" });
+            },
+          }, [titre]),
+        );
+      }
+      box.appendChild(row);
     }
 
     // L'entrée de la colonne qui porte la pastille d'accent : la première
@@ -3488,7 +3586,12 @@
         // Les INFOBULLES comptent aussi : le curseur de transparence d'une barre
         // n'a pas d'autre texte que la sienne.
         const infobulles = [...box.querySelectorAll("[title]")].map((n) => n.title).join(" ");
-        const texte = sansAccents(box.textContent + " " + infobulles);
+        // Les renvois « Voir aussi » ne sont PAS du texte de réglage : sans ça,
+        // chercher « lueurs » ferait apparaître toutes les rubriques qui y
+        // renvoient, et « voir » les afficherait presque toutes.
+        const renvois = [...box.querySelectorAll(".voir-aussi")].map((n) => n.textContent).join(" ");
+        const corps = renvois ? box.textContent.split(renvois).join(" ") : box.textContent;
+        const texte = sansAccents(corps + " " + infobulles);
         const dansLeGroupe = !filtreGroupe || !box.dataset.groupe || box.dataset.groupe === activeGroup;
         const garde = dansLeGroupe && variantes.every((v) => v.some((m) => texte.includes(m)));
         box.style.display = garde ? "" : "none";
@@ -3533,7 +3636,7 @@
     function renderInterfaceSections(scroll) {
       // Fonctionnalités
       section(scroll, (box) => {
-        box.appendChild(el("h2", {}, ["Fonctionnalités"]));
+        box.appendChild(el("h2", {}, ["Modules et applets"]));
         box.appendChild(
           el("p", { class: "hint" }, [
             "Active ou désactive individuellement chaque icône de la barre du haut et chaque dash.",
@@ -3650,11 +3753,23 @@
         box.appendChild(el("p", { class: "hint" }, ["« Fond » porte sur la teinte du bureau floutée derrière les panneaux (à 100 %, elle disparaît). « Opacité des textes » règle tous les textes ; « Fond des zones » règle les aplats, les bords et les boutons, indépendamment du texte. À 100 %, le rendu est celui d'origine ; plus bas, tout s'efface ensemble en gardant ses écarts. La COULEUR du fond se règle panneau par panneau, dans la section « Couleur de mise en avant »."]));
         box.appendChild(el("div", { class: "small-label" }, ["Menus"]));
         slider(box, { label: "Transparence des menus", min: 0, max: 100, step: 5, value: state.menuTintPercent, valueLabel: (v) => v + "%", dataKey: "menu-tint", onInput: (v) => go("menu-tint", v) });
-        box.appendChild(el("div", { class: "small-label" }, ["Barres"]));
-        [["top", "du haut"], ["left", "de gauche"], ["right", "de droite"], ["bottom", "du bas"]].forEach(([bar, label], i) => {
-          slider(box, { label: `Barre ${label}`, min: 0, max: 100, step: 5, value: state.barTintPercent[i], valueLabel: (v) => v + "%", dataKey: `bar-tint-${bar}`, onInput: (v) => go("bar-tint", bar, v) });
-        });
-        box.appendChild(el("p", { class: "hint" }, ["Fond, menus et barres : 100 % = le plus transparent. « Opacité des textes » et « Fond des zones » vont dans l'autre sens : plus haut, plus opaque. La transparence des barres d'un écran secondaire se règle dans son onglet."]));
+        // La transparence des barres a sa PROPRE rubrique, dans « Barres & dock »,
+        // avec leurs couleurs et leurs tailles : la chercher ici, au milieu du
+        // flou des panneaux, était le défaut signalé.
+        box.appendChild(el("p", { class: "hint" }, ["Fond et menus : 100 % = le plus transparent. « Opacité des textes » et « Fond des zones » vont dans l'autre sens : plus haut, plus opaque. La transparence des barres se règle dans le groupe « Barres & dock » (rubrique « Transparence des barres »)."]));
+        // VISIBLE DANS LES CAPTURES — le réglage vit ICI parce qu'il COUPE la
+        // transparence : coché, il force flou, teintes des barres/du dash/des
+        // menus à 0 % le temps qu'il est coché, sans toucher aux curseurs
+        // enregistrés (leur valeur est seulement court-circuitée au rendu).
+        // En faire une rubrique à part obligeait à chercher ailleurs la raison
+        // pour laquelle les transparences disparaissent. Voir
+        // gfx::capture_visibility, doc de module.
+        box.appendChild(el("div", { class: "small-label" }, ["Visibilité dans les captures d'écran"]));
+        checkboxRow(box, state.captureVisible, "Rendre l'interface visible sur les captures d'écran", (checked) => go("capture-visible", checked ? "1" : "0"));
+        box.appendChild(el("p", { class: "hint" }, [
+          "Par défaut, NeuraDesk est invisible dans les captures/enregistrements d'écran. Coche pour l'y rendre visible — les transparences ci-dessus (flou, barres, dash, menus) sont alors forcées à 0 % le temps que la case est cochée, pour éviter les artefacts visuels que certains outils de capture produisent sur les fenêtres translucides. Les curseurs gardent leur valeur.",
+        ]));
+        voirAussi(box, ["Transparence des barres", "Menus", "Captures d'écran et éditeur", "Lueurs"]);
       });
 
       // Sons des rappels — DEMANDE EXPLICITE (2026-09-24) : « j'aimerais pouvoir
@@ -3740,13 +3855,16 @@
         famille("dates", "Rappels de dates et de fêtes", "son-dates");
       });
 
-      // Éditeur d'image — l'hébergeur de « Envoyer en ligne », DEMANDE EXPLICITE
-      // (2026-09-25) : « un choix dans les Réglages ». La liste vient de Rust
-      // (`Hebergeur::ALL`, voir `cef_settings::envoi_json`). ⚠️ La clé n'est
+      // Captures d'écran et éditeur — la vignette d'après-capture ET l'hébergeur
+      // de « Envoyer en ligne », DEMANDE EXPLICITE (2026-09-25) : « un choix dans
+      // les Réglages ». Le titre porte « Captures » parce que la section règle
+      // d'abord ce qui se passe APRÈS une capture ; « Éditeur d'image » seul
+      // cachait ce réglage à qui le cherchait. La liste des hébergeurs vient de
+      // Rust (`Hebergeur::ALL`, voir `cef_settings::envoi_json`). ⚠️ La clé n'est
       // JAMAIS renvoyée à la page : seul `cleDefinie` dit qu'elle existe, d'où un
       // champ toujours vide, et `change` (pas `input`) pour ne l'écrire qu'une fois.
       section(scroll, (box) => {
-        box.appendChild(el("h2", {}, ["Éditeur d'image"]));
+        box.appendChild(el("h2", {}, ["Captures d'écran et éditeur"]));
         // La fenêtre des actions après une capture (voir `win32::cef_capture`).
         checkboxRow(box, state.captureCarte !== false, "Après une capture, proposer les actions dans une fenêtre (sinon, ouvrir l'éditeur)", (checked) => go("capture-carte", checked ? "1" : "0"));
         box.appendChild(
@@ -3754,6 +3872,7 @@
             "Une vignette au coin de l'écran : copier, enregistrer, annoter, épingler, ou la glisser dans une autre application. Décoché, la capture s'ouvre directement dans l'éditeur.",
           ]),
         );
+        voirAussi(box, ["Transparence et flou", "Lueurs"]);
         const envoi = state.envoi;
         if (!envoi) return;
         box.appendChild(
@@ -3885,15 +4004,28 @@
             onChange: (v) => go("coins-ecran-rayon", v),
           });
         }
-        policeChooser(box);
-        // La police des TERMINAUX, juste sous celle de l'interface : deux
-        // surfaces de texte réglables, côte à côte (voir `policeTerminaleChooser`).
-        policeTerminaleChooser(box);
       });
 
-      // Icônes : le dessin des applets de la barre — comme « Icônes » sous KDE.
+      // Typographie — la police de l'interface ET la taille des textes, réunies :
+      // ce sont les deux réglages d'une même surface de texte. La police des
+      // terminaux a son propre réglage dans le groupe « Terminaux ».
       section(scroll, (box) => {
-        box.appendChild(el("h2", {}, ["Icônes"]));
+        box.appendChild(el("h2", {}, ["Typographie"]));
+        box.appendChild(el("p", { class: "hint" }, ["La police de l'interface et la taille des textes. La police des terminaux se règle dans le groupe « Terminaux »."]));
+        box.appendChild(el("div", { class: "small-label" }, ["Police de l'interface"]));
+        policeChooser(box);
+        box.appendChild(el("div", { class: "small-label" }, ["Tailles"]));
+        slider(box, { label: "Menus et fenêtres d'applis", min: 50, max: 200, value: state.tailleTextesPercent, valueLabel: (v) => v + "%", dataKey: "taille-textes", onChange: (v) => go("taille-globale", "textes", v) });
+        slider(box, { label: "Notifications", min: 50, max: 200, value: state.tailleNotificationsPercent, valueLabel: (v) => v + "%", dataKey: "taille-notifications", onChange: (v) => go("taille-globale", "notifications", v) });
+        box.appendChild(el("p", { class: "hint" }, ["Agrandit toute la fenêtre — texte, icônes et marges. Le premier vaut aussi pour les kaomojis, les caractères spéciaux, la phonétique et les maths, et s'ajoute à « Taille des menus » et aux curseurs « Contenu » de chaque panneau. S'applique à la prochaine ouverture, ou à la prochaine notification."]));
+        voirAussi(box, ["Police des terminaux", "Infobulles", "Menus"]);
+      });
+
+      // Jeu d'icônes : le dessin des applets de la barre — comme « Icônes »
+      // sous KDE. « Jeu » désigne le catalogue lui-même, ce qui évite de le
+      // confondre avec les tailles, l'écartement et l'indicateur des barres.
+      section(scroll, (box) => {
+        box.appendChild(el("h2", {}, ["Jeu d'icônes"]));
         box.appendChild(el("p", { class: "hint" }, ["Le dessin des applets de la barre (réglages, son, réseau…). Fluent reprend les icônes de Windows 11 ; les deux thèmes Fluent Emoji gardent leur propre couleur — les seules icônes de la barre dans ce cas."]));
         segmented(box, {
           options: state.themesIcones,
@@ -3901,6 +4033,7 @@
           dataKey: "icones",
           onSelect: (v) => go("icones", v),
         });
+        voirAussi(box, ["Écartement des icônes"]);
       });
 
       // Thèmes
@@ -4039,6 +4172,15 @@
         box.appendChild(el("button", { class: "action", onclick: () => go("textures-editeur") }, ["Composer une texture…"]));
       });
 
+      // Police des terminaux — elle vivait dans « Style », avec la police de
+      // l'interface ; c'est pourtant un réglage du TERMINAL, pas de la coque.
+      section(scroll, (box) => {
+        box.appendChild(el("h2", {}, ["Police des terminaux"]));
+        box.appendChild(el("p", { class: "hint" }, ["La police de tous les terminaux, y compris la vue sphère. La police de l'interface se règle dans Typographie."]));
+        policeTerminaleChooser(box);
+        voirAussi(box, ["Typographie", "Texture des terminaux"]);
+      });
+
       // ⭐ LA TEXTURE DES TERMINAUX (voir `win32::texture_terminaux`) — DEMANDE
       // EXPLICITE (2026-10-15) : « appliquer des textures au fond des terminaux mais
       // pas forcément la même texture que pour le reste de l'app ».
@@ -4108,14 +4250,48 @@
         slider(box, { label: "Durée de la disparition", min: state.sphereFenetresFonduBounds.min, max: state.sphereFenetresFonduBounds.max, step: 10, value: state.sphereFenetresFonduFermeture, valueLabel: (v) => v + " ms", dataKey: "sphere-fenetres-fondu-fermeture", onInput: (v) => go("sphere-fenetres-fondu", "fermeture", v) });
       });
 
-      // Couleur des trois barres
+      // Couleurs des quatre barres — UN sélecteur de barre et UN sélecteur de
+      // couleur, au lieu de quatre catégories identiques à un nom près. Le
+      // sélecteur survit aux reconstructions (`activeBarColor`).
       const BARS = [["top", "du haut"], ["left", "de gauche"], ["right", "de droite"], ["bottom", "du bas"]];
-      BARS.forEach(([bar, label], i) => {
-        section(scroll, (box) => {
-          // Sa TRANSPARENCE vit dans « Transparence et flou » (voir plus haut).
-          box.appendChild(el("h2", {}, [`Couleur de la barre ${label}`]));
-          colorPicker(box, `bar_${bar}`, state.barColors[i]);
+      section(scroll, (box) => {
+        box.appendChild(el("h2", {}, ["Couleurs des barres"]));
+        box.appendChild(el("p", { class: "hint" }, ["La couleur de fond de chaque barre, individuellement. La transparence a sa propre rubrique, juste en dessous."]));
+        if (!BARS.some(([bar]) => bar === activeBarColor)) activeBarColor = BARS[0][0];
+        const choix = el("div", { class: "panel-choices" });
+        for (const [bar, label] of BARS) {
+          choix.appendChild(
+            el("button", {
+              "data-bar": bar,
+              class: bar === activeBarColor ? "selected" : "",
+              onclick: () => { activeBarColor = bar; rendreBarre(); },
+            }, ["Barre " + label]),
+          );
+        }
+        box.appendChild(choix);
+        const corps = el("div");
+        box.appendChild(corps);
+        function rendreBarre() {
+          for (const b of choix.children) b.classList.toggle("selected", b.dataset.bar === activeBarColor);
+          corps.replaceChildren();
+          const i = BARS.findIndex(([bar]) => bar === activeBarColor);
+          colorPicker(corps, `bar_${activeBarColor}`, state.barColors[i]);
+        }
+        rendreBarre();
+        voirAussi(box, ["Transparence des barres", "Centre de la barre du haut"]);
+      });
+
+      // Transparence des barres — elle vivait au milieu de « Transparence et
+      // flou », avec le flou des panneaux et des menus. Elle a désormais sa
+      // rubrique dans le groupe des barres, à côté de leurs couleurs et de leurs
+      // tailles — et sous le même titre que dans l'onglet d'un écran secondaire.
+      section(scroll, (box) => {
+        box.appendChild(el("h2", {}, ["Transparence des barres"]));
+        box.appendChild(el("p", { class: "hint" }, ["100 % = le plus transparent. Chaque barre a son propre curseur ; les barres d'un écran secondaire se règlent dans son onglet."]));
+        BARS.forEach(([bar, label], i) => {
+          slider(box, { label: `Barre ${label}`, min: 0, max: 100, step: 5, value: state.barTintPercent[i], valueLabel: (v) => v + "%", dataKey: `bar-tint-${bar}`, onInput: (v) => go("bar-tint", bar, v) });
         });
+        voirAussi(box, ["Transparence et flou", "Couleurs des barres"]);
       });
 
       // Couleur du texte de la barre du haut
@@ -4126,38 +4302,28 @@
         } else {
           colorPicker(box, "topbar_text", state.topbarTextColor);
         }
+        voirAussi(box, ["Couleurs des barres", "Jeu d'icônes"]);
       });
 
-      // Écartement des icônes
+      // Centre de la barre du haut — un bloc de COULEUR et ses fondus, posé sur
+      // le fond de la barre. Il vivait dans « Ombres », où il n'avait rien à
+      // faire : ce n'est pas une ombre, c'est une couleur de la barre.
       section(scroll, (box) => {
-        // Une barre à la fois — DEMANDE EXPLICITE (2026-10-18) : « que
-        // l'écartement des icônes puisse être réglé individuellement pour chaque
-        // barre ». Le curseur général remet les quatre sur sa valeur.
-        box.appendChild(el("h2", {}, ["Écartement des icônes"]));
-        slider(box, { label: "Toutes les barres", min: 0, max: 40, value: state.iconGap, valueLabel: (v) => v + "px", dataKey: "icon-gap", onInput: (v) => go("icon-gap", v) });
-        ICON_GAP_BARRES.forEach(([cle, label], i) => {
-          slider(box, { label, min: 0, max: 40, value: state.iconGapsBarres[i], valueLabel: (v) => v + "px", dataKey: `icon-gap-${cle}`, onInput: (v) => go("icon-gap-barre", cle, v) });
-        });
+        box.appendChild(el("h2", {}, ["Centre de la barre du haut"]));
+        box.appendChild(el("p", { class: "hint" }, ["Un bloc de couleur au centre de la barre du haut, avec des fondus vers la gauche et la droite. Largeur, transparence et coins se règlent ci-dessous."]));
+        primaryOmbreCentreHaut(box);
+        voirAussi(box, ["Couleurs des barres", "Ombres"]);
       });
 
-      // Taille des pastilles de bureaux virtuels (barre PRIMAIRE) — DEMANDE
-      // EXPLICITE ("je voudrais que les pastilles des bureaux virtuels
-      // soient redimensionnables dans le dash réglage, en ayant chacune
-      // leur propre réglage dans la barre correspondante"). Le réglage par
-      // écran secondaire se trouve dans la section de CET écran, plus bas.
-      // PLAFOND TRIPLÉ (36 -> 108) — DEMANDE EXPLICITE (2026-09-23) : « la taille
-      // maximale réglable de la taille des pastilles de bureaux virtuels soit
-      // triplée ». Le MINIMUM ne bouge pas : c'est le plancher de lisibilité des
-      // numéros (voir ui::desktop_labels::MIN_DOT_SIZE_WITH_LABEL), et le
-      // descendre ne donnerait que des pastilles sans chiffre.
+      // Icônes des barres — TAILLE et ESPACEMENT réunis : ce sont les deux
+      // réglages d'une même rangée d'icônes, et ils étaient éclatés en TROIS
+      // catégories (écartement, taille des icônes, taille des pastilles).
       section(scroll, (box) => {
-        slider(box, { label: "Taille des pastilles de bureaux virtuels", min: 8, max: 108, value: state.desktopDotSize, valueLabel: (v) => v + "px", dataKey: "desktop-dot-size", onInput: (v) => go("desktop-dot-size", v) });
-      });
-
-      // Taille des icônes de la barre du haut — DEMANDE EXPLICITE (2026-10-14).
-      // En % de la taille dérivée de l'épaisseur ; bornes POUSSÉES par Rust. Hors
-      // de la clé de structure : voie rapide `updateSlider`.
-      section(scroll, (box) => {
+        box.appendChild(el("h2", {}, ["Icônes des barres"]));
+        box.appendChild(el("p", { class: "hint" }, ["La taille des icônes et des pastilles de bureaux virtuels, puis l'espacement entre les icônes. Chaque barre garde ses propres réglages."]));
+        box.appendChild(el("div", { class: "small-label" }, ["Taille"]));
+        // En % de la taille dérivée de l'épaisseur ; bornes POUSSÉES par Rust.
+        // Hors de la clé de structure : voie rapide `updateSlider`.
         slider(box, {
           label: "Taille des icônes de la barre du haut",
           min: state.topIconScaleBounds.min, max: state.topIconScaleBounds.max,
@@ -4166,8 +4332,7 @@
           dataKey: "top-icon-scale",
           onInput: (v) => go("top-icon-scale", v),
         });
-        // Même curseur pour la barre du BAS — DEMANDE EXPLICITE (2026-10-14).
-        // Ses bornes à elle : la haute est le TRIPLE (demande du 2026-10-23).
+        // La borne haute de la barre du bas est le TRIPLE (demande du 2026-10-23).
         slider(box, {
           label: "Taille des icônes de la barre du bas",
           min: state.bottomIconScaleBounds.min, max: state.bottomIconScaleBounds.max,
@@ -4176,7 +4341,6 @@
           dataKey: "bottom-icon-scale",
           onInput: (v) => go("bottom-icon-scale", v),
         });
-        // Et pour la barre de GAUCHE — DEMANDE EXPLICITE (2026-10-18).
         slider(box, {
           label: "Taille des icônes de la barre de gauche",
           min: state.topIconScaleBounds.min, max: state.topIconScaleBounds.max,
@@ -4185,7 +4349,19 @@
           dataKey: "left-icon-scale",
           onInput: (v) => go("left-icon-scale", v),
         });
-        box.appendChild(el("p", { class: "hint" }, ["100 % : la taille déduite de l'épaisseur de la barre. Agrandie, une icône ne dépasse jamais la barre."]));
+        // Le plafond des pastilles est triplé (36 → 108) ; le minimum reste le
+        // plancher de lisibilité de leurs numéros (ui::desktop_labels).
+        slider(box, { label: "Taille des pastilles de bureaux virtuels", min: 8, max: 108, value: state.desktopDotSize, valueLabel: (v) => v + "px", dataKey: "desktop-dot-size", onInput: (v) => go("desktop-dot-size", v) });
+        box.appendChild(el("p", { class: "hint" }, ["100 % : la taille déduite de l'épaisseur de la barre. Agrandie, une icône ne dépasse jamais la barre. Le minimum des pastilles est un plancher de lisibilité."]));
+        box.appendChild(el("div", { class: "small-label" }, ["Espacement"]));
+        // Une barre à la fois — DEMANDE EXPLICITE (2026-10-18) : « que
+        // l'écartement des icônes puisse être réglé individuellement pour chaque
+        // barre ». Le curseur général remet les quatre sur sa valeur.
+        slider(box, { label: "Toutes les barres", min: 0, max: 40, value: state.iconGap, valueLabel: (v) => v + "px", dataKey: "icon-gap", onInput: (v) => go("icon-gap", v) });
+        ICON_GAP_BARRES.forEach(([cle, label], i) => {
+          slider(box, { label, min: 0, max: 40, value: state.iconGapsBarres[i], valueLabel: (v) => v + "px", dataKey: `icon-gap-${cle}`, onInput: (v) => go("icon-gap-barre", cle, v) });
+        });
+        voirAussi(box, ["Jeu d'icônes", "Indicateur d'application ouverte"]);
       });
 
       // Taille du texte des applets de la barre du haut (barre PRIMAIRE) —
@@ -4212,45 +4388,38 @@
         checkboxRow(box, auto, "Taille automatique", (checked) => {
           go("topbar-text-size", checked ? "auto" : String(state.topbarTextAutoPx));
         });
-        if (auto) return;
-        slider(box, {
-          label: "Taille de référence",
-          // Le MAXIMUM suit l'épaisseur de la barre (voir
-          // ui::topbar::topbar_text_font_px_max) : il est donc poussé par Rust
-          // et remis à jour à chaque frame (voir `updateValues`), pas figé ici.
-          min: 8, max: state.topbarTextMaxPx,
-          value: state.topbarTextSize,
-          valueLabel: (v) => v + "px",
-          dataKey: "topbar-text-size",
-          onInput: (v) => go("topbar-text-size", v),
-        });
+        // ⚠️ **PAS DE `return` ICI** : les renvois « Voir aussi » doivent rester
+        // EN PIED de section, même quand le curseur n'existe pas (mode auto).
+        if (!auto) {
+          slider(box, {
+            label: "Taille de référence",
+            // Le MAXIMUM suit l'épaisseur de la barre (voir
+            // ui::topbar::topbar_text_font_px_max) : il est donc poussé par Rust
+            // et remis à jour à chaque frame (voir `updateValues`), pas figé ici.
+            min: 8, max: state.topbarTextMaxPx,
+            value: state.topbarTextSize,
+            valueLabel: (v) => v + "px",
+            dataKey: "topbar-text-size",
+            onInput: (v) => go("topbar-text-size", v),
+          });
+        }
+        voirAussi(box, ["Typographie", "Infobulles"]);
       });
 
       // MARGE dans la case d'une icône de zone — le curseur vit dans la section
-      // « Zones de la barre de droite » (voir plus bas), avec les autres réglages
-      // de zone : une section à part l'aurait rangée sous un titre qui ne parlait
-      // que d'elle, loin de ce qu'elle règle.
+      // « Zones de la barre » (voir plus bas), avec les autres réglages de zone :
+      // une section à part l'aurait rangée sous un titre qui ne parlait que
+      // d'elle, loin de ce qu'elle règle.
 
-
-      // Couleur des séparateurs (voir `ui::dock::Dock::separator_color`) —
-      // DEMANDE EXPLICITE ("fais en sorte que les séparateurs d'icones soit
-      // de la couleur principale du texte de la barre à laquelle ils sont
-      // ratachés et donnes la possibilité de choisir leur couleur ou de les
-      // rendre transparent"). Le réglage par écran secondaire se trouve
-      // dans la section de CET écran, plus bas — même structure que
-      // `desktop-dot-size`/`icon-gap` ci-dessus.
+      // Séparateurs — COULEUR et TAILLE dans une même rubrique : les deux se
+      // règlent au même endroit, et les séparer faisait deux catégories pour un
+      // seul élément de l'interface.
       section(scroll, (box) => {
-        box.appendChild(el("h2", {}, ["Couleur des séparateurs"]));
+        box.appendChild(el("h2", {}, ["Séparateurs"]));
+        box.appendChild(el("p", { class: "hint" }, ["La couleur et la taille des séparateurs, dans toutes les barres. Le réglage par écran secondaire se trouve dans l'onglet de cet écran."]));
+        box.appendChild(el("div", { class: "small-label" }, ["Couleur"]));
         primarySeparatorColor(box);
-      });
-
-      // Taille des séparateurs (voir `ui::dock::Dock::separator_size`) —
-      // DEMANDE EXPLICITE ("ajoute la possibilité de modifier la taille des
-      // séparateurs par interface"). Le réglage par écran secondaire se
-      // trouve dans la section de CET écran, plus bas — même structure que
-      // la couleur juste au-dessus.
-      section(scroll, (box) => {
-        box.appendChild(el("h2", {}, ["Taille des séparateurs"]));
+        box.appendChild(el("div", { class: "small-label" }, ["Taille"]));
         primarySeparatorSize(box);
       });
 
@@ -4305,34 +4474,19 @@
         box.appendChild(el("p", { class: "hint" }, ["Pour la forme « Anneau », la taille règle l'ÉPAISSEUR du cadre — le quart de la valeur affichée — et non une dimension. Elle est plafonnée par l'écartement des icônes et par la marge haute de la barre. Le décalage déplace l'indicateur vers la droite (+) ou la gauche (−). La marge autour des icônes vaut pour toutes les barres : plus elle est grande, plus les icônes sont petites."]));
       });
 
-      // Taille des quatre barres
+      // Taille des quatre barres — UNE rubrique, quatre curseurs : les quatre
+      // sections séparées ne différaient que par un libellé.
       const BAR_SIZE_LABELS = [["top", "Épaisseur barre du haut"], ["left", "Largeur barre gauche"], ["right", "Largeur barre droite"], ["bottom", "Épaisseur barre du bas"]];
-      BAR_SIZE_LABELS.forEach(([bar, label], i) => {
-        section(scroll, (box) => {
-          // `onChange` : voir la doc de `slider()` — dégèle le
-          // redimensionnement du panneau Réglages lui-même, gelé au premier
-          // `onInput` (voir `win32::cef_settings::SettingsRefs::
-          // bar_size_dragging`), sans quoi ce panneau (qui vit dans la zone
-          // libre entre les trois barres, voir `app::dash_rect`) se
-          // redimensionnerait lui-même à chaque pixel glissé sur CE
-          // curseur précis.
-          // `step: 2` — DEMANDE EXPLICITE : un pas de 1px (défaut de
-          // `slider()`) est plus fin que ce qui a un effet perceptible sur
-          // l'épaisseur d'une barre.
-          // `min` : 16 pour la barre du HAUT uniquement — DEMANDE EXPLICITE
-          // ("la valeur minimale pour l'épaisseur de la barre supérieure
-          // soit de 16 pixels") — gauche/droite gardent 40.
-          // `min`/`max` : POUSSÉS par Rust (`state.barSizeMin`/`barSizeMax`,
-          // voir `ui::dock::bar_thickness_bounds`, SEULE AUTORITÉ) — la même
-          // fonction dont le curseur du CLIC DROIT sur une barre tire les
-          // siennes (voir assets/popups/bar_size.html). DEMANDE EXPLICITE :
-          // « il faudrait que l'on puisse aller à 250 dans les 2 cas ».
-          //
-          // **SANS REPLI, et c'est délibéré** : deux littéraux recopiés de part
-          // et d'autre sont exactement ce qui a fait diverger les deux écrans
-          // (160 ici, 500 là-bas) sans que rien ne le signale. L'état et la page
-          // étant livrés par le même binaire, un champ manquant est un défaut
-          // qu'il vaut mieux voir que masquer.
+      section(scroll, (box) => {
+        box.appendChild(el("h2", {}, ["Taille des barres"]));
+        box.appendChild(el("p", { class: "hint" }, ["L'épaisseur des barres du haut et du bas, la largeur des barres de gauche et de droite. Les bornes suivent la taille réelle de l'écran."]));
+        BAR_SIZE_LABELS.forEach(([bar, label], i) => {
+          // `onChange` : dégèle le redimensionnement du panneau Réglages lui-même,
+          // gelé au premier `onInput` (voir win32::cef_settings::
+          // SettingsRefs::bar_size_dragging) — sinon ce panneau se redimensionne
+          // à chaque pixel glissé sur CE curseur. `step: 2` : un pas de 1px est
+          // plus fin qu'un effet perceptible. Les bornes (`barSizeMin`/`Max`)
+          // sont POUSSÉES par Rust, seule autorité — jamais recopiées ici.
           slider(box, {
             label, min: state.barSizeMin[i], max: state.barSizeMax[i], step: 2, value: state.barSizes[i], valueLabel: (v) => v + "px", dataKey: `bar-size-${bar}`,
             onInput: (v) => go("bar-size", bar, v), onChange: () => go("bar-size-commit"),
@@ -4346,6 +4500,7 @@
             box.appendChild(el("p", { class: "hint" }, ["Sur cette hauteur, en haut de la barre de gauche, les icônes se floutent puis disparaissent contre la barre du haut — elles restent cliquables. 0 : aucun fondu."]));
           }
         });
+        voirAussi(box, ["Couleurs des barres", "Transparence des barres"]);
       });
 
       // ---- OMBRES --------------------------------------------------------
@@ -4361,9 +4516,8 @@
         primaryOmbreNoire(box);
         box.appendChild(el("div", { class: "small-label" }, ["Ombre de couleur"]));
         primaryOmbreCouleur(box);
-        box.appendChild(el("div", { class: "small-label" }, ["Centre de la barre du haut"]));
-        primaryOmbreCentreHaut(box);
         box.appendChild(el("p", { class: "hint" }, ["L'ombre de couleur prend la couleur AFFICHÉE de chaque barre — lueurs et dégradé compris — et la suit quand elle change ; elle ne tombe que sur les barres et les coins arrondis. L'ombre noire est posée PAR-DESSUS : pour ne voir que la couleur, mettez l'ombre noire à 0 %."]));
+        voirAussi(box, ["Centre de la barre du haut", "Transparence et flou"]);
       });
 
       // ---- VERROUS -------------------------------------------------------
@@ -4411,7 +4565,11 @@
       // faisait renoncer à un geste qui marche, ou chercher un redémarrage qui n'a pas
       // eu lieu. Il est corrigé AVEC le code, jamais après.
       section(scroll, (box) => {
-        box.appendChild(el("h2", {}, ["Barre du bas — dossiers épinglés"]));
+        box.appendChild(el("h2", {}, ["Dossiers"]));
+        box.appendChild(el("p", { class: "hint" }, [
+          "Les dossiers de la barre du bas, et celui sur lequel s'ouvre le dash dossier.",
+        ]));
+        box.appendChild(el("div", { class: "small-label" }, ["Dossiers épinglés (barre du bas)"]));
         box.appendChild(el("p", { class: "hint" }, [
           "Ces dossiers occupent la barre du bas, dans cet ordre. Chaque changement s'applique tout de suite — aucun redémarrage.",
         ]));
@@ -4465,22 +4623,19 @@
           // épinglé, et le seul moyen de distinguer deux dossiers homonymes.
           box.appendChild(el("p", { class: "hint" }, [d.chemin]));
         });
-      });
-
-      // DASH DOSSIER — LE DOSSIER PERSONNEL
-      //
-      // ⚠️ **CE RÉGLAGE N'APPARTIENT PAS À LA BARRE DU BAS**, contrairement à
-      // tout ce qui l'entoure : il règle le dossier sur lequel s'ouvre la moitié
-      // DROITE du dash dossier (le panneau qui montre deux dossiers côte à côte).
-      // Il vit ici parce que la page Réglages est le seul endroit où l'on cherche
-      // un réglage — pas parce qu'il serait de la même famille.
-      //
-      // ⛔ **LE CONTRÔLE EST UN BOUTON QUI OUVRE LE SÉLECTEUR NATIF**, jamais un
-      // champ de texte : la page n'a aucun accès au disque, et demander à
-      // l'utilisateur de taper un chemin juste est une façon de lui faire rater.
-      // C'est le motif exact des dossiers épinglés, juste au-dessus.
-      section(scroll, (box) => {
-        box.appendChild(el("h2", {}, ["Dash dossier — dossier personnel"]));
+        // DASH DOSSIER — LE DOSSIER PERSONNEL
+        //
+        // ⚠️ **CE RÉGLAGE N'APPARTIENT PAS À LA BARRE DU BAS**, contrairement
+        // à la liste ci-dessus : il règle le dossier sur lequel s'ouvre la
+        // moitié DROITE du dash dossier (le panneau qui montre deux dossiers
+        // côte à côte). Il partage néanmoins la rubrique « Dossiers » : c'est
+        // là qu'on le cherche.
+        //
+        // ⛔ **LE CONTRÔLE EST UN BOUTON QUI OUVRE LE SÉLECTEUR NATIF**, jamais
+        // un champ de texte : la page n'a aucun accès au disque, et demander à
+        // l'utilisateur de taper un chemin juste est une façon de lui faire
+        // rater. C'est le motif exact des dossiers épinglés, juste au-dessus.
+        box.appendChild(el("div", { class: "small-label" }, ["Dossier personnel du Dash"]));
         const personnel = state.dossierPersonnel || {};
         const choisi = personnel.ecrit || "";
         const actif = personnel.chemin || "";
@@ -4514,6 +4669,7 @@
           box.appendChild(el("p", { class: "hint" }, ["Réglage introuvable : " + choisi]));
           box.appendChild(el("p", { class: "hint" }, ["Le profil est utilisé à la place : " + actif]));
         }
+        voirAussi(box, ["Zones de la barre", "Thèmes"]);
       });
 
       // ZONES DE LA BARRE DE DROITE — DEMANDE EXPLICITE : « tous les paramétrages
@@ -4536,7 +4692,7 @@
       // LECTURE (`effective_zone_columns`, et la disposition borne la cote), donc
       // une valeur trop grande est CONSERVÉE puis ramenée — jamais refusée.
       section(scroll, (box) => {
-        box.appendChild(el("h2", {}, ["Zones de la barre de droite"]));
+        box.appendChild(el("h2", {}, ["Zones de la barre"]));
         // **LA BANNIÈRE DE MIGRATION — EN TÊTE, ET SEULEMENT S'IL Y EN A EU UNE.**
         // La conversion depuis les six anciens fichiers de zone (voir
         // `config::ZONES_MIGRATION_FILE`) s'annonce ICI et pas seulement dans le
@@ -4835,32 +4991,15 @@
         box.appendChild(el("p", { class: "hint" }, ["Réglage natif de Windows (identique à Paramètres > Personnalisation > Barre des tâches > Comportements de la barre des tâches) — s'applique immédiatement, sans redémarrer l'explorateur."]));
       });
 
-      // "Visible dans les captures d'écran" — DEMANDE EXPLICITE ("j'aimerais
-      // avoir une option dans les réglages qui permette de rendre
-      // l'interface visible sur les captures d'écran et qui mettent les
-      // transparences à 0% pour éviter les bugs visuels dus à la
-      // transparence"). Voir gfx::capture_visibility, doc de module :
-      // par défaut, l'interface s'exclut de toute capture d'écran/
-      // enregistrement ; cette case l'y rend visible et force en même temps
-      // toutes les transparences (flou, teintes des barres/du dash/des
-      // menus) à 0% le temps qu'elle est cochée, sans toucher aux réglages
-      // enregistrés (les curseurs gardent leur valeur, elle est juste
-      // court-circuitée pendant le rendu).
+      // ⭐ LUEURS — DEMANDE EXPLICITE (2026-10-14) : un dégradé radial blanc →
+      // couleur des barres → sombre, centre placé où l'on veut (voir
+      // gfx::lueur). En % de l'écran PRINCIPAL ; bornes POUSSÉES par Rust.
       section(scroll, (box) => {
-        box.appendChild(el("h2", {}, ["Visibilité dans les captures d'écran"]));
-        checkboxRow(box, state.captureVisible, "Rendre l'interface visible sur les captures d'écran", (checked) => go("capture-visible", checked ? "1" : "0"));
-        box.appendChild(el("p", { class: "hint" }, [
-          "Par défaut, NeuraDesk est invisible dans les captures/enregistrements d'écran. Coche pour l'y rendre visible — les transparences (flou, barres, dash, menus) sont alors forcées à 0% pour éviter les artefacts visuels que certains outils de capture produisent sur les fenêtres translucides.",
-        ]));
-        // Dégradé animé (voir gfx::degrade) — DEMANDE EXPLICITE (2026-09-26) :
-        // « commun comme si tous les panneaux ne faisaient qu'un », seulement
-        // en mode capturable. Préréglages en BOUTONS (pas de <select> en CEF).
-        // ⭐ LA LUEUR — DEMANDE EXPLICITE (2026-10-14) : un dégradé radial blanc →
-        // couleur des barres → sombre, centre placé où l'on veut (voir
-        // gfx::lueur). En % de l'écran PRINCIPAL ; bornes POUSSÉES par Rust.
+        box.appendChild(el("h2", {}, ["Lueurs"]));
+        box.appendChild(el("p", { class: "hint" }, ["Des dégradés radiaux clairs posés sur les barres et les panneaux, en mode capturable seulement."]));
         checkboxRow(box, state.lueur, "Lueurs : dégradés radiaux clairs sur les barres et les panneaux (mode capturable seulement)", (checked) => go("lueur", checked ? "1" : "0"));
         if (state.lueur && !state.captureVisible) {
-          box.appendChild(el("p", { class: "hint" }, ["Sans effet tant que l'interface n'est pas visible sur les captures d'écran (case ci-dessus)."]));
+          box.appendChild(el("p", { class: "hint" }, ["Sans effet tant que l'interface n'est pas visible sur les captures d'écran (voir « Transparence et flou »)."]));
         }
         // L'ÉDITEUR (DEMANDE EXPLICITE, 2026-10-14) : ajouter des lueurs, les
         // placer, régler leur flou — un dash à part, aussi ouvert par son applet.
@@ -4876,6 +5015,16 @@
           });
         }
         box.appendChild(el("button", { class: "action", onclick: () => go("lueurs-editeur") }, ["Éditer les lueurs…"]));
+        voirAussi(box, ["Dégradé animé et motifs", "Transparence et flou"]);
+      });
+
+      // Dégradé animé et motifs (voir gfx::degrade) — DEMANDE EXPLICITE
+      // (2026-09-26) : « commun comme si tous les panneaux ne faisaient qu'un »,
+      // seulement en mode capturable. Préréglages en BOUTONS (pas de <select>
+      // en CEF).
+      section(scroll, (box) => {
+        box.appendChild(el("h2", {}, ["Dégradé animé et motifs"]));
+        box.appendChild(el("p", { class: "hint" }, ["Un fond animé commun aux barres et aux panneaux, en mode capturable seulement. Préréglages, motif, shaders et couleurs se choisissent ci-dessous."]));
         checkboxRow(box, state.degradeEnabled, "Dégradé animé à la place des couleurs (mode capturable seulement)", (checked) => go("degrade", checked ? "1" : "0"));
         if (state.degradeEnabled) {
           if (!state.captureVisible) {
@@ -5014,6 +5163,7 @@
             box.appendChild(grille);
           }
         }
+        voirAussi(box, ["Lueurs", "Transparence et flou"]);
       });
 
       // Taille du contenu du Dash, du Presse-papiers, des Notes ET des
@@ -5040,17 +5190,12 @@
       // relâché le clic gauche ». L'étiquette suit toujours le curseur en direct
       // (voir `slider()`) ; la valeur ne part vers Rust qu'au relâchement. Même
       // règle pour les tailles PAR ÉCRAN secondaire (`secondaryScreenScales`).
-      // ⭐ La taille des textes GLOBALE et celle des notifications — DEMANDE
-      // EXPLICITE (2026-10-18). Voir `win32::taille_panneaux::TEXTES`.
-      section(scroll, (box) => {
-        box.appendChild(el("h2", {}, ["Taille des textes"]));
-        slider(box, { label: "Menus et fenêtres d'applis", min: 50, max: 200, value: state.tailleTextesPercent, valueLabel: (v) => v + "%", dataKey: "taille-textes", onChange: (v) => go("taille-globale", "textes", v) });
-        slider(box, { label: "Notifications", min: 50, max: 200, value: state.tailleNotificationsPercent, valueLabel: (v) => v + "%", dataKey: "taille-notifications", onChange: (v) => go("taille-globale", "notifications", v) });
-        box.appendChild(el("p", { class: "hint" }, ["Agrandit toute la fenêtre — texte, icônes et marges. Le premier vaut aussi pour les kaomojis, les caractères spéciaux, la phonétique et les maths, et s'ajoute à « Taille des menus » et aux curseurs « Contenu » de chaque panneau. S'applique à la prochaine ouverture, ou à la prochaine notification."]));
-      });
+      // La taille des textes GLOBALE et celle des notifications vivent dans
+      // « Typographie » (Apparence), avec la police de l'interface : c'est la
+      // même surface de texte.
 
       section(scroll, (box) => {
-        box.appendChild(el("h2", {}, ["Taille du contenu des dashs"]));
+        box.appendChild(el("h2", {}, ["Échelle de l'interface"]));
         box.appendChild(el("div", { class: "small-label" }, ["Dash"]));
         slider(box, { label: "Icônes", min: 25, max: 200, value: state.dashIconScalePercent, valueLabel: (v) => v + "%", dataKey: "dash-icon-scale", onChange: (v) => go("dash-icon-scale", v) });
         slider(box, { label: "Texte", min: 25, max: 200, value: state.dashLabelScalePercent, valueLabel: (v) => v + "%", dataKey: "dash-label-scale", onChange: (v) => go("dash-label-scale", v) });
@@ -5093,22 +5238,9 @@
           box.appendChild(el("div", { class: "small-label" }, [label]));
           slider(box, { label: "Contenu", min: 25, max: 200, value: state.panelContentScalePercents[panneau], valueLabel: (v) => v + "%", dataKey: "panel-content-scale-" + panneau, onChange: (v) => go("panel-content-scale", panneau, v) });
         }
-        // ⭐ **LE FORÇAGE GLOBAL DU RATIO DE DPI** — voir `config::load_ratio_dpi_force`.
-        // Celui-ci vaut pour TOUS les écrans, PRIMAIRE comprise — et c'est
-        // précisément pourquoi il existe : la page ne liste que les écrans
-        // SECONDAIRES, donc sans lui la correction automatique de la taille perçue
-        // ne se vérifierait qu'en changeant de résolution.
-        // ⚠️ Cocher propose **100 %** (« ne rien corriger ») et non l'automatique :
-        // le forçage vaut partout, et l'automatique diffère d'un écran à l'autre
-        // (1.0 sur la primaire, 0.67 sur un écran à 100 %). Le curseur fait le reste.
-        box.appendChild(el("div", { class: "small-label" }, ["Ratio de DPI (tous les écrans)"]));
-        const forceDpiRatio = (state.ratioDpiForce || 0) > 0;
-        checkboxRow(box, forceDpiRatio, "Forcer le ratio — pour corriger un DPI que Windows annonce mal", (checked) => {
-          go("ratio-dpi-force", checked ? 100 : 0);
-        });
-        if (forceDpiRatio) {
-          slider(box, { label: "Ratio forcé", min: 25, max: 200, value: state.ratioDpiForce, valueLabel: (v) => v + "%", dataKey: "ratio-dpi-force", onChange: (v) => go("ratio-dpi-force", v) });
-        }
+        // Le forçage du ratio de DPI a sa PROPRE rubrique, « Affichage et DPI »,
+        // dans Système : il vaut pour tous les écrans et ne règle pas la taille
+        // du contenu d'un panneau.
         box.appendChild(el("div", { class: "small-label" }, ["Réglages (ce panneau)"]));
         // `onChange` (PAS `onInput`) — DEMANDE EXPLICITE : contrairement aux
         // curseurs Dash/Presse-papiers ci-dessus (qui ne prennent effet qu'à
@@ -5129,9 +5261,27 @@
         box.appendChild(el("p", { class: "hint" }, ["Icônes/miniatures et texte réglables séparément. Chaque réglage s'applique au relâchement du curseur."]));
       });
 
-      // Apparence des menus
+      // AFFICHAGE ET DPI — le ratio de DPI vaut pour TOUS les écrans, écran
+      // principal compris : il n'a donc rien à faire dans « Échelle de
+      // l'interface », qui ne règle que la taille du contenu d'un panneau.
       section(scroll, (box) => {
-        box.appendChild(el("h2", {}, ["Apparence des menus"]));
+        box.appendChild(el("h2", {}, ["Affichage et DPI"]));
+        box.appendChild(el("p", { class: "hint" }, [
+          "Le ratio de DPI vaut pour tous les écrans, écran principal compris. Il corrige une taille perçue que Windows annonce mal.",
+        ]));
+        const forceDpiRatio = (state.ratioDpiForce || 0) > 0;
+        checkboxRow(box, forceDpiRatio, "Forcer le ratio — pour corriger un DPI que Windows annonce mal", (checked) => {
+          go("ratio-dpi-force", checked ? 100 : 0);
+        });
+        if (forceDpiRatio) {
+          slider(box, { label: "Ratio forcé", min: 25, max: 200, value: state.ratioDpiForce, valueLabel: (v) => v + "%", dataKey: "ratio-dpi-force", onChange: (v) => go("ratio-dpi-force", v) });
+        }
+        voirAussi(box, ["Échelle de l'interface", "Taille des barres"]);
+      });
+
+      // Menus — taille, forme, fondu et couleurs, dans une seule rubrique.
+      section(scroll, (box) => {
+        box.appendChild(el("h2", {}, ["Menus"]));
         slider(box, { label: "Taille des menus", min: 50, max: 200, value: state.menuScalePercent, valueLabel: (v) => v + "%", dataKey: "menu-scale", onInput: (v) => go("menu-scale", v) });
         // max 24 → 40 — voir win32::menu::set_menu_corner_radius, doc de
         // fonction (DEMANDE EXPLICITE, même valeur des deux côtés).
@@ -5144,12 +5294,61 @@
         // coup), pas un cas dégénéré.
         slider(box, { label: "Durée du fondu", min: 0, max: 1200, step: 20, value: state.menuFadeMs, valueLabel: (v) => v + " ms", dataKey: "menu-fade-ms", onInput: (v) => go("menu-fade-ms", v) });
         colorPicker(box, "popup", state.menuColor);
+        // ⭐ COULEURS PAR MENU — DEMANDE EXPLICITE : « personnaliser les menus
+        // individuellement au niveau de la couleur ». Même ergonomie que la
+        // section d'accent (sélecteur segmenté + `colorPicker`), mais les menus
+        // n'ont QUE le fond (leur contenu reste neutre). Cette partie vivait
+        // dans une section « Couleur des menus » séparée : elle est réunie ici,
+        // avec la couleur partagée qu'elle surcharge.
+        // La cible passée à `colorPicker` est préfixée `menu:` pour router côté
+        // Rust vers `menu::set_menu_color` (voir `apply_color_to_target`) sans
+        // collision avec les panneaux de même nom (ex. le panneau `calendar`).
+        box.appendChild(el("div", { class: "small-label" }, ["Couleur de chaque menu"]));
+        box.appendChild(el("p", { class: "hint" }, [
+          "La couleur de fond de chaque menu, individuellement. Le contenu des menus reste neutre : seule la teinte du fond change. Un menu jamais réglé suit la couleur partagée ci-dessus.",
+        ]));
+        const MENU_TARGETS = [["Menu clic droit", "context"], ["Horloge / calendrier", "calendar"], ["Menu dossier", "dossier_menu"], ["Réseau", "network"], ["Son", "sound"], ["Voicemeeter", "voicemeeter"], ["Taille d'espace", "spacer_size"], ["Taille de barre", "bar_size"], ["Confirmation", "confirm"]];
+        if (!MENU_TARGETS.some(([, k]) => k === activeMenuTarget)) activeMenuTarget = MENU_TARGETS[0][1];
+        const choix = el("div", { class: "panel-choices" });
+        for (const [label, key] of MENU_TARGETS) {
+          choix.appendChild(
+            el("button", {
+              "data-menu": key,
+              class: key === activeMenuTarget ? "selected" : "",
+              onclick: () => { activeMenuTarget = key; rendreMenu(); },
+            }, [label]),
+          );
+        }
+        box.appendChild(choix);
+        const corps = el("div");
+        box.appendChild(corps);
+        function rendreMenu() {
+          for (const b of choix.children) b.classList.toggle("selected", b.dataset.menu === activeMenuTarget);
+          corps.replaceChildren();
+          const key = activeMenuTarget;
+          const menuColors = (state && state.menuColors) || {};
+          const custom = (state && state.menuCustom) || [];
+          corps.appendChild(el("div", { class: "small-label" }, ["Fond"]));
+          // La cible `menu:<clé>` route côté Rust ; le sélecteur est amorcé avec
+          // la couleur RÉELLEMENT affichée (propre si réglée, sinon partagée).
+          colorPicker(corps, `menu:${key}`, menuColors[key] || "000000");
+          if (custom.includes(key)) {
+            corps.appendChild(el("p", { class: "hint" }, ["Ce menu a sa propre couleur."]));
+            corps.appendChild(el("div", { class: "row" }, [
+              el("button", { class: "action", onclick: () => go("menu-color-reset", key) }, ["Revenir à la couleur partagée"]),
+            ]));
+          } else {
+            corps.appendChild(el("p", { class: "hint" }, ["Ce menu suit la couleur partagée des menus."]));
+          }
+        }
+        rendreMenu();
         box.appendChild(el("p", { class: "hint" }, ["S'applique au clic droit sur l'icône NeuraDesk et aux volets son/réseau/alimentation/presse-papiers/calendrier, dès la prochaine ouverture."]));
+        voirAussi(box, ["Typographie", "Infobulles", "Transparence et flou"]);
       });
 
       // Magnification des icônes au survol — DEMANDE EXPLICITE ("magnification
       // au survol réglable par curseur"). Section À PART plutôt que rangée dans
-      // "Apparence des menus" ci-dessus : l'indice de celle-ci se limite aux
+      // "Menus" ci-dessus : l'indice de celle-ci se limite aux
       // popups de clic droit et aux volets son/réseau, alors qu'il s'agit ici
       // des icônes du dock ET des trois boutons média de la barre du haut (voir
       // ui::dock::hover_scale, réglage global).
@@ -5160,13 +5359,13 @@
       // retour visuel se fait pendant le glissement, directement sur les icônes
       // survolées.
       //
-      // Le titre est "Animation au survol" et non "Animation des icônes" depuis
+      // Le titre est "Survol et magnification" et non "Animation des icônes" depuis
       // que la section porte AUSSI le facteur des horloges : c'est un réglage à
       // part (voir ui::dock::clock_hover_scale), avec son propre plafond — 350 %
       // contre 250 %, la place d'un texte n'étant pas celle d'une icône dans une
       // barre de 72px.
       section(scroll, (box) => {
-        box.appendChild(el("h2", {}, ["Animation au survol"]));
+        box.appendChild(el("h2", {}, ["Survol et magnification"]));
         slider(box, { label: "Magnification au survol", min: 100, max: 250, value: state.hoverScalePercent, valueLabel: (v) => v + "%", dataKey: "hover-scale", onInput: (v) => go("hover-scale", v) });
         slider(box, { label: "Vitesse d'approche", min: 2, max: 60, value: state.hoverEaseSpeed, valueLabel: (v) => String(v), dataKey: "hover-ease-speed", onInput: (v) => go("hover-ease-speed", v) });
         // LE DÉCALAGE DES ICÔNES AGRANDIES — **UN RÉGLAGE PAR BARRE.** DEMANDE
@@ -5228,9 +5427,9 @@
         // changement de structure sans rapport (défaut déjà payé avec
         // `separatorColorMode` et `runningDotColorMode`).
         //
-        // ⚠️ **PAS DE `return` ICI** : contrairement à la section des verrous,
-        // d'autres cases suivent dans CETTE section (clignotement, miroir) ;
-        // un retour les effacerait aussi.
+        // ⚠️ **PAS DE `return` ICI** : la case fait apparaître ses deux contrôles
+        // juste après ; un retour les effacerait aussi. Les réglages de la zone
+        // de notification ont leur PROPRE rubrique, un peu plus bas.
         checkboxRow(box, state.survolFondActif, "Fond de couleur au survol des icônes fermées", (checked) => go("survol-fond", checked ? "1" : "0"));
         box.appendChild(el("p", { class: "hint" }, ["Ne s'applique qu'aux programmes épinglés qui ne tournent pas et aux applets dont la page n'est pas ouverte : une icône ouverte garde le survol habituel. Le fond est le carré arrondi de l'icône agrandie et suit son balancement."]));
         if (state.survolFondActif) {
@@ -5239,40 +5438,7 @@
           slider(box, { label: "Opacité du fond", min: 0, max: 100, value: state.survolFondOpacitePercent, valueLabel: (v) => v + "%", dataKey: "survol-fond-opacite", onInput: (v) => go("survol-fond-opacite", v) });
           box.appendChild(el("p", { class: "hint" }, ["100 % est un aplat derrière l'icône ; 0 % le rend invisible, comme si la case était décochée. La couleur et l'opacité sont conservées quand on décoche."]));
         }
-        // Clignotement à la notification — DEMANDE EXPLICITE ("il faudrait
-        // aussi que l'indicateur clignote de plusieurs couleurs si l'app
-        // envoit une notification"). Désactivé par défaut : le texte de
-        // l'indice dit EXACTEMENT ce qui est lu, parce que la lecture porte
-        // sur une base qui contient aussi le texte des messages — c'est la
-        // contrepartie explicite du réglage (voir win32::notification, doc de
-        // module).
-        checkboxRow(box, state.notificationBlink, "Clignoter quand une application envoie une notification", (checked) => go("notification-blink", checked ? "1" : "0"));
-        // ⚠️ **LA PHRASE ABSOLUE A ÉTÉ CORRIGÉE LE 2026-10-08.** Elle disait
-        // « jamais le contenu des messages » — vrai du clignotement, et FAUX
-        // depuis que le réglage ci-dessous existe. Une promesse à l'écran qui
-        // cesse d'être vraie se corrige ; elle ne se contourne pas.
-        box.appendChild(el("p", { class: "hint" }, ["NeuraDesk lit uniquement l'identifiant de l'application qui a envoyé la notification, jamais le contenu des messages — c'est le clignotement, et lui seul. Le clignotement s'arrête quand vous cliquez l'icône concernée."]));
-        // ⛔ **LE RÉGLAGE DU BANDEAU N'EST PLUS ICI.** Il vivait dans cette
-        // section — « Animation au survol » — où il n'avait rien à faire :
-        // l'utilisateur l'a cherché et ne l'a pas trouvé. Il a désormais sa
-        // PROPRE section, « Notifications de Windows », un peu plus bas. Le
-        // titre est ce qui rend une option trouvable.
-        // Miroir de la ZONE DE NOTIFICATION de Windows dans la zone « Système »
-        // de la barre de droite — DEMANDE EXPLICITE. Le libellé dit ce que
-        // l'utilisateur obtient, et l'indice dit franchement ce que le miroir
-        // N'EST PAS : les icônes système sont dessinées par NeuraDesk (celles de
-        // Windows ne sont pas lisibles — voir win32::tray_icons, doc de module),
-        // et les icônes d'APPLICATION, elles, sont les vraies.
-        checkboxRow(box, state.trayMirror, "Afficher les icônes de la zone de notification dans la barre de droite", (checked) => go("tray-mirror", checked ? "1" : "0"));
-        box.appendChild(el("p", { class: "hint" }, ["Les icônes système sont dessinées par NeuraDesk (celles de Windows ne peuvent pas être lues) ; les icônes d'application sont les vraies. Le clic n'est pas encore transmis à Windows."]));
-        // LE FLUX DES ICÔNES (voir `win32::tray_flux`) — éteint par défaut
-        // depuis `f543e96` : sa fenêtre imposteur `Shell_TrayWnd` fausse la zone
-        // de travail. L'indice le dit sans détour, et dit aussi qu'il n'agit
-        // qu'au prochain lancement : la fenêtre n'est créée qu'au démarrage.
-        checkboxRow(box, state.trayFlux, "Recevoir l'icône exacte envoyée par chaque application (expérimental)", (checked) => go("tray-flux", checked ? "1" : "0"));
-        box.appendChild(el("p", { class: "hint" }, ["Déconseillé : NeuraDesk se fait alors passer pour la barre des tâches, ce qui fausse l'espace réservé aux fenêtres (une fenêtre agrandie passe sous les barres). Pris en compte au prochain lancement."]));
-        checkboxRow(box, state.trayFluxDiffusion, "Au lancement, demander aux applications de renvoyer leur icône", (checked) => go("tray-flux-diffusion", checked ? "1" : "0"));
-        box.appendChild(el("p", { class: "hint" }, ["N'agit que si l'option ci-dessus est cochée. Une application qui y répond mal peut perdre son icône dans la barre des tâches jusqu'à son redémarrage. Pris en compte au prochain lancement."]));
+        voirAussi(box, ["Zone de notification"]);
       });
 
       // ⭐ **LA PRESSION SUR LE PROCESSEUR ET LE GPU** — DEMANDE EXPLICITE
@@ -5312,7 +5478,7 @@
 
       // ⭐ **LES NOTIFICATIONS DE WINDOWS SOUS L'HORLOGE** (voir
       // `win32::toast_veille`) — SECTION À PART, ET C'EST LE CORRECTIF DU
-      // 2026-10-08 AU SOIR : la case vivait dans « Animation au survol », où
+      // 2026-10-08 AU SOIR : la case vivait dans « Survol et magnification », où
       // personne ne la chercherait. L'utilisateur a signalé « je n'ai pas
       // d'option dans les réglages pour la fenêtre de notification » — le
       // titre d'une section est ce qui rend une option trouvable.
@@ -5438,6 +5604,47 @@
         const plancher = state.plancherDureeWindows || 5;
         const actuelle = (state.dureeWindows == null) ? "inconnue" : state.dureeWindows + " s";
         box.appendChild(el("p", { class: "hint" }, ["En dessous de " + plancher + " s, NeuraDesk ferme lui-même la notification (elle reste dans le centre de notifications). ⚠️ À partir de " + plancher + " s, NeuraDesk modifie AUSSI le réglage de Windows (Accessibilité > Effets visuels), qui reste appliqué NeuraDesk fermé. Le pointeur posé sur une notification la garde ouverte. Windows applique actuellement : " + actuelle + "."]));
+        voirAussi(box, ["Zone de notification", "Typographie"]);
+      });
+
+      // ⭐ ZONE DE NOTIFICATION — les icônes des applications dans la barre de
+      // droite et leur réaction aux messages. Ces quatre cases vivaient au fond
+      // de « Survol et magnification », où personne ne les chercherait ; elles sont
+      // réunies ici, juste à côté de la section qui règle l'affichage des
+      // notifications Windows (même famille : ce qui signale un message).
+      section(scroll, (box) => {
+        box.appendChild(el("h2", {}, ["Zone de notification"]));
+        box.appendChild(el("p", { class: "hint" }, ["Les icônes des applications dans la barre de droite, et leur réaction quand un message arrive."]));
+        // Clignotement à la notification — DEMANDE EXPLICITE ("il faudrait
+        // aussi que l'indicateur clignote de plusieurs couleurs si l'app
+        // envoit une notification"). Désactivé par défaut : le texte de
+        // l'indice dit EXACTEMENT ce qui est lu, parce que la lecture porte
+        // sur une base qui contient aussi le texte des messages — c'est la
+        // contrepartie explicite du réglage (voir win32::notification, doc de
+        // module).
+        checkboxRow(box, state.notificationBlink, "Clignoter quand une application envoie une notification", (checked) => go("notification-blink", checked ? "1" : "0"));
+        // ⚠️ **LA PHRASE ABSOLUE A ÉTÉ CORRIGÉE LE 2026-10-08.** Elle disait
+        // « jamais le contenu des messages » — vrai du clignotement, et FAUX
+        // depuis que le réglage des notifications Windows existe. Une promesse à
+        // l'écran qui cesse d'être vraie se corrige ; elle ne se contourne pas.
+        box.appendChild(el("p", { class: "hint" }, ["NeuraDesk lit uniquement l'identifiant de l'application qui a envoyé la notification, jamais le contenu des messages — c'est le clignotement, et lui seul. Le clignotement s'arrête quand vous cliquez l'icône concernée."]));
+        // Miroir de la ZONE DE NOTIFICATION de Windows dans la zone « Système »
+        // de la barre de droite — DEMANDE EXPLICITE. Le libellé dit ce que
+        // l'utilisateur obtient, et l'indice dit franchement ce que le miroir
+        // N'EST PAS : les icônes système sont dessinées par NeuraDesk (celles de
+        // Windows ne sont pas lisibles — voir win32::tray_icons, doc de module),
+        // et les icônes d'APPLICATION, elles, sont les vraies.
+        checkboxRow(box, state.trayMirror, "Afficher les icônes de la zone de notification dans la barre de droite", (checked) => go("tray-mirror", checked ? "1" : "0"));
+        box.appendChild(el("p", { class: "hint" }, ["Les icônes système sont dessinées par NeuraDesk (celles de Windows ne peuvent pas être lues) ; les icônes d'application sont les vraies. Le clic n'est pas encore transmis à Windows."]));
+        // LE FLUX DES ICÔNES (voir `win32::tray_flux`) — éteint par défaut
+        // depuis `f543e96` : sa fenêtre imposteur `Shell_TrayWnd` fausse la zone
+        // de travail. L'indice le dit sans détour, et dit aussi qu'il n'agit
+        // qu'au prochain lancement : la fenêtre n'est créée qu'au démarrage.
+        checkboxRow(box, state.trayFlux, "Recevoir l'icône exacte envoyée par chaque application (expérimental)", (checked) => go("tray-flux", checked ? "1" : "0"));
+        box.appendChild(el("p", { class: "hint" }, ["Déconseillé : NeuraDesk se fait alors passer pour la barre des tâches, ce qui fausse l'espace réservé aux fenêtres (une fenêtre agrandie passe sous les barres). Pris en compte au prochain lancement."]));
+        checkboxRow(box, state.trayFluxDiffusion, "Au lancement, demander aux applications de renvoyer leur icône", (checked) => go("tray-flux-diffusion", checked ? "1" : "0"));
+        box.appendChild(el("p", { class: "hint" }, ["N'agit que si l'option ci-dessus est cochée. Une application qui y répond mal peut perdre son icône dans la barre des tâches jusqu'à son redémarrage. Pris en compte au prochain lancement."]));
+        voirAussi(box, ["Notifications de Windows", "Typographie"]);
       });
 
       // Infobulles d'icônes — DEMANDE EXPLICITE ("donnes la possibilité à
@@ -5466,6 +5673,7 @@
         // identiques (0 à 1200), zéro = pas de fondu.
         slider(box, { label: "Durée du fondu", min: 0, max: 1200, step: 20, value: state.tooltipFadeMs, valueLabel: (v) => v + " ms", dataKey: "tooltip-fade-ms", onInput: (v) => go("tooltip-fade-ms", v) });
         box.appendChild(el("p", { class: "hint" }, ["Survol continu d'une icône du dock ou d'un élément de la barre du haut (horloge, boutons média, pastilles de bureaux virtuels, afficher le bureau, moniteur système, fréquence d'écran). Décocher la case n'éteint PAS le chiffre affiché pendant le redimensionnement d'un espace ou d'une zone : c'est une mesure, pas une explication."]));
+        voirAussi(box, ["Typographie", "Menus"]);
       });
 
       // Vitesse de défilement à la molette — DEMANDE EXPLICITE : « pouvoir
@@ -5725,54 +5933,6 @@
         }
         rendreAccent();
       });
-      // ⭐ SECTION « Couleur des menus » — DEMANDE EXPLICITE : « personnaliser les
-      // menus individuellement au niveau de la couleur ». Même ergonomie que la
-      // section d'accent ci-dessus (sélecteur segmenté + `colorPicker`), mais les
-      // menus n'ont QUE le fond (leur contenu reste neutre, décision antérieure).
-      // La cible passée à `colorPicker` est préfixée `menu:` pour router côté Rust
-      // vers `menu::set_menu_color` (voir `apply_color_to_target`) sans collision
-      // avec les panneaux de même nom (ex. le panneau `calendar`).
-      const MENU_TARGETS = [["Menu clic droit", "context"], ["Horloge / calendrier", "calendar"], ["Menu dossier", "dossier_menu"], ["Réseau", "network"], ["Son", "sound"], ["Voicemeeter", "voicemeeter"], ["Taille d'espace", "spacer_size"], ["Taille de barre", "bar_size"], ["Confirmation", "confirm"]];
-      section(scroll, (box) => {
-        box.appendChild(el("h2", {}, ["Couleur des menus"]));
-        box.appendChild(el("p", { class: "hint" }, [
-          "La couleur de fond de chaque menu, individuellement. Le contenu des menus reste neutre : seule la teinte du fond change. Un menu jamais réglé suit la couleur partagée des menus (section « Apparence des menus »).",
-        ]));
-        if (!MENU_TARGETS.some(([, k]) => k === activeMenuTarget)) activeMenuTarget = MENU_TARGETS[0][1];
-        const choix = el("div", { class: "panel-choices" });
-        for (const [label, key] of MENU_TARGETS) {
-          choix.appendChild(
-            el("button", {
-              "data-menu": key,
-              class: key === activeMenuTarget ? "selected" : "",
-              onclick: () => { activeMenuTarget = key; rendreMenu(); },
-            }, [label]),
-          );
-        }
-        box.appendChild(choix);
-        const corps = el("div");
-        box.appendChild(corps);
-        function rendreMenu() {
-          for (const b of choix.children) b.classList.toggle("selected", b.dataset.menu === activeMenuTarget);
-          corps.replaceChildren();
-          const key = activeMenuTarget;
-          const menuColors = (state && state.menuColors) || {};
-          const custom = (state && state.menuCustom) || [];
-          corps.appendChild(el("div", { class: "small-label" }, ["Fond"]));
-          // La cible `menu:<clé>` route côté Rust ; le sélecteur est amorcé avec
-          // la couleur RÉELLEMENT affichée (propre si réglée, sinon partagée).
-          colorPicker(corps, `menu:${key}`, menuColors[key] || "000000");
-          if (custom.includes(key)) {
-            corps.appendChild(el("p", { class: "hint" }, ["Ce menu a sa propre couleur."]));
-            corps.appendChild(el("div", { class: "row" }, [
-              el("button", { class: "action", onclick: () => go("menu-color-reset", key) }, ["Revenir à la couleur partagée"]),
-            ]));
-          } else {
-            corps.appendChild(el("p", { class: "hint" }, ["Ce menu suit la couleur partagée des menus."]));
-          }
-        }
-        rendreMenu();
-      });
       // **SAUVEGARDE DE LA CONFIGURATION** — voir `sauvegarde_config` côté Rust.
       // L'import se fait en deux clics : choisir l'archive (vérifiée, rien ne
       // change), puis confirmer ce qu'elle contient.
@@ -5856,20 +6016,26 @@
       // sans ce découpage la colonne de catégories n'aurait listé que le
       // nom de l'écran, une seule entrée pour tout l'onglet — inutile
       // comme sommaire.
-      section(scroll, (box) => { box.appendChild(el("h2", {}, ["Épaisseur des barres"])); secondaryScreenThickness(box, screen); });
+      section(scroll, (box) => { box.appendChild(el("h2", {}, ["Taille des barres"])); secondaryScreenThickness(box, screen); });
       section(scroll, (box) => { box.appendChild(el("h2", {}, ["Transparence des barres"])); secondaryScreenTint(box, screen); });
-      section(scroll, (box) => { box.appendChild(el("h2", {}, ["Couleur des barres"])); secondaryScreenColors(box, screen); });
+      section(scroll, (box) => { box.appendChild(el("h2", {}, ["Couleurs des barres"])); secondaryScreenColors(box, screen); });
       section(scroll, (box) => { box.appendChild(el("h2", {}, ["Couleur du texte de la barre du haut"])); secondaryScreenTopbarText(box, screen); });
-      section(scroll, (box) => { box.appendChild(el("h2", {}, ["Fonctionnalités"])); secondaryScreenFeatures(box, screen); });
+      section(scroll, (box) => { box.appendChild(el("h2", {}, ["Modules et applets"])); secondaryScreenFeatures(box, screen); });
       section(scroll, (box) => { box.appendChild(el("h2", {}, ["Horloge plein écran"])); secondaryScreenFullscreenClock(box, screen); });
-      section(scroll, (box) => { box.appendChild(el("h2", {}, ["Taille du contenu"])); secondaryScreenScales(box, screen); });
+      section(scroll, (box) => { box.appendChild(el("h2", {}, ["Échelle de l'interface"])); secondaryScreenScales(box, screen); });
       section(scroll, (box) => { box.appendChild(el("h2", {}, ["Pastilles de bureaux virtuels"])); secondaryScreenDesktopDotSize(box, screen); });
       section(scroll, (box) => { box.appendChild(el("h2", {}, ["Taille du texte de la barre du haut"])); secondaryScreenTopbarTextSize(box, screen); });
       section(scroll, (box) => { box.appendChild(el("h2", {}, ["Ombres"])); secondaryScreenOmbre(box, screen); });
       section(scroll, (box) => { box.appendChild(el("h2", {}, ["Coins arrondis"])); secondaryScreenCoins(box, screen); });
       section(scroll, (box) => { box.appendChild(el("h2", {}, ["Écartement des icônes"])); secondaryScreenIconGap(box, screen); });
-      section(scroll, (box) => { box.appendChild(el("h2", {}, ["Couleur des séparateurs"])); secondaryScreenSeparatorColor(box, screen); });
-      section(scroll, (box) => { box.appendChild(el("h2", {}, ["Taille des séparateurs"])); secondaryScreenSeparatorSize(box, screen); });
+      // Couleur et taille des séparateurs dans UNE rubrique, comme côté interface.
+      section(scroll, (box) => {
+        box.appendChild(el("h2", {}, ["Séparateurs"]));
+        box.appendChild(el("div", { class: "small-label" }, ["Couleur"]));
+        secondaryScreenSeparatorColor(box, screen);
+        box.appendChild(el("div", { class: "small-label" }, ["Taille"]));
+        secondaryScreenSeparatorSize(box, screen);
+      });
     }
 
     function themeSwatch(name, hex, removable, index) {
@@ -6065,8 +6231,8 @@
       updateSlider("menu-scale", state.menuScalePercent, (v) => v + "%");
       updateSlider("menu-corner-radius", state.menuCornerRadius, (v) => v + "px");
       updateSlider("menu-tint", state.menuTintPercent, (v) => v + "%");
-      // Ordre du DOM : "Animation au survol" se place juste après "Apparence
-      // des menus" ci-dessus (voir sa `section`).
+      // Ordre du DOM : "Survol et magnification" se place juste après "Menus"
+      // ci-dessus (voir sa `section`).
       updateSlider("hover-scale", state.hoverScalePercent, (v) => v + "%");
       updateSlider("hover-ease-speed", state.hoverEaseSpeed, (v) => String(v));
       const tirages = state.tiragesPercent || [100, 100, 100];
@@ -6094,7 +6260,10 @@
       updateSlider("fullscreen-clock-text-scale", state.fullscreenClockTextScalePercent, (v) => v + "%");
       updateSlider("fullscreen-clock-decalage-x", state.fullscreenClockDecalage[0], (v) => (v > 0 ? "+" : "") + v + " px");
       updateSlider("fullscreen-clock-decalage-y", state.fullscreenClockDecalage[1], (v) => v + " px");
-      ["top", "left", "right"].forEach((bar, i) => {
+      // La barre du BAS a son curseur de transparence comme les trois autres
+      // (elle était absente de cette boucle : un changement venu d'ailleurs ne
+      // rafraîchissait pas son étiquette).
+      ["top", "left", "right", "bottom"].forEach((bar, i) => {
         updateSlider(`bar-tint-${bar}`, state.barTintPercent[i], (v) => v + "%");
         updateSlider(`bar-size-${bar}`, state.barSizes[i], (v) => v + "px");
       });

@@ -454,7 +454,7 @@ fn requete(reglages: &Reglages) -> Result<Requete, String> {
     let hebergeur = reglages.hebergeur;
     let cle = || {
         reglages.cle_de(hebergeur).map(str::trim).ok_or_else(|| {
-            format!("{} demande une {} : renseignez-la dans Réglages → Éditeur d'image.", hebergeur.label(), hebergeur.cle().unwrap_or("clé"))
+            format!("{} demande une {} : renseignez-la dans Réglages → Captures d'écran et éditeur.", hebergeur.label(), hebergeur.cle().unwrap_or("clé"))
         })
     };
     let json = |pointeur: &str| Lecture::Json(pointeur.into());
@@ -494,7 +494,7 @@ fn requete(reglages: &Reglages) -> Result<Requete, String> {
 
 fn requete_perso(perso: &ServeurPerso) -> Result<Requete, String> {
     if perso.url.is_empty() {
-        return Err("Aucun serveur personnalisé : renseignez son adresse dans Réglages → Éditeur d'image.".into());
+        return Err("Aucun serveur personnalisé : renseignez son adresse dans Réglages → Captures d'écran et éditeur.".into());
     }
     let adresse = decouper_url(&perso.url).map_err(|e| format!("Serveur personnalisé : {e}"))?;
     verifier_noms(perso).map_err(|e| format!("Serveur personnalisé : {e}"))?;
