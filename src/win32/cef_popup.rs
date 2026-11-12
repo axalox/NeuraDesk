@@ -3303,7 +3303,14 @@ fn create_window(spec: &PopupSpec, gfx: &GfxDevice, rect @ [x, y, w, h]: [i32; 4
         // petite que `w`×`h` d'une fenêtre à bordures (barre de titre comprise).
         let (w, h) = if spec.fenetre { taille_client(hwnd).unwrap_or((w, h)) } else { (w, h) };
 
-        let swapchain = match SwapChain::new(&gfx.device, hwnd, w.max(1) as u32, h.max(1) as u32, false) {
+        // ⭐ **MODÈLE BitBlt, DONC ALPHA COMPOSÉ PAR DWM** — DEMANDE EXPLICITE
+        // du 2026-11-12 : « rendre l'app visible sur les captures même quand la
+        // transparence est activée ». Quand la LOUPE (`gfx::mag_capture`) ne
+        // fournit pas de fond, le shader sort l'alpha de l'utilisateur
+        // (`sans_fond`, `gfx::quad_renderer`) ; en modèle *flip* cet alpha est
+        // ignoré et la fenêtre reste un aplat opaque assombri — voir
+        // `gfx::swapchain::SwapChain::new`.
+        let swapchain = match SwapChain::new(&gfx.device, hwnd, w.max(1) as u32, h.max(1) as u32, true) {
             Ok(swapchain) => swapchain,
             Err(err) => {
                 crate::diag!("[cef] SwapChain::new a echoue pour {} ({w}x{h}) : {err}", spec.html_file);

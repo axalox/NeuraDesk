@@ -456,7 +456,10 @@ impl TooltipWindow {
 
         match &mut self.swapchain {
             Some(sc) => sc.resize(&gfx.device, width, height)?,
-            None => self.swapchain = Some(SwapChain::new(&gfx.device, self.hwnd, width, height, false)?),
+            // BitBlt, donc alpha composé par DWM — au repli `sans_fond`
+            // (loupe indisponible, voir `gfx::quad_renderer`) l'infobulle suit
+            // la transparence des menus au lieu de rester un aplat opaque.
+            None => self.swapchain = Some(SwapChain::new(&gfx.device, self.hwnd, width, height, true)?),
         }
         let swapchain = self.swapchain.as_ref().expect("swapchain vient d'être créé/redimensionné ci-dessus");
 

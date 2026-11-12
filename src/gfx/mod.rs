@@ -10,6 +10,7 @@ pub mod duplication;
 pub mod icon;
 pub mod lueur;
 pub mod lueur_images;
+pub mod mag_capture;
 pub mod material;
 pub mod quad_renderer;
 pub mod releve_barres;

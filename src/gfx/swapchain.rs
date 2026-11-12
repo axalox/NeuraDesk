@@ -29,9 +29,19 @@ pub struct SwapChain {
 
 impl SwapChain {
     /// `transparent` : `true` pour une fenêtre dont DWM doit composer l'ALPHA —
-    /// le dock, et l'horloge plein écran ; `false` pour les panneaux OPAQUES qui
-    /// n'en ont aucun besoin (popups CEF, infobulle, panneau d'aperçus) et qui
-    /// gardent le modèle le plus récent.
+    /// le dock (primaire ET secondaires), l'horloge plein écran, et depuis le
+    /// 2026-11-12 les POPUPS CEF (Dash, Réglages, Presse-papiers, Notes, menus),
+    /// l'INFOBULLE et les PANNEAUX D'APERÇUS. C'est le repli « sans fond »
+    /// (`gfx::quad_renderer`, `Ombres.y`) qui le réclame : quand la LOUPE
+    /// (`gfx::mag_capture`) ne fournit pas de fond — machine où elle est
+    /// indisponible — le shader sort l'alpha de transparence de l'utilisateur,
+    /// et DWM doit le composer. En modèle *flip* l'alpha est ignoré : la fenêtre
+    /// resterait un aplat opaque assombri (rgb × alpha).
+    ///
+    /// Le paramètre ne change rien quand la capture est invisible (ni loupe ni
+    /// repli : alpha 1, fenêtre opaque). Plus aucune fenêtre n'utilise `false` à
+    /// ce jour ; le modèle *flip* reste disponible pour une fenêtre réellement
+    /// opaque.
     ///
     /// **L'horloge plein écran a rejoint le premier groupe quand le texte de son
     /// horloge s'est mis à grossir au survol** : sa fenêtre doit désormais être

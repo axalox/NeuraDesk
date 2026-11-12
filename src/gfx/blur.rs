@@ -94,17 +94,13 @@ thread_local! {
 /// utilisé — voir `BLUR_PASSES`, réglable via le curseur "Intensité du
 /// flou" du panneau de réglages (`win32::settings_dash`).
 ///
-/// "Visible dans les captures d'écran" (voir `gfx::capture_visibility`,
-/// DEMANDE EXPLICITE) coupe le flou À ZÉRO tant qu'il est actif, SANS
-/// modifier `BLUR_PASSES` lui-même (voir `set_blur_passes`) — le réglage de
-/// l'utilisateur redevient effectif dès ce mode désactivé, et ce choix
-/// unique ici couvre à la fois le rendu réel (seul appelant :
-/// `render_backdrop`) et sa valeur rapportée au panneau de réglages
-/// (`win32::cef_settings::push_state`, même fonction).
+/// ⭐ **LE MODE CAPTURABLE NE COUPE PLUS LE FLOU** (DEMANDE EXPLICITE
+/// 2026-11-12, voir `gfx::capture_visibility`) : il rend seulement impossible
+/// la CAPTURE du fond (nos fenêtres y apparaîtraient). La valeur réglée reste
+/// donc celle que rapporte aussi le panneau de réglages
+/// (`win32::cef_settings::push_state`) ; sans fond à flouter, elle n'a
+/// simplement rien à traiter dans ce mode.
 pub fn blur_passes() -> u32 {
-    if crate::gfx::capture_visibility::is_enabled() {
-        return 0;
-    }
     BLUR_PASSES.with(Cell::get)
 }
 

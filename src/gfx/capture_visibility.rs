@@ -9,17 +9,22 @@
 //! horloge plein écran) s'exclut elle-même de toute capture d'écran via
 //! `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)`. Activé,
 //! l'utilisateur accepte que l'interface apparaisse dans un enregistrement/
-//! partage d'écran — en échange, `blur::blur_passes`/`menu::menu_tint` et
-//! toutes les teintes de fond (barres primaire/secondaires, dash/réglages/
-//! presse-papiers/notes) sont forcées à une opacité de 100% (transparence
-//! 0%) au lieu de leur réglage habituel : c'est justement la combinaison
-//! flou-arrière-plan DWM + alpha partiel qui produit les artefacts visuels
-//! (zones noires ou mal recomposées) que certains outils de capture
-//! affichent sur une fenêtre translucide — les retirer entièrement le temps
-//! que ce réglage est actif est le seul moyen fiable d'éviter ça. Rien
-//! n'est perdu : les curseurs de transparence gardent leur valeur
-//! enregistrée, seule la sortie RENDUE est court-circuitée tant que ce
-//! réglage est actif (voir chaque site `capture_visibility::is_enabled()`).
+//! partage d'écran.
+//!
+//! ⭐ **LA TRANSPARENCE ET LE FLOU RESTENT CEUX RÉGLÉS** — DEMANDES EXPLICITES
+//! du 2026-11-12 : « rendre l'app visible sur les captures même quand la
+//! transparence est activée », puis « quand Rendre l'interface visible sur les
+//! captures d'écran est activé, le flou doit aussi être activé ». Les versions
+//! antérieures forçaient toutes les teintes à une opacité de 100 % et le flou
+//! à zéro dans ce mode. Ce compromis est RETIRÉ.
+//!
+//! Le fond flouté vient de `gfx::mag_capture`, une loupe dont le filtre de
+//! fenêtres écarte NOS fenêtres de NOTRE capture uniquement : les captureurs
+//! externes (OBS, Capture d'écran) continuent de voir l'interface, et le fond
+//! flouté est le vrai bureau. Le rendu est donc celui du mode normal (fond
+//! flouté + teinte réglée). Si cette loupe est indisponible sur la machine,
+//! le shader retombe sur la teinte seule avec l'alpha de l'utilisateur
+//! (drapeau `Ombres.y`, voir `gfx::quad_renderer`).
 //!
 //! Chaque fenêtre lit `window_display_affinity()` à sa CRÉATION, mais une
 //! fenêtre déjà ouverte ne peut pas être recréée à chaque bascule du réglage :
@@ -91,12 +96,23 @@ pub fn set_enabled(enabled: bool) {
     CAPTURE_VISIBLE.store(enabled, Ordering::Relaxed);
 }
 
+/// Nos fenêtres sont-elles visibles pour les captureurs EXTERNES ? Vrai si le
+/// réglage est actif, ou si l'applet Enregistrer force la visibilité le temps
+/// d'une vidéo (voir `est_force`).
+///
+/// C'est CE prédicat — pas `is_enabled` seul — que doivent consulter le fond
+/// flouté et le shader : dans les deux cas les fenêtres sont en `WDA_NONE`,
+/// donc notre propre Desktop Duplication les verrait et se relirait en blanc.
+pub fn est_capturable() -> bool {
+    is_enabled() || est_force()
+}
+
 /// Affinité à appliquer à une fenêtre de l'interface fraîchement créée (voir
 /// tous les appels `SetWindowDisplayAffinity` du projet) — centralise le
 /// choix ici pour qu'une future fenêtre de l'interface suive automatiquement
 /// ce réglage sans avoir à réimplémenter la même condition.
 pub fn window_display_affinity() -> WINDOW_DISPLAY_AFFINITY {
-    if is_enabled() || est_force() {
+    if est_capturable() {
         WDA_NONE
     } else {
         WDA_EXCLUDEFROMCAPTURE
@@ -121,21 +137,22 @@ pub fn apply_to_window(hwnd: HWND) {
     }
 }
 
-/// Force une opacité de 100% (transparence 0%) quand ce réglage est actif —
-/// voir la doc de module. Point d'appel unique pour toutes les teintes de
-/// fond de l'interface (`app::run`, `dock_instance::DockInstance::render`).
+/// Point d'appel unique de l'alpha de toutes les teintes de fond de
+/// l'interface (`app::run`, `dock_instance::DockInstance::render`).
 ///
-/// C'est aussi là que le mode clair pose son PLANCHER (voir
+/// ⭐ **LE MODE CAPTURABLE N'Y TOUCHE PLUS** (DEMANDE EXPLICITE 2026-11-12,
+/// voir la doc de module) : la transparence réglée reste effective, c'est le
+/// shader qui compose avec le bureau derrière elle.
+///
+/// Ce qui reste ici, c'est le PLANCHER du mode clair (voir
 /// `ui::color::TEINTE_MIN_MODE_CLAIR`) — sans rien persister : la transparence
 /// réglée revient telle quelle dès qu'on quitte le thème « Windows clair ».
 pub fn tint_alpha(configured: f32) -> f32 {
-    tint_alpha_selon(configured, is_enabled(), crate::ui::color::mode_clair())
+    tint_alpha_selon(configured, crate::ui::color::mode_clair())
 }
 
-fn tint_alpha_selon(configured: f32, capture: bool, mode_clair: bool) -> f32 {
-    if capture {
-        1.0
-    } else if mode_clair {
+fn tint_alpha_selon(configured: f32, mode_clair: bool) -> f32 {
+    if mode_clair {
         configured.max(crate::ui::color::TEINTE_MIN_MODE_CLAIR)
     } else {
         configured
@@ -292,6 +309,36 @@ fn is_own_ui_window(hwnd: HWND) -> bool {
     class_name.starts_with("NeuraDesk")
 }
 
+/// TOUTES nos fenêtres d'interface actuellement vivantes (dock, docks
+/// secondaires, popups CEF, menus, infobulle, horloge, aperçus) — voir
+/// `is_own_ui_window` pour le critère, et `reapply_to_all_windows` pour
+/// pourquoi une énumération est le seul moyen de les atteindre toutes.
+///
+/// Sert au filtre de la capture par loupe (`gfx::mag_capture`) : c'est cette
+/// liste-là qui retranche nos fenêtres de NOTRE capture de bureau, sans les
+/// retirer de celles des autres applications.
+pub(crate) fn own_ui_windows() -> Vec<HWND> {
+    let mut fenetres: Vec<HWND> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(
+            Some(collecter_fenetres_proc),
+            LPARAM(&mut fenetres as *mut Vec<HWND> as isize),
+        );
+    }
+    fenetres
+}
+
+unsafe extern "system" fn collecter_fenetres_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let mut window_pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut window_pid)) };
+    if window_pid == std::process::id() && is_own_ui_window(hwnd) {
+        // Le vecteur vit dans l'appelant (voir `own_ui_windows`), seul moyen
+        // de faire remonter plus qu'un booléen par un callback Win32.
+        unsafe { (*(lparam.0 as *mut Vec<HWND>)).push(hwnd) };
+    }
+    BOOL(1)
+}
+
 /// Callback d'énumération de `reapply_to_all_windows`.
 unsafe extern "system" fn reapply_affinity_proc(hwnd: HWND, _lparam: LPARAM) -> BOOL {
     let mut window_pid = 0u32;
@@ -368,14 +415,17 @@ mod tests {
     }
 
     /// Le mode clair RELÈVE une teinte trop transparente sans jamais baisser
-    /// une teinte plus opaque ; la capture garde le dernier mot (100 %).
+    /// une teinte plus opaque — et il ne dépend plus du tout du mode
+    /// capturable, qui ne doit plus écraser la transparence réglée
+    /// (DEMANDE EXPLICITE 2026-11-12).
     #[test]
-    fn le_mode_clair_pose_un_plancher_d_opacite() {
+    fn le_mode_clair_pose_un_plancher_d_opacite_sans_regarder_la_capture() {
         let plancher = crate::ui::color::TEINTE_MIN_MODE_CLAIR;
-        assert_eq!(tint_alpha_selon(0.3, false, true), plancher);
-        assert_eq!(tint_alpha_selon(0.95, false, true), 0.95);
-        assert_eq!(tint_alpha_selon(0.3, false, false), 0.3);
-        assert_eq!(tint_alpha_selon(0.3, true, true), 1.0);
+        assert_eq!(tint_alpha_selon(0.3, true), plancher);
+        assert_eq!(tint_alpha_selon(0.95, true), 0.95);
+        assert_eq!(tint_alpha_selon(0.3, false), 0.3);
+        // Le mode capturable n'est plus un paramètre : la transparence réglée
+        // ne peut plus être écrasée par lui.
     }
 
     /// Le style d'une BARRE (voir `win32::window::DOCK_EX_STYLE`) : au-dessus,

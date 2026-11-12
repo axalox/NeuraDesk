@@ -29,6 +29,9 @@
 //! sur le bureau réel de l'utilisateur), d'où ce repli systématique plutôt
 //! qu'une erreur remontée à l'appelant.
 
+use std::cell::RefCell;
+use std::time::{Duration, Instant};
+
 use windows::core::Result;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D11::ID3D11Device;
@@ -80,41 +83,36 @@ const DOWNSCALE: u32 = 4;
 /// pour le choix entre chemin GPU (Desktop Duplication + flou multi-passes,
 /// le cas normal) et repli GDI (par rectangle, en cas d'échec du premier).
 pub fn capture_blurred_batch(device: &ID3D11Device, rects: &[[i32; 4]]) -> Vec<Result<Texture>> {
-    // "Visible dans les captures d'écran" (voir `gfx::capture_visibility`,
-    // doc de module) : ne RIEN capturer tant que ce mode est actif.
+    // Mode « visible dans les captures d'écran » (voir `gfx::capture_visibility`,
+    // doc de module) : nos fenêtres sont en `WDA_NONE`, donc notre Desktop
+    // Duplication LES VOIT et leur surface DWM se relit en BLANC (bug réel
+    // documenté plus bas, dans l'historique). La duplication est donc
+    // inutilisable ici — mais le flou, lui, reste demandé.
     //
-    // BUG RÉEL SIGNALÉ ("une fenêtre blanche apparaît sur mon écran principal
-    // quand j'active la visibilité dans les captures") — établi par
-    // comparaison A/B sur un même point de l'écran : réglage actif =
-    // (255,255,255), réglage inactif = la couleur du fond d'écran. Cause : ce
-    // mode impose `WDA_NONE` à toutes nos fenêtres (c'est ce qui les rend
-    // visibles dans OBS), ce qui les rend AUSSI capturables par notre PROPRE
-    // Desktop Duplication ci-dessous — le dock se capturait donc lui-même, et
-    // sa couche de verre DWM se relit en BLANC. La teinte opaque masque ce
-    // blanc là où elle est dessinée (les barres), mais toute zone du dock qui
-    // n'a que le verre le laissait apparaître.
+    // ⭐ **LE REMÈDE EST LA LOUPE, PAS LE RENONCEMENT** (DEMANDE EXPLICITE
+    // 2026-11-12 : « quand Rendre l'interface visible sur les captures
+    // d'écran est activé, le flou doit aussi être activé »). `gfx::mag_capture`
+    // capture le bureau et EXCLUT nos fenêtres par `MagSetWindowFilterList` :
+    // l'exclusion ne vaut que pour notre loupe, donc les captureurs externes
+    // (OBS, Capture d'écran) continuent de voir l'interface. C'est la
+    // technique de WebRTC/RustDesk (voir sa doc de module).
     //
-    // Or ce mode force DÉJÀ toutes les transparences à 0 % (`tint_alpha`,
-    // `blur_passes`) : le fond capturé y est de toute façon invisible, puisque
-    // entièrement recouvert par la teinte pleinement opaque. Le capturer
-    // n'apportait donc rien de visible tout en apportant l'artefact — ne rien
-    // capturer est à la fois la correction et la simplification.
+    // Elle passe par le CPU et rend l'écran à pleine résolution : ses
+    // textures sont donc gardées `MAG_CACHE_TTL` avant d'être recapturées, au
+    // lieu d'être refaites à chaque frame comme le chemin GPU ci-dessous.
     //
-    // Écarter la capture est aussi le SEUL remède fiable ici : exclure nos
-    // fenêtres le temps de la capture (affinité `WDA_EXCLUDEFROMCAPTURE`
-    // temporaire) ferait vaciller l'app dans OBS à chaque frame capturée —
-    // pire que le mal.
-    // Renvoie un fond NEUTRE par rectangle (construit ici, jamais capturé) —
-    // et surtout PAS une liste vide ni des `Err`, les deux essayés et
-    // rejetés : une liste vide fait échouer `app::capture_bar_backdrops`
-    // ("capture d'arrière-plan manquante (haut)"), et un `Err` remonte en
-    // erreur fatale au démarrage ("L'opération a réussi. (0x00000000)").
-    // Les appelants exigent une texture par rectangle, ils en ont une.
-    //
-    // La valeur exacte n'a AUCUNE importance visuelle : dans ce mode la
-    // teinte est pleinement opaque, donc le fond est entièrement recouvert
-    // (voir la doc ci-dessus). Un gris neutre suffit.
-    if crate::gfx::capture_visibility::is_enabled() {
+    // Si la loupe elle-même est indisponible (échec de `MagInitialize`, WDDM
+    // absent, RDP...), on retombe sur l'ancien comportement : un fond NEUTRE
+    // construit ici, que le shader IGNORE (drapeau `sans_fond`,
+    // `Ombres.y`) — la teinte seule, avec l'alpha de l'utilisateur composé par
+    // DWM. Surtout PAS une liste vide ni des `Err` : une liste vide fait
+    // échouer `app::capture_bar_backdrops` ("capture d'arrière-plan manquante
+    // (haut)"), et un `Err` remonte en erreur fatale au démarrage
+    // ("L'opération a réussi. (0x00000000)").
+    if crate::gfx::capture_visibility::est_capturable() {
+        if crate::gfx::mag_capture::disponible() {
+            return rects.iter().map(|&rect| capture_blurred_mag(device, rect)).collect();
+        }
         const NEUTRAL_RGBA: [u8; 4] = [128, 128, 128, 255];
         return rects
             .iter()
@@ -165,6 +163,106 @@ pub fn capture_blurred_batch(device: &ID3D11Device, rects: &[[i32; 4]]) -> Vec<R
             capture_blurred_rect_gdi(device, rect)
         })
         .collect()
+}
+
+/// Vide le cache des textures du mode capturable — à appeler AVANT que le
+/// device D3D ne soit détruit (voir `app::GpuCacheGuard`). ⛔ **Oublié, il fait
+/// sortir l'application en 0x87A** : ce sont des textures vivantes d'un device
+/// qu'on détruit, l'exception « objets DXGI encore vivants » que le garde
+/// existe pour éteindre (même défaut que `gfx::duplication::release`).
+pub fn release_cache() {
+    MAG_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
+/// Âge maximal d'une texture de la loupe avant nouvelle capture. La loupe
+/// travaille sur le CPU, à la résolution de l'écran (voir
+/// `gfx::mag_capture`, doc de module) : la recapturer à chaque frame coûterait
+/// bien plus que le flou lui-même. 60 ms donnent ~16 images/s au fond flouté —
+/// il ne porte que du détail flou, un décalage de quelques dizaines de
+/// millisecondes ne se voit pas, alors que le coût, lui, se mesurerait.
+const MAG_CACHE_TTL: Duration = Duration::from_millis(60);
+
+/// Une texture au-delà de cet âge est oubliée même si son rectangle n'a pas
+/// été redemandé (un popup fermé laisse sinon sa texture en mémoire à vie).
+const MAG_CACHE_OUBLI: Duration = Duration::from_secs(5);
+
+/// Nombre maximal d'entrées du cache — chaque barre, congé et bout est un
+/// rectangle distinct, et plusieurs popups peuvent être ouverts ; au-delà, on
+/// jette la plus ancienne.
+const MAG_CACHE_MAX: usize = 48;
+
+struct EntreeMag {
+    rect: [i32; 4],
+    quand: Instant,
+    texture: Texture,
+}
+
+thread_local! {
+    /// Les textures du mode capturable, partagées par TOUTES les fenêtres :
+    /// le dock, les popups CEF, l'infobulle et les aperçus demandent leur fond
+    /// au même endroit (voir `capture_blurred_mag`), et un même rectangle n'a
+    /// aucune raison d'être capturé deux fois.
+    static MAG_CACHE: RefCell<Vec<EntreeMag>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Fond flouté du mode capturable : capture par la loupe (avec nos fenêtres
+/// exclues), réduction, flou boîte — puis mémoire pendant `MAG_CACHE_TTL`.
+/// En cas d'échec ponctuel, la dernière texture connue de ce rectangle est
+/// resservie ; s'il n'y en a aucune, un gris neutre (voir l'appelant).
+fn capture_blurred_mag(device: &ID3D11Device, rect: [i32; 4]) -> Result<Texture> {
+    let maintenant = Instant::now();
+    let frais = MAG_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .iter()
+            .find(|entree| entree.rect == rect && maintenant.duration_since(entree.quand) < MAG_CACHE_TTL)
+            .map(|entree| entree.texture.clone())
+    });
+    if let Some(texture) = frais {
+        return Ok(texture);
+    }
+
+    match crate::gfx::mag_capture::capturer(rect, DOWNSCALE) {
+        Some((largeur, hauteur, pixels)) => {
+            let flou = box_blur(&pixels, largeur, hauteur, BLUR_RADIUS);
+            let texture = Texture::from_rgba(device, largeur, hauteur, &flou)?;
+            MAG_CACHE.with(|cache| {
+                let mut cache = cache.borrow_mut();
+                cache.retain(|entree| {
+                    entree.rect != rect && maintenant.duration_since(entree.quand) < MAG_CACHE_OUBLI
+                });
+                cache.push(EntreeMag { rect, quand: maintenant, texture: texture.clone() });
+                if cache.len() > MAG_CACHE_MAX {
+                    let plus_ancienne = cache
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, entree)| entree.quand)
+                        .map(|(rang, _)| rang);
+                    if let Some(rang) = plus_ancienne {
+                        cache.remove(rang);
+                    }
+                }
+            });
+            Ok(texture)
+        }
+        None => {
+            // Échec ponctuel : mieux vaut une image un peu datée qu'un trou.
+            let ancienne = MAG_CACHE.with(|cache| {
+                cache
+                    .borrow()
+                    .iter()
+                    .find(|entree| entree.rect == rect)
+                    .map(|entree| entree.texture.clone())
+            });
+            match ancienne {
+                Some(texture) => Ok(texture),
+                None => {
+                    const NEUTRAL_RGBA: [u8; 4] = [128, 128, 128, 255];
+                    Texture::from_rgba(device, 1, 1, &NEUTRAL_RGBA)
+                }
+            }
+        }
+    }
 }
 
 /// `rect` (coordonnées écran physiques absolues, `[x, y, w, h]`) est-il

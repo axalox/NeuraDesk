@@ -170,10 +170,10 @@ pub fn load_menu_colors() {
 
 /// Force de teinte actuelle des menus contextuels — voir `MENU_TINT`.
 ///
-/// "Visible dans les captures d'écran" (voir `gfx::capture_visibility`,
-/// DEMANDE EXPLICITE) force une opacité de 100% tant qu'il est actif, SANS
-/// modifier `MENU_TINT` lui-même — même principe que `gfx::blur::
-/// blur_passes`, voir sa doc.
+/// Le mode « visible dans les captures » n'écrase plus la transparence
+/// (DEMANDE EXPLICITE 2026-11-12, voir `gfx::capture_visibility`) : il ne
+/// reste ici que le plancher du thème clair, `MENU_TINT` n'étant de toute
+/// façon jamais modifié.
 pub fn menu_tint() -> f32 {
     crate::gfx::capture_visibility::tint_alpha(MENU_TINT.with(Cell::get))
 }

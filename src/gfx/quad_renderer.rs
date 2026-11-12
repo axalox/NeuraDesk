@@ -297,9 +297,12 @@ struct ViewportConstants {
     /// La texture PERSONNALISÉE (voir `gfx::texture_perso::constantes`) : ses
     /// réglages à leur index, la phase de l'animation en dernier.
     texture_perso: [[f32; 4]; crate::gfx::texture_perso::REGISTRES],
-    /// Les OMBRES des barres : `(1, 0, 0, 0)` quand leur calque est lié au
-    /// registre `t2`, à zéro sinon (`QuadRenderer::poser_ombres`). Le dernier
-    /// registre.
+    /// Les OMBRES des barres : `x` à 1 quand leur calque est lié au registre
+    /// `t2`, à zéro sinon (`QuadRenderer::poser_ombres`). ⭐ `y` signale qu'il
+    /// n'y a PAS de fond capturé — uniquement quand le mode « visible dans les
+    /// captures » est actif ET que la loupe (`gfx::mag_capture`) est
+    /// indisponible ; le shader sort alors l'alpha de l'utilisateur au lieu
+    /// d'un aplat opaque. Le dernier registre.
     ombre: [f32; 4],
 }
 
@@ -368,8 +371,9 @@ cbuffer Viewport : register(b0) {
     float TexRemplissage;
     // La texture personnalisée — voir `gfx::texture_perso::REGLAGES`, même ordre.
     float4 TexPerso[9];
-    // Les ombres des barres : `x` à 1 quand leur calque (`OmbresTex`) est lié —
-    // voir `ViewportConstants::ombre`.
+    // Les ombres des barres : `x` à 1 quand leur calque (`OmbresTex`) est lié,
+    // `y` à 1 quand il n'y a PAS de fond capturé et que l'alpha de sortie doit
+    // être la transparence de l'utilisateur (voir `ViewportConstants::ombre`).
     float4 Ombres;
 };
 
@@ -3070,7 +3074,17 @@ float4 PSMain(PSInput input) : SV_TARGET {
         //    MatTintScale ne fait que MODULER ce que l'utilisateur a réglé ;
         //    la valeur persistée n'est jamais touchée (voir gfx::material).
         float tint = saturate(input.Color.a * MatTintScale);
-        float3 rgb = lerp(backdrop.rgb, input.Color.rgb, tint);
+        // SANS FOND CAPTURÉ — le cas de repli du réglage « visible dans les
+        //    captures » quand la LOUPE (gfx::mag_capture) est indisponible sur
+        //    la machine : aucun fond n'a pu être capturé, la teinte est prise
+        //    PLEINE et l'alpha de sortie devient la transparence choisie par
+        //    l'utilisateur — DWM compose le bureau derrière (fenêtres en
+        //    modèle BitBlt, voir gfx::swapchain). Quand la loupe fonctionne,
+        //    Ombres.y vaut 0 : le fond flouté est là et le rendu est le même
+        //    qu'hors du mode capturable. Le drapeau voyage dans Ombres.y, à
+        //    côté du calque des ombres en Ombres.x.
+        bool sans_fond = Ombres.y > 0.5;
+        float3 rgb = sans_fond ? input.Color.rgb : lerp(backdrop.rgb, input.Color.rgb, tint);
         // Dégradé animé (mode capturable seulement, voir `gfx::degrade`) :
         // il REMPLACE la teinte, évalué au pixel ÉCRAN — d'où l'origine de la
         // fenêtre ajoutée à `SV_POSITION` (pixels de la fenêtre).
@@ -3168,7 +3182,7 @@ float4 PSMain(PSInput input) : SV_TARGET {
             rgb += delta + abs(delta) * TexChroma;
         }
 
-        baseColor = float4(saturate(rgb), 1.0);
+        baseColor = float4(saturate(rgb), sans_fond ? tint : 1.0);
 
         // 7. Dithering (voir `DitherHash`) — TOUJOURS en dernier, sur le
         //    résultat DÉJÀ mélangé/composé ci-dessus, PAS avant : BUG RÉEL
@@ -3894,7 +3908,22 @@ unsafe fn update_constant_buffer(
         fondu,
         texture: texture.map_or_else(crate::gfx::texture_interface::constantes, |(t, _)| t),
         texture_perso: texture.map_or_else(crate::gfx::texture_perso::constantes, |(_, p)| p),
-        ombre,
+        // `y` : pas de fond capturé. Dans le mode « visible dans les captures »
+        // le fond vient de la LOUPE (`gfx::mag_capture`), qui exclut nos
+        // fenêtres de notre propre capture — il y a donc bien un fond, et le
+        // shader rend comme d'habitude. Le drapeau ne monte que si la loupe
+        // est indisponible sur cette machine : le shader sort alors l'alpha de
+        // l'utilisateur au lieu d'un aplat opaque (voir sa doc).
+        ombre: [
+            ombre[0],
+            if crate::gfx::capture_visibility::est_capturable() && !crate::gfx::mag_capture::disponible() {
+                1.0
+            } else {
+                0.0
+            },
+            ombre[2],
+            ombre[3],
+        ],
     };
     std::ptr::copy_nonoverlapping(&constants, mapped.pData as *mut ViewportConstants, 1);
     ctx.Unmap(buffer, 0);

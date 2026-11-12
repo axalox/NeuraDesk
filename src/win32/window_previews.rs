@@ -582,7 +582,12 @@ impl PreviewPanel {
 
         match &mut self.swapchain {
             Some(sc) => sc.resize(&gfx.device, width, height)?,
-            None => self.swapchain = Some(SwapChain::new(&gfx.device, self.hwnd, width, height, false)?),
+            // BitBlt, donc alpha composé par DWM — même raison que les popups
+            // CEF : au repli `sans_fond` (loupe indisponible, voir
+            // `gfx::quad_renderer`) c'est cet alpha qui laisse voir le bureau à
+            // travers le panneau ; en modèle *flip* il serait ignoré et le
+            // panneau resterait un aplat opaque assombri.
+            None => self.swapchain = Some(SwapChain::new(&gfx.device, self.hwnd, width, height, true)?),
         }
         let swapchain = self.swapchain.as_ref().expect("swapchain créé/redimensionné juste au-dessus");
 

@@ -8,10 +8,14 @@
 //!   de la fenêtre (`QuadRenderer::render_at`). Une barre et un panneau
 //!   voisins montrent donc les deux morceaux d'une même image, qui continue
 //!   d'un écran à l'autre (le repère est l'écran VIRTUEL).
-//! - **Mode capturable seulement** (`gfx::capture_visibility`) : les teintes
-//!   y sont déjà opaques (`tint_alpha` = 1) et le flou coupé, donc le dégradé
-//!   REMPLACE la teinte sans rien avoir à mélanger avec le bureau. Hors de ce
-//!   mode, la case est sans effet (`actif`).
+//! - **Mode capturable seulement** (`gfx::capture_visibility`) : le dégradé
+//!   REMPLACE alors la teinte ET le fond flouté — c'est son dessein (« pas le
+//!   mode transparent ») — donc son rendu est OPAQUE, comme le fond qu'il
+//!   remplace, y compris depuis que la loupe (`gfx::mag_capture`) fournit un
+//!   fond dans ce mode. Ce n'est que sans fond du tout (loupe indisponible,
+//!   repli `sans_fond` de `gfx::quad_renderer`) qu'il garde l'alpha de
+//!   transparence réglé par l'utilisateur. Hors de ce mode, la case est sans
+//!   effet (`actif`).
 //!
 //! L'algorithme (« Mesh ») : cinq couleurs portées par cinq points qui
 //! orbitent lentement, mélangées par pondération inverse à la distance

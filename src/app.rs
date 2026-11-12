@@ -2010,7 +2010,11 @@ fn rebuild_secondary_docks(
                 let window =
                     SecondaryWindow::create(&monitor, primary_dpi, primary_thickness_fallback, thickness_override, secondary_auto_hide)
                         .ok()?;
-                let swapchain = SwapChain::new(device, window.hwnd, window.width, window.height, false).ok()?;
+                // BitBlt, comme le dock PRIMAIRE (voir `SwapChain::new`) : au
+                // repli `sans_fond` (loupe indisponible) c'est l'alpha composé
+                // par DWM qui laisse voir le bureau à travers la barre de cet
+                // écran ; en modèle *flip* elle resterait opaque.
+                let swapchain = SwapChain::new(device, window.hwnd, window.width, window.height, true).ok()?;
                 let fullscreen_clock = crate::win32::fullscreen_clock::FullscreenClockWindow::new(device).ok()?;
                 (window, swapchain, fullscreen_clock, true, None)
             };
@@ -2823,6 +2827,14 @@ impl Drop for GpuCacheGuard {
         crate::win32::cef_popup::release_all();
         crate::gfx::blur::release_gpu_resources();
         crate::gfx::duplication::release();
+        // La loupe du mode capturable (voir `gfx::mag_capture`) possède elle
+        // aussi des fenêtres Win32 vivantes : elles doivent mourir avant le
+        // thread, comme la duplication juste au-dessus.
+        crate::gfx::mag_capture::release();
+        // Et ses textures, gardées dans le cache de `gfx::backdrop` : sans ce
+        // vidage, elles survivent au device et la sortie lève 0x87A (même
+        // famille que la duplication ci-dessus).
+        crate::gfx::backdrop::release_cache();
         // L'ombre des barres garde elle aussi une copie du device et des textures
         // (voir `ombre_barre::liberer_gpu`) — oubliée ici, elle faisait sortir
         // NeuraDesk en code 122 à chaque fermeture.
@@ -3014,6 +3026,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         config::save_bool_setting("degrade_anime", false);
     }
     crate::gfx::capture_visibility::set_enabled(config::load_bool_setting("capture_visible"));
+    // La LOUPE du mode capturable (`gfx::mag_capture`) n'a qu'un seul thread
+    // propriétaire possible : celui-ci, qui tient le device D3D et sa boucle de
+    // messages. Les autres threads de rendu (effet d'ouverture...) lisent son
+    // état au lieu d'en créer une à leur tour — mesuré : leur filtre de
+    // fenêtres est refusé (`ERROR_NOT_SUPPORTED`).
+    crate::gfx::mag_capture::marquer_fil_de_rendu();
     crate::gfx::degrade::charger();
     // ⭐ **AU PREMIER LANCEMENT : TOUTE LA SECTION « TAILLE DU CONTENU DES DASHS » À
     // 50 %** — DEMANDE EXPLICITE (2026-10-12). Chaque curseur n'est écrit que s'il n'a
@@ -11689,12 +11707,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 [dash_accent.background[0], dash_accent.background[1], dash_accent.background[2]],
                 dark_mode,
             );
-            // "Visible dans les captures d'écran" (voir `gfx::
-            // capture_visibility`, DEMANDE EXPLICITE) — force une opacité de
-            // 100% pour ces quatre popups SANS toucher `dash_tint`
-            // lui-même (curseur "Transparence" partagé, voir sa doc
-            // plus haut, encore utilisé tel quel par `SettingsRefs` plus
-            // bas), qui redevient effectif dès ce mode désactivé.
+            // Alpha des quatre popups — le mode « visible dans les captures »
+            // N'ÉCRASE PLUS la transparence (DEMANDE EXPLICITE 2026-11-12) :
+            // il ne reste ici que le plancher du thème clair (voir
+            // `gfx::capture_visibility::tint_alpha`), et le shader compose
+            // avec le bureau derrière quand ce mode est actif.
             let dash_tint_for_render = crate::gfx::capture_visibility::tint_alpha(dash_tint);
             let dash_tint_rgba = [dash_bg[0], dash_bg[1], dash_bg[2], dash_tint_for_render];
             let settings_bg = color::soften_tint(
@@ -16307,12 +16324,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             let bar_instances: [QuadInstance; 4] = std::array::from_fn::<_, 4, _>(|i| {
                 let [r, g, b, _] = dock.bar_color(i);
                 let softened = color::soften_tint([r, g, b], dark_mode);
-                // "Visible dans les captures d'écran" (voir `gfx::
-                // capture_visibility`, DEMANDE EXPLICITE) — force une
-                // opacité de 100% pour le RENDU uniquement ; `bar_tint[i]`
-                // lui-même (curseur "Transparence" de CETTE barre, persisté
-                // par `apply_bar_tint`) reste inchangé, il redevient
-                // effectif dès ce mode désactivé.
+                // Alpha de la barre — le mode « visible dans les captures »
+                // N'ÉCRASE PLUS la transparence (DEMANDE EXPLICITE
+                // 2026-11-12) ; il ne reste que le plancher du thème clair.
+                // Dans ce mode, le shader sort cet alpha au lieu d'un aplat
+                // et DWM compose le bureau derrière (voir `gfx::quad_renderer`,
+                // `sans_fond`).
                 let alpha = crate::gfx::capture_visibility::tint_alpha(bar_tint[i]);
                 let tint = [softened[0], softened[1], softened[2], alpha];
                 QuadInstance::new_backdrop(bar_rects[i], tint, 0.0)

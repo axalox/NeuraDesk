@@ -524,10 +524,10 @@ impl DockInstance {
         let bar_instances = std::array::from_fn::<_, 4, _>(|i| {
             let [r, g, b, _] = self.dock.bar_color(i);
             let softened = color::soften_tint([r, g, b], self.dark_mode);
-            // "Visible dans les captures d'écran" (voir `gfx::
-            // capture_visibility`, DEMANDE EXPLICITE) — même principe que
-            // `app::run` (barre PRIMAIRE) : opacité forcée à 100% pour le
-            // RENDU uniquement, `self.bar_tint[i]` inchangé.
+            // Même alpha que la barre PRIMAIRE (`app::run`) : le mode
+            // « visible dans les captures » n'écrase plus la transparence
+            // (DEMANDE EXPLICITE 2026-11-12) ; le shader compose l'alpha avec
+            // le bureau derrière lui.
             let alpha = crate::gfx::capture_visibility::tint_alpha(self.bar_tint[i] as f32 / 255.0);
             let tint = [softened[0], softened[1], softened[2], alpha];
             QuadInstance::new_backdrop(bar_rects[i], tint, 0.0)

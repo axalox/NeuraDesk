@@ -1147,7 +1147,7 @@
         "Échelle de l'interface",
       ],
       barres: [
-        "Couleurs des barres", "Transparence des barres", "Taille des barres",
+        "Couleurs des barres", "Taille des barres",
         "Couleur du texte de la barre du haut",
         "Taille du texte de la barre du haut",
         "Centre de la barre du haut",
@@ -3726,6 +3726,12 @@
       // à la main dans les QUATRE sections « Couleur de mise en avant », sans
       // étiquette ; `updateValues` ne renseignait que le premier
       // (`document.querySelector`).
+      //
+      // ⚠️ `BARS` est déclaré ICI, avant la section : sa transparence y est
+      // réglée (2026-11-12) et « Couleurs des barres », plus bas, s'en sert
+      // aussi. Le déclarer là-bas le rendrait invisible à cette section — les
+      // `section(...)` construisent leur corps IMMÉDIATEMENT.
+      const BARS = [["top", "du haut"], ["left", "de gauche"], ["right", "de droite"], ["bottom", "du bas"]];
       section(scroll, (box) => {
         box.appendChild(el("h2", {}, ["Transparence et flou"]));
         box.appendChild(el("div", { class: "small-label" }, ["Flou"]));
@@ -3753,23 +3759,29 @@
         box.appendChild(el("p", { class: "hint" }, ["« Fond » porte sur la teinte du bureau floutée derrière les panneaux (à 100 %, elle disparaît). « Opacité des textes » règle tous les textes ; « Fond des zones » règle les aplats, les bords et les boutons, indépendamment du texte. À 100 %, le rendu est celui d'origine ; plus bas, tout s'efface ensemble en gardant ses écarts. La COULEUR du fond se règle panneau par panneau, dans la section « Couleur de mise en avant »."]));
         box.appendChild(el("div", { class: "small-label" }, ["Menus"]));
         slider(box, { label: "Transparence des menus", min: 0, max: 100, step: 5, value: state.menuTintPercent, valueLabel: (v) => v + "%", dataKey: "menu-tint", onInput: (v) => go("menu-tint", v) });
-        // La transparence des barres a sa PROPRE rubrique, dans « Barres & dock »,
-        // avec leurs couleurs et leurs tailles : la chercher ici, au milieu du
-        // flou des panneaux, était le défaut signalé.
-        box.appendChild(el("p", { class: "hint" }, ["Fond et menus : 100 % = le plus transparent. « Opacité des textes » et « Fond des zones » vont dans l'autre sens : plus haut, plus opaque. La transparence des barres se règle dans le groupe « Barres & dock » (rubrique « Transparence des barres »)."]));
-        // VISIBLE DANS LES CAPTURES — le réglage vit ICI parce qu'il COUPE la
-        // transparence : coché, il force flou, teintes des barres/du dash/des
-        // menus à 0 % le temps qu'il est coché, sans toucher aux curseurs
-        // enregistrés (leur valeur est seulement court-circuitée au rendu).
-        // En faire une rubrique à part obligeait à chercher ailleurs la raison
-        // pour laquelle les transparences disparaissent. Voir
-        // gfx::capture_visibility, doc de module.
+        // Les barres ont leur propre curseur PAR barre — DEMANDE EXPLICITE
+        // (2026-11-12) : « mets la section Transparence des barres dans
+        // Transparence et flou ». C'était une rubrique séparée dans « Barres &
+        // dock » ; la transparence d'une barre se règle maintenant au même
+        // endroit que le flou qu'elle laisse passer.
+        box.appendChild(el("div", { class: "small-label" }, ["Barres"]));
+        BARS.forEach(([bar, label], i) => {
+          slider(box, { label: `Barre ${label}`, min: 0, max: 100, step: 5, value: state.barTintPercent[i], valueLabel: (v) => v + "%", dataKey: `bar-tint-${bar}`, onInput: (v) => go("bar-tint", bar, v) });
+        });
+        box.appendChild(el("p", { class: "hint" }, ["Fond, menus et barres : 100 % = le plus transparent. « Opacité des textes » et « Fond des zones » vont dans l'autre sens : plus haut, plus opaque. Chaque barre a son propre curseur ; les barres d'un écran secondaire se règlent dans l'onglet de cet écran."]));
+        // VISIBLE DANS LES CAPTURES — le réglage vit ICI parce qu'il agit sur
+        // la transparence et le flou : depuis le 2026-11-12 il n'écrase plus
+        // ni l'un ni l'autre. Le fond flouté est capturé par une loupe qui
+        // exclut nos fenêtres de NOTRE capture seulement (gfx::mag_capture),
+        // donc le rendu reste exactement celui du mode normal. En faire une
+        // rubrique à part obligeait à chercher ailleurs la raison pour
+        // laquelle le flou change. Voir gfx::capture_visibility, doc de module.
         box.appendChild(el("div", { class: "small-label" }, ["Visibilité dans les captures d'écran"]));
         checkboxRow(box, state.captureVisible, "Rendre l'interface visible sur les captures d'écran", (checked) => go("capture-visible", checked ? "1" : "0"));
         box.appendChild(el("p", { class: "hint" }, [
-          "Par défaut, NeuraDesk est invisible dans les captures/enregistrements d'écran. Coche pour l'y rendre visible — les transparences ci-dessus (flou, barres, dash, menus) sont alors forcées à 0 % le temps que la case est cochée, pour éviter les artefacts visuels que certains outils de capture produisent sur les fenêtres translucides. Les curseurs gardent leur valeur.",
+          "Par défaut, NeuraDesk est invisible dans les captures/enregistrements d'écran. Coche pour l'y rendre visible : la transparence et le flou restent ceux réglés ci-dessus, comme en usage normal.",
         ]));
-        voirAussi(box, ["Transparence des barres", "Menus", "Captures d'écran et éditeur", "Lueurs"]);
+        voirAussi(box, ["Menus", "Couleurs des barres", "Captures d'écran et éditeur", "Lueurs"]);
       });
 
       // Sons des rappels — DEMANDE EXPLICITE (2026-09-24) : « j'aimerais pouvoir
@@ -4253,10 +4265,10 @@
       // Couleurs des quatre barres — UN sélecteur de barre et UN sélecteur de
       // couleur, au lieu de quatre catégories identiques à un nom près. Le
       // sélecteur survit aux reconstructions (`activeBarColor`).
-      const BARS = [["top", "du haut"], ["left", "de gauche"], ["right", "de droite"], ["bottom", "du bas"]];
+      // (`BARS` est déclaré plus haut, voir la section « Transparence et flou ».)
       section(scroll, (box) => {
         box.appendChild(el("h2", {}, ["Couleurs des barres"]));
-        box.appendChild(el("p", { class: "hint" }, ["La couleur de fond de chaque barre, individuellement. La transparence a sa propre rubrique, juste en dessous."]));
+        box.appendChild(el("p", { class: "hint" }, ["La couleur de fond de chaque barre, individuellement. La transparence se règle dans « Transparence et flou »."]));
         if (!BARS.some(([bar]) => bar === activeBarColor)) activeBarColor = BARS[0][0];
         const choix = el("div", { class: "panel-choices" });
         for (const [bar, label] of BARS) {
@@ -4278,20 +4290,7 @@
           colorPicker(corps, `bar_${activeBarColor}`, state.barColors[i]);
         }
         rendreBarre();
-        voirAussi(box, ["Transparence des barres", "Centre de la barre du haut"]);
-      });
-
-      // Transparence des barres — elle vivait au milieu de « Transparence et
-      // flou », avec le flou des panneaux et des menus. Elle a désormais sa
-      // rubrique dans le groupe des barres, à côté de leurs couleurs et de leurs
-      // tailles — et sous le même titre que dans l'onglet d'un écran secondaire.
-      section(scroll, (box) => {
-        box.appendChild(el("h2", {}, ["Transparence des barres"]));
-        box.appendChild(el("p", { class: "hint" }, ["100 % = le plus transparent. Chaque barre a son propre curseur ; les barres d'un écran secondaire se règlent dans son onglet."]));
-        BARS.forEach(([bar, label], i) => {
-          slider(box, { label: `Barre ${label}`, min: 0, max: 100, step: 5, value: state.barTintPercent[i], valueLabel: (v) => v + "%", dataKey: `bar-tint-${bar}`, onInput: (v) => go("bar-tint", bar, v) });
-        });
-        voirAussi(box, ["Transparence et flou", "Couleurs des barres"]);
+        voirAussi(box, ["Transparence et flou", "Centre de la barre du haut"]);
       });
 
       // Couleur du texte de la barre du haut
@@ -4500,7 +4499,7 @@
             box.appendChild(el("p", { class: "hint" }, ["Sur cette hauteur, en haut de la barre de gauche, les icônes se floutent puis disparaissent contre la barre du haut — elles restent cliquables. 0 : aucun fondu."]));
           }
         });
-        voirAussi(box, ["Couleurs des barres", "Transparence des barres"]);
+        voirAussi(box, ["Couleurs des barres", "Transparence et flou"]);
       });
 
       // ---- OMBRES --------------------------------------------------------

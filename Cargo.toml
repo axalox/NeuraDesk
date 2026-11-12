@@ -35,6 +35,12 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dwm",
     "Win32_UI_WindowsAndMessaging",
+    # `MagSetWindowFilterList` + `MagSetImageScalingCallback` — le fond flouté
+    # en mode « visible dans les captures » (voir `gfx::mag_capture`) : la seule
+    # API qui sache capturer le bureau en EXCLUANT NOS fenêtres de NOTRE propre
+    # capture, sans les retirer de celles des autres (contrairement à
+    # `WDA_EXCLUDEFROMCAPTURE`, qui est global).
+    "Win32_UI_Magnification",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_HiDpi",
     "Win32_UI_Controls",
