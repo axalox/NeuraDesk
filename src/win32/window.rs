@@ -51,10 +51,10 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows, GetClassNameW, GetForegroundWindow,
-    GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed, LoadCursorW, PeekMessageW,
+    GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed, LoadCursorW, PeekMessageW,
     PostQuitMessage, RegisterClassExW,
     SetForegroundWindow, SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage,
-    CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWL_STYLE, HWND_TOPMOST, IDC_ARROW, MSG, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN,
+    CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWL_STYLE, GW_HWNDPREV, GW_OWNER, HWND_TOPMOST, IDC_ARROW, MSG, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN,
     SPI_GETWORKAREA, SPI_SETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
     SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, WS_CAPTION,
     WM_CLIPBOARDUPDATE, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND,
@@ -1183,13 +1183,39 @@ impl Window {
     /// agrandis passent devant les AUTRES fenêtres de NeuraDesk — y compris le
     /// menu contextuel, le Dash et les Réglages, s'ils se trouvent sous eux.
     pub fn raise_to_top(&self) {
-        unsafe {
-            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        // ⛔ **NE PAS SE REMONTER QUAND RIEN NE PASSE DEVANT** — DÉFAUT RÉEL
+        // SIGNALÉ (2026-11-13) : « quand je survole une icône les coins arrondis
+        // au bord de l'écran clignotent ». MESURÉ à la sonde d'ordre Z : pendant
+        // un survol, `app::run` appelle cette fonction toutes les 250 ms (le
+        // rappel de précaution de la magnification), et chaque `SetWindowPos`
+        // sur le dock réinsère AUSSI ses fenêtres POSSÉDÉES — les coins noirs
+        // des écrans — que DWM recompose alors, d'où le clignotement. Rien ne
+        // passait devant le dock dans ce cas : les seules fenêtres au-dessus de
+        // lui sont ses propres coins (voir `un_voisin_visible_devant`, qui les
+        // ignore) et le dock n'avait donc rien à faire.
+        if un_voisin_visible_devant(self.hwnd) {
+            unsafe {
+                let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
         }
         // Les coins noirs des écrans restent AU-DESSUS du dock : ils sont posés
         // sur ses angles extérieurs (voir `win32::coins_ecran`).
-        crate::win32::coins_ecran::remonter();
+        //
+        // ⛔ **LES SECONDAIRES D'ABORD, LES PRIMAIRES ENSUITE** — DÉFAUT RÉEL
+        // SIGNALÉ (2026-11-13) : « quand je survole une icône les coins arrondis
+        // au bord de l'écran clignotent ». MESURÉ : l'ordre inverse laissait les
+        // deux coins des écrans secondaires repasser DEVANT ceux du primaire à
+        // chaque remontée (4 fois par seconde pendant une magnification), et
+        // `coins_ecran::synchroniser` (1 Hz) les remettait derrière — les coins
+        // primaires changeaient de rang deux fois par seconde (`14..21` ↔
+        // `16..23`), et DWM les recomposait à chaque inversion. L'ordre RELATIF
+        // des deux familles n'a aucune importance (elles sont sur des écrans
+        // différents) ; ce qui compte est qu'il soit TOUJOURS LE MÊME. C'est
+        // `coins_ecran::cible_de_remontee` qui empêche la plupart de ces
+        // remontées d'avoir lieu ; cet ordre est la seconde barrière, pour le
+        // cas où une même fenêtre en recouvre un de chaque famille.
         crate::win32::coins_secondaires::remonter();
+        crate::win32::coins_ecran::remonter();
         // L'ombre sous la barre du haut aussi : elle tombe sur le haut des barres
         // latérales (voir `win32::ombre_barre`).
         crate::win32::ombre_barre::remonter();
@@ -2755,6 +2781,83 @@ unsafe fn set_dock_region(
     // SetWindowRgn prend possession de `combined` ; les régions sources
     // restent nôtres et doivent être libérées explicitement.
     let _ = SetWindowRgn(hwnd, Some(combined), true);
+}
+
+/// Une fenêtre **visible, devant `hwnd`, qui le recouvre** existe-t-elle — sans
+/// lui appartenir ?
+///
+/// Sert à ne PAS remonter une fenêtre déjà en place (voir
+/// `Window::raise_to_top` et `ombre_barre::rangement_magnifie`) : remonter est
+/// un vrai `SetWindowPos`, qui réinsère aussi les fenêtres POSSÉDÉES et fait
+/// recomposer leur contenu — les coins noirs des écrans clignotaient pour cette
+/// raison, toutes les 250 ms, pendant un survol.
+///
+/// On IGNORE donc les fenêtres possédées par `hwnd` (elles sont au-dessus de lui
+/// par construction, sans le recouvrir « par erreur »), celles qui FLOTTENT
+/// au-dessus de la bande (voir `flotte_au_dessus` : coins, infobulles, IME) et
+/// celles dont le rectangle ne le recouvre pas (un dock d'un autre écran, une
+/// fenêtre ailleurs). Géométrie illisible → `true` : on préfère l'ancien
+/// comportement — remonter pour rien — à une fenêtre qui resterait sous une
+/// autre.
+pub(crate) fn un_voisin_visible_devant(hwnd: HWND) -> bool {
+    let mut mien = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut mien) }.is_err() {
+        return true;
+    }
+    let mut courante = unsafe { GetWindow(hwnd, GW_HWNDPREV) }.ok();
+    while let Some(voisine) = courante {
+        let possedee = unsafe { GetWindow(voisine, GW_OWNER) }.ok() == Some(hwnd);
+        if !possedee && !flotte_au_dessus(voisine) && unsafe { IsWindowVisible(voisine) }.as_bool() {
+            let mut sien = RECT::default();
+            if unsafe { GetWindowRect(voisine, &mut sien) }.is_ok()
+                && sien.left < mien.right
+                && sien.right > mien.left
+                && sien.top < mien.bottom
+                && sien.bottom > mien.top
+            {
+                return true;
+            }
+        }
+        courante = unsafe { GetWindow(voisine, GW_HWNDPREV) }.ok();
+    }
+    false
+}
+
+/// Une fenêtre qui FLOTTE au-dessus de la bande et ne justifie jamais de la
+/// remonter : les coins noirs des écrans (posés sur les angles des barres, et
+/// tous possédés par le dock du haut — un dock SECONDAIRE les compte donc
+/// « étrangers »), les infobulles (elles se réaffirment elles-mêmes — voir
+/// `TooltipWindow::show`), notre horloge plein écran (une instance par écran,
+/// qui se pose elle-même), la fenêtre **IME** du fil, que Windows garde au
+/// sommet de son propre chef, le **`ThumbnailDeviceHelperWnd`** de
+/// l'explorateur — un carré de 1 px en (0, 0) qui recouvre le dock du haut — et
+/// `ForegroundStaging`, la fenêtre d'attente de Windows pendant un changement
+/// de premier plan. Aucune ne montre jamais de contenu à recouvrir.
+///
+/// ⛔ **SANS CETTE LISTE, LE DOCK SE REMONTE SANS ARRÊT** — MESURÉ le
+/// 2026-11-13 à la sonde d'ordre Z, pendant un survol maintenu : 169 remontées
+/// du dock secondaire, 172 fois parce que le voisin du dessus était un
+/// `NdCoinEcran`, puis 330 remontées du dock principal pour le carré de
+/// l'explorateur. Chaque remontée réinsère les coins POSSÉDÉS du dock, et DWM
+/// les recompose : le clignotement signalé.
+pub(crate) fn flotte_au_dessus(hwnd: HWND) -> bool {
+    classe_flottante(&classe_de(hwnd), true)
+}
+
+/// Comme `flotte_au_dessus`, mais les COINS d'écran comptent comme des fenêtres
+/// ordinaires. Sert à `coins_ecran::cible_de_remontee` : deux coins ne se
+/// recouvrent jamais en vrai (chacun est sur un angle), et les compter comme
+/// « flottants » là-bas rendrait le recouvrement indétectable.
+pub(crate) fn flotte_au_dessus_hors_coins(hwnd: HWND) -> bool {
+    classe_flottante(&classe_de(hwnd), false)
+}
+
+fn classe_flottante(classe: &str, coins_compris: bool) -> bool {
+    match classe {
+        "NdCoinEcran" => coins_compris,
+        "NeuraDeskTooltipWindow" | "NeuraDeskFullscreenClockWindow" | "IME" | "MSCTFIME UI" | "ThumbnailDeviceHelperWnd" | "ForegroundStaging" => true,
+        _ => false,
+    }
 }
 
 #[inline]

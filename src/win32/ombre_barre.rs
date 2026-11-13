@@ -99,7 +99,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetTopWindow, GetWindow, IsWindowVisible, GW_HWNDNEXT, RegisterClassExW, SetWindowDisplayAffinity, SetWindowPos,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetTopWindow, GetWindow, IsWindowVisible, GW_HWNDNEXT, GW_HWNDPREV, RegisterClassExW, SetWindowDisplayAffinity, SetWindowPos,
     ShowWindow, UpdateLayeredWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SW_SHOWNOACTIVATE, ULW_ALPHA, WM_CLOSE,
     WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
@@ -1673,7 +1673,37 @@ pub fn remonter() {
 /// s'insèrent directement sous le plus bas des menus (`SetWindowPos` pose une
 /// fenêtre SOUS celle qu'on lui donne), remontés juste avant.
 fn ranger(ombres: &[HWND], menus: &[HWND], docks: &[HWND], panneaux: &[HWND]) {
+    // ⛔ **NE DÉPLACER QUE CE QUI EST MAL PLACÉ** — DÉFAUT RÉEL SIGNALÉ
+    // (2026-11-13) : « quand je survole une icône les coins arrondis au bord de
+    // l'écran clignotent ». MESURÉ à la sonde d'ordre Z (50 ms, 1764
+    // échantillons) : au repos, une fois toutes les quelques secondes, un
+    // échantillon montrait le dock DEVANT ses quatre coins (`⛔ C0,0 sous D0…`)
+    // pendant ~50 ms, puis le coin revenait. C'est ce passage devant/derrière,
+    // quatre fois par seconde, que DWM recompose — le clignotement.
+    //
+    // La cause : ce passage se rejoue à chaque `REMONTEE` (250 ms), et
+    // l'ancien « déjà directement sous sa cible ? » ne pouvait jamais le
+    // reconnaître. L'ancre du rangement est la fenêtre JUSTE AU-DESSUS du dock
+    // — souvent un COIN d'écran (ils flottent au-dessus de tout) — donc le
+    // dock n'est jamais directement sous elle : entre lui et l'ancre il y a les
+    // ombres, puis le coin. Chaque passage replaçait donc docks et ombres, et
+    // chaque `SetWindowPos` sur un dock réinsère ses coins POSSÉDÉS.
+    //
+    // On compare donc les RANGS dans la bande, pas l'adjacence : une fenêtre
+    // dont la voisine du dessus est déjà de son rang (ou d'un rang supérieur)
+    // est à sa place, quelles que soient les fenêtres de notre propre bande
+    // intercalées entre elle et l'ancre. Une fenêtre étrangère, un panneau ou
+    // une chose qu'on ne connaît pas → non classée (`None`) : on la déplace
+    // comme avant, en la posant sous l'ancre.
+    let magnifie = crate::ui::dock::magnification_en_cours();
+    let rang = |hwnd: HWND| rang_dans_la_bande(hwnd, magnifie, menus, ombres, docks);
     let poser = |hwnd, sous| {
+        // Voir le commentaire ci-dessus : rangs, pas adjacence. Un
+        // `SetWindowPos` inutile réinsère la fenêtre et fait recomposer ce
+        // qu'elle possède — le dock possède les coins noirs des écrans.
+        if deja_place(hwnd, sous, &rang) {
+            return;
+        }
         let _ = unsafe { SetWindowPos(hwnd, Some(sous), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER) };
     };
     // ⭐ **UNE ICÔNE AGRANDIE PASSE DEVANT TOUT** — voir `rangement_magnifie` et
@@ -1693,6 +1723,84 @@ fn ranger(ombres: &[HWND], menus: &[HWND], docks: &[HWND], panneaux: &[HWND]) {
     for (hwnd, sous) in placements(ombres, menus, docks, ancre) {
         poser(hwnd, sous);
     }
+    remettre_les_coins_devant();
+}
+
+/// Le rang de `hwnd` dans la bande, du plus HAUT (0) au plus BAS — `None` : pas
+/// de la bande (panneau, fenêtre étrangère). Voir `ranger` et `deja_place`.
+///
+/// Trois familles de fenêtres FLOTTENT au-dessus de la bande sans rien y
+/// déplacer : les COINS d'écran (posés sur les angles du dock, voir
+/// `coins_ecran`), l'INFOBULLE (elle se réaffirme elle-même au-dessus — voir
+/// `TooltipWindow::show`) et la fenêtre **IME** du fil, que Windows garde au
+/// sommet de son propre chef. Les compter comme étrangères ferait replacer toute
+/// la bande à chaque passage — MESURÉ à la sonde : le dock repassait devant ses
+/// coins pendant une magnification maintenue (trois échantillons sur 787), et
+/// ses coins POSSÉDÉS clignotaient.
+fn rang_dans_la_bande(hwnd: HWND, magnifie: bool, menus: &[HWND], ombres: &[HWND], docks: &[HWND]) -> Option<u8> {
+    if crate::win32::window::flotte_au_dessus(hwnd) {
+        return Some(0);
+    }
+    if magnifie {
+        [docks, menus, ombres].iter().position(|couche| couche.contains(&hwnd)).map(|i| i as u8 + 1)
+    } else {
+        [menus, ombres, docks].iter().position(|couche| couche.contains(&hwnd)).map(|i| i as u8 + 1)
+    }
+}
+
+/// `hwnd` est-il déjà À SA PLACE sous `sous` ? Voir le commentaire de `ranger`,
+/// qui porte la mesure du clignotement.
+///
+/// Vrai quand `sous` est AU-DESSUS de `hwnd` — ou quand `sous` est
+/// `HWND_TOPMOST` et qu'on a atteint le sommet — et que toutes les fenêtres
+/// intercalées sont de notre bande, d'un rang au moins aussi haut (voir `rang`
+/// dans `ranger`). Une fenêtre étrangère ou d'un rang plus bas entre eux n'a
+/// rien à faire là : on replace.
+///
+/// ⚠️ **C'EST LA COMPARAISON DES RANGS QUI COMPTE, PAS L'ADJACENCE** : l'ancre
+/// du rangement est le plus souvent un COIN d'écran, et le dock n'est jamais
+/// directement dessous (les ombres sont entre eux). L'ancienne règle
+/// (`GetWindow(hwnd, GW_HWNDPREV) == sous`) ne pouvait donc jamais reconnaître
+/// un dock déjà en place, et le replaçait à chaque `REMONTEE`.
+fn deja_place(hwnd: HWND, sous: HWND, rang: &impl Fn(HWND) -> Option<u8>) -> bool {
+    let Some(sien) = rang(hwnd) else { return false };
+    let mut courante = unsafe { GetWindow(hwnd, GW_HWNDPREV) }.ok();
+    while let Some(au_dessus) = courante {
+        if au_dessus == sous {
+            return true;
+        }
+        if !rang(au_dessus).is_some_and(|le_sien| le_sien <= sien) {
+            return false;
+        }
+        courante = unsafe { GetWindow(au_dessus, GW_HWNDPREV) }.ok();
+    }
+    // `HWND_TOPMOST` n'est pas une fenêtre : « au-dessus » y est vrai quand on
+    // est arrivé au sommet sans rien croiser qui dérange.
+    sous == HWND_TOPMOST
+}
+
+/// Le nom de classe de `hwnd`, `None` s'il est illisible — pour les tests, qui
+/// vérifient qu'un coin d'écran est reconnu par sa classe.
+#[cfg(test)]
+fn classe_de(hwnd: HWND) -> Option<String> {
+    let mut classe = [0u16; 64];
+    let n = unsafe { windows::Win32::UI::WindowsAndMessaging::GetClassNameW(hwnd, &mut classe) };
+    (n > 0).then(|| String::from_utf16_lossy(&classe[..n as usize]))
+}
+
+/// Les coins noirs des écrans restent DEVANT le dock qu'ils complètent — appelé
+/// après tout rangement qui a pu déplacer un dock.
+///
+/// Un `SetWindowPos` sur le dock réinsère ses fenêtres POSSÉDÉES (les coins
+/// noirs des écrans) et peut les laisser DERRIÈRE lui ; le rangement suivant ne
+/// les en sortait qu'au prochain `coins_ecran::synchroniser` (1 Hz). On les
+/// remet donc devant dans le MÊME passage, avant toute composition. Les coins
+/// déjà devant ne bougent pas (voir `coins_ecran::cible_de_remontee`) — et le
+/// plus souvent, depuis que `ranger` ne déplace plus un dock déjà en place, il
+/// n'y a plus rien à remettre.
+fn remettre_les_coins_devant() {
+    crate::win32::coins_secondaires::remonter();
+    crate::win32::coins_ecran::remonter();
 }
 
 /// **L'ORDRE PENDANT LA MAGNIFICATION : DOCK EN TÊTE, PUIS MENUS, PUIS OMBRES.**
@@ -1714,19 +1822,30 @@ fn ranger(ombres: &[HWND], menus: &[HWND], docks: &[HWND], panneaux: &[HWND]) {
 /// dock qui change de camp.
 fn rangement_magnifie(poser: &impl Fn(HWND, HWND), ombres: &[HWND], menus: &[HWND], docks: &[HWND]) {
     for &dock in docks {
-        poser(dock, HWND_TOPMOST);
+        // ⛔ **NE REMONTER UN DOCK QUE S'IL A QUELQUE CHOSE DEVANT** — voir
+        // `window::un_voisin_visible_devant` : ce `SetWindowPos` réinsère aussi
+        // les coins noirs que le dock possède, et DWM les recomposait à chaque
+        // tour (4 fois par seconde pendant un survol) alors que rien n'était
+        // devant — DÉFAUT RÉEL SIGNALÉ le 2026-11-13 : « les coins arrondis au
+        // bord de l'écran clignotent ». Le dock est remonté par `ranger` au
+        // premier rangement utile, pas à chaque `REMONTEE`.
+        if crate::win32::window::un_voisin_visible_devant(dock) {
+            poser(dock, HWND_TOPMOST);
+        }
     }
     // Le dock le plus bas de ceux qu'on vient de remonter : `BARRES` est la
     // source de l'ordre des remontées ci-dessus, donc son premier élément est
     // le premier remonté, donc le plus bas. À défaut (aucune barre déclarée —
     // tout début de vie, ou test), le premier dock reçu fait le même office.
-    let Some(ancre) = ancre_de_magnification().or_else(|| docks.first().copied()) else { return };
-    for &ombre in ombres {
-        poser(ombre, ancre);
+    if let Some(ancre) = ancre_de_magnification().or_else(|| docks.first().copied()) {
+        for &ombre in ombres {
+            poser(ombre, ancre);
+        }
+        for &menu in menus {
+            poser(menu, ancre);
+        }
     }
-    for &menu in menus {
-        poser(menu, ancre);
-    }
+    remettre_les_coins_devant();
 }
 
 /// Le dock SOUS lequel se posent menus et ombres pendant la magnification —
@@ -2750,13 +2869,21 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tests_rang {
+pub(crate) mod tests_rang {
     use super::*;
+
+    /// Les tests de rang se disputent la PILE GLOBALE des fenêtres : ils doivent
+    /// s'exécuter l'un après l'autre, sinon les fenêtres d'un test deviennent
+    /// l'ancre de l'autre (MESURÉ : deux échecs sur cinq exécutions). Le verrou
+    /// est PARTAGÉ avec `coins_ecran::tests_rang` : ces tests-là créent aussi
+    /// des fenêtres dans la même pile.
+    pub(crate) static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// ⭐ Seuls les menus passent au-dessus des ombres — les nôtres comme ceux
     /// des autres applications ; le dock et nos panneaux restent dessous.
     #[test]
     fn seuls_les_menus_passent_au_dessus_des_ombres() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let [dock, panneau, menu, etranger, ombre] = [(); 5].map(|_| creer().unwrap());
         let haut = |h| unsafe { SetWindowPos(h, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) };
         // L'ombre en tête, comme après l'ancienne remontée ; le panneau (un
@@ -2805,6 +2932,7 @@ mod tests_rang {
     /// retombe derrière l'ombre et le menu, et ce test le nomme.
     #[test]
     fn une_icone_agrandie_passe_devant_les_ombres_et_les_menus() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let [dock, autre_dock, panneau, menu, ombre] = [(); 5].map(|_| creer().unwrap());
         let haut = |h| unsafe { SetWindowPos(h, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) };
         // L'état d'avant : l'ombre devant le dock, le panneau entre les deux.
@@ -2835,6 +2963,75 @@ mod tests_rang {
         // L'ordre demandé le 2026-10-23 tient toujours : menus devant les ombres.
         assert!(rang(menu) < rang(ombre), "les ombres sont repassées devant un menu");
         for h in [dock, autre_dock, panneau, menu, ombre] {
+            let _ = unsafe { DestroyWindow(h) };
+        }
+    }
+
+    /// Un coin d'écran comme les vrais : même classe (voir `coins_ecran`), donc
+    /// reconnu au rang 0 par `ranger` — c'est lui qui sert d'ancre au repos.
+    fn coin_de_test() -> HWND {
+        let instance = crate::win32::coins_ecran::classe().unwrap();
+        unsafe {
+            CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                w!("NdCoinEcran"),
+                w!("NeuraDesk — coin de test"),
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                Some(instance),
+                None,
+            )
+            .unwrap()
+        }
+    }
+
+    /// ⛔ **L'ANCRE DU RANGEMENT EST UN COIN, PAS LA VOISINE IMMÉDIATE** —
+    /// DÉFAUT RÉEL SIGNALÉ (2026-11-13) : « quand je survole une icône les coins
+    /// arrondis au bord de l'écran clignotent ». L'ancre est la fenêtre JUSTE
+    /// AU-DESSUS du dock ; quand un coin d'écran flotte là, ce n'est jamais la
+    /// voisine immédiate du dock (les ombres sont entre eux). Une règle
+    /// d'adjacence ne peut donc jamais reconnaître un dock déjà en place : elle
+    /// le replace à chaque `REMONTEE` (250 ms), et chaque `SetWindowPos` sur le
+    /// dock réinsère ses coins POSSÉDÉS — mesuré : le dock devant ses coins par
+    /// intermittence.
+    ///
+    /// **MUTATION** : revenir à `GetWindow(hwnd, GW_HWNDPREV) == sous` — la
+    /// première assertion tombe, puisque l'ombre est intercalée.
+    #[test]
+    fn un_dock_deja_sous_le_coin_et_sous_les_ombres_ne_bouge_pas() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let dock = creer().unwrap();
+        let ombre = creer().unwrap();
+        let coin = coin_de_test();
+        let haut = |h| unsafe { SetWindowPos(h, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) };
+        // L'ordre du repos, de haut en bas : le coin, les ombres, le dock.
+        let _ = (haut(dock), haut(ombre), haut(coin));
+        let rang = |h: HWND| -> Option<u8> {
+            if classe_de(h).is_some_and(|classe| classe == "NdCoinEcran") {
+                Some(0)
+            } else if h == ombre {
+                Some(2)
+            } else if h == dock {
+                Some(3)
+            } else {
+                None
+            }
+        };
+        let rang = |h: HWND| rang_dans_la_bande(h, false, &[], &[ombre], &[dock]);
+        assert!(deja_place(dock, coin, &rang), "le dock est déjà sous le coin, à travers les ombres");        // Ce que l'ancienne règle regardait : la voisine immédiate est l'ombre.
+        assert_ne!(unsafe { GetWindow(dock, GW_HWNDPREV) }.ok(), Some(coin));
+
+        // Une fenêtre étrangère INTERCALÉE entre le dock et ses ombres, elle,
+        // force le replacement : on ne sait pas ce qu'elle fait là.
+        let etranger = creer().unwrap();
+        let _ = unsafe { SetWindowPos(etranger, Some(ombre), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) };
+        assert!(!deja_place(dock, coin, &rang), "une étrangère entre le dock et l'ancre : il faut replacer");
+        for h in [dock, ombre, coin, etranger] {
             let _ = unsafe { DestroyWindow(h) };
         }
     }
