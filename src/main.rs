@@ -22,6 +22,7 @@ mod config;
 mod config_initiale;
 mod diag;
 mod plantages;
+mod rythme_images;
 mod dock_instance;
 mod ecrans_identites;
 mod gfx;

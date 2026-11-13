@@ -2756,7 +2756,9 @@ unsafe fn set_dock_region(
     rayon_conge: i32,
 ) {
     let combined = CreateRectRgn(0, 0, 0, 0);
-    for rect in dock_region_rects_entre(width, height, top, left, right, bottom, overflow, reglees) {
+    let rects = dock_region_rects_entre(width, height, top, left, right, bottom, overflow, reglees);
+    noter_les_zones_visibles(hwnd, zones_avec_les_conges(&rects, rayon_conge, width, height));
+    for rect in rects {
         let piece = CreateRectRgn(rect[0], rect[1], rect[2], rect[3]);
         CombineRgn(Some(combined), Some(combined), Some(piece), RGN_OR);
         // `Take`-like : `CombineRgn` ne consomme pas la source, elle reste
@@ -2781,6 +2783,69 @@ unsafe fn set_dock_region(
     // SetWindowRgn prend possession de `combined` ; les régions sources
     // restent nôtres et doivent être libérées explicitement.
     let _ = SetWindowRgn(hwnd, Some(combined), true);
+}
+
+thread_local! {
+    /// Par fenêtre de dock : les rectangles qui couvrent sa région visible
+    /// (voir `zones_visibles`), et s'ils ont changé depuis le dernier
+    /// affichage.
+    static ZONES_VISIBLES: std::cell::RefCell<std::collections::HashMap<isize, (Vec<[i32; 4]>, bool)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Les rectangles de la région, élargis du rayon des congés (qui mordent sur
+/// la zone libre à partir des barres) et bornés à la fenêtre.
+fn zones_avec_les_conges(rects: &[[i32; 4]], rayon: i32, largeur: i32, hauteur: i32) -> Vec<[i32; 4]> {
+    let r = rayon.max(0);
+    rects
+        .iter()
+        .filter(|z| z[2] > z[0] && z[3] > z[1])
+        .map(|z| [(z[0] - r).max(0), (z[1] - r).max(0), (z[2] + r).min(largeur), (z[3] + r).min(hauteur)])
+        .collect()
+}
+
+fn noter_les_zones_visibles(hwnd: HWND, zones: Vec<[i32; 4]>) {
+    ZONES_VISIBLES.with(|z| {
+        z.borrow_mut().insert(hwnd.0 as isize, (zones, true));
+    });
+}
+
+/// Les zones de la fenêtre de dock `hwnd` à recopier à l'affichage (voir
+/// `SwapChain::present_zones`) : celles qui couvrent sa RÉGION — hors d'elle,
+/// rien n'est visible. **Vide = toute l'image**, et c'est le cas pour le
+/// premier affichage après un changement de région : la partie qui vient
+/// d'apparaître n'a jamais été recopiée.
+pub fn zones_visibles(hwnd: HWND) -> Vec<[i32; 4]> {
+    ZONES_VISIBLES.with(|z| {
+        let mut z = z.borrow_mut();
+        match z.get_mut(&(hwnd.0 as isize)) {
+            Some((zones, change)) if !*change => zones.clone(),
+            Some((_, change)) => {
+                *change = false;
+                Vec::new()
+            }
+            None => Vec::new(),
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests_zones_visibles {
+    use super::*;
+
+    #[test]
+    fn les_zones_sont_elargies_du_rayon_et_bornees() {
+        let z = zones_avec_les_conges(&[[0, 0, 100, 40], [0, 0, 0, 10]], 8, 100, 200);
+        assert_eq!(z, vec![[0, 0, 100, 48]]);
+    }
+
+    #[test]
+    fn le_premier_affichage_apres_un_changement_est_complet() {
+        let hwnd = HWND(0x5151 as *mut _);
+        noter_les_zones_visibles(hwnd, vec![[0, 0, 10, 10]]);
+        assert!(zones_visibles(hwnd).is_empty(), "première fois : tout");
+        assert_eq!(zones_visibles(hwnd), vec![[0, 0, 10, 10]]);
+    }
 }
 
 /// Une fenêtre **visible, devant `hwnd`, qui le recouvre** existe-t-elle — sans

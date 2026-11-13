@@ -89,6 +89,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU16, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use windows::core::w;
@@ -1384,15 +1385,25 @@ fn a_une_fenetre(ombre: &Ombre) -> bool {
 /// composée en BGRA PRÉMULTIPLIÉ à la taille de la fenêtre, et la texture où
 /// son shader la lit (voir la doc de module).
 struct Calque {
+    /// Ce que la texture MONTRE (le dernier rendu de l'atelier appliqué).
     ombres: Vec<Ombre>,
     /// Le centre de la barre du haut (`centre_haut`), peint SOUS les ombres, et
     /// l'empreinte de la texture qu'il a reçue (`empreinte_de_la_texture`).
     centre: Option<(crate::win32::centre_haut::Bloc, u64)>,
     origine: (i32, i32),
     taille: (i32, i32),
-    pixels: Vec<u8>,
+    /// L'image de ce rendu, lue par `ombree` et renvoyée au GPU par `envoyer`.
+    pixels: Arc<Vec<u8>>,
     vue: Option<(ID3D11Texture2D, ID3D11ShaderResourceView)>,
+    /// Le dernier état DEMANDÉ à l'atelier : rien n'est redemandé tant qu'il
+    /// ne change pas.
+    demande: Option<EtatCalque>,
+    /// Un travail est à l'atelier : le suivant attend son retour.
+    en_vol: bool,
 }
+
+/// Ce qu'un calque doit montrer : ombres, centre, origine et taille.
+type EtatCalque = (Vec<Ombre>, Option<(crate::win32::centre_haut::Bloc, u64)>, (i32, i32), (i32, i32));
 
 impl Calque {
     /// Ni ombre ni centre : rien à poser sur les fonds.
@@ -1439,86 +1450,253 @@ fn rect_dans(ombre: &Ombre, origine: (i32, i32), (l, h): (i32, i32)) -> Option<[
 /// Compose la part sur l'interface de `ombres`, DANS L'ORDRE (chacune par-dessus
 /// les précédentes : la noire sur la colorée), dans `pixels` (BGRA prémultiplié,
 /// fenêtre de taille `taille` à `origine`). Rend les rectangles touchés.
-fn composer(pixels: &mut [u8], origine: (i32, i32), taille: (i32, i32), ombres: &[Ombre]) -> Vec<[i32; 4]> {
+fn composer(pixels: &mut [u8], origine: (i32, i32), taille: (i32, i32), ombres: &[Ombre], textures: &[Option<Arc<Vec<u8>>>]) -> Vec<[i32; 4]> {
     let mut touches = Vec::new();
-    for ombre in ombres {
+    for (n, ombre) in ombres.iter().enumerate() {
         let Some([x0, y0, x1, y1]) = rect_dans(ombre, origine, taille) else { continue };
-        let source = pixels_de(ombre, Portion::Interface);
+        let texture = textures.get(n).and_then(Option::as_deref).map(Vec::as_slice);
+        let source = pixels_dans(ombre, Portion::Interface, texture, [0, 0, ombre.largeur, ombre.hauteur]);
         let (dx, dy) = (ombre.x - origine.0, ombre.y - origine.1);
-        for y in y0..y1 {
-            for x in x0..x1 {
-                let s = (((y - dy) * ombre.largeur + (x - dx)) * 4) as usize;
-                let d = ((y * taille.0 + x) * 4) as usize;
-                let reste = 255 - source[s + 3] as u32;
-                for k in 0..4 {
-                    pixels[d + k] = (source[s + k] as u32 + (pixels[d + k] as u32 * reste + 127) / 255).min(255) as u8;
+        // Par bandes de lignes, sur tous les cœurs — voir `pixels_par_distance` :
+        // le fondu de la grande ombre du bas sur le calque coûtait ~35 ms d'un cœur.
+        let ligne = (taille.0 * 4) as usize;
+        let zone = &mut pixels[y0 as usize * ligne..y1 as usize * ligne];
+        let pixels_zone = ((x1 - x0) * (y1 - y0)).max(0) as usize;
+        let fils = if pixels_zone < PIXELS_PAR_FIL { 1 } else { std::thread::available_parallelism().map_or(1, |n| n.get()).min(pixels_zone / PIXELS_PAR_FIL) };
+        let lignes_par_bande = ((y1 - y0) as usize).div_ceil(fils.max(1)).max(1);
+        let fondre = |bande: &mut [u8], premiere: i32| {
+            for (n, rangee) in bande.chunks_exact_mut(ligne).enumerate() {
+                let y = premiere + n as i32;
+                for x in x0..x1 {
+                    let s = (((y - dy) * ombre.largeur + (x - dx)) * 4) as usize;
+                    let d = (x * 4) as usize;
+                    let reste = 255 - source[s + 3] as u32;
+                    for k in 0..4 {
+                        rangee[d + k] = (source[s + k] as u32 + (rangee[d + k] as u32 * reste + 127) / 255).min(255) as u8;
+                    }
                 }
             }
+        };
+        if fils <= 1 {
+            fondre(zone, y0);
+        } else {
+            std::thread::scope(|portee| {
+                for (n, bande) in zone.chunks_mut(lignes_par_bande * ligne).enumerate() {
+                    let fondre = &fondre;
+                    portee.spawn(move || fondre(bande, y0 + (n * lignes_par_bande) as i32));
+                }
+            });
         }
         touches.push([x0, y0, x1, y1]);
     }
     touches
 }
 
-/// Met le calque de chaque fenêtre de dock en accord avec ses ombres : recomposé
-/// seulement quand elles changent, et renvoyé au GPU par rectangles (ceux des
-/// anciennes ombres, effacés, et ceux des nouvelles).
+/// Met le calque de chaque fenêtre de dock en accord avec ses ombres :
+/// recomposé seulement quand elles changent, et renvoyé au GPU par rectangles
+/// (ceux des anciennes ombres, effacés, et ceux des nouvelles).
+///
+/// ⭐ **LA COMPOSITION SE FAIT HORS DE LA BOUCLE D'AFFICHAGE** — DÉFAUT RÉEL
+/// MESURÉ (2026-11-13, « ce n'est pas fluide ») : les ombres colorées suivent la
+/// couleur RELUE des barres, et elle bouge toutes les 250 ms dès qu'une pastille
+/// texturée ou une lueur s'anime. Chaque relevé recomposait les ombres sur le
+/// fil principal : ~400 ms en 4K (≈ 60 ms après mise en cache des textures et
+/// découpage en bandes), pendant lesquelles RIEN ne s'affichait — la boucle ne
+/// tournait plus que 3 fois par seconde. L'atelier (`atelier`) compose
+/// maintenant ailleurs ; ce fil-ci ne fait qu'appliquer les rendus revenus
+/// (`UpdateSubresource`, ~3 ms) et ne lance jamais un travail tant que le
+/// précédent n'est pas rentré — les changements se regroupent d'eux-mêmes.
+///
+/// Les calques de TEXTURE (lecture GPU) se font ICI, avant l'envoi : le GPU
+/// appartient à ce fil. Ils sont en cache (`calque_en_cache`) : seul un
+/// changement de place ou de texture les relit.
 fn poser_les_calques(par_dock: &[(HWND, Barre, Vec<Ombre>)]) {
     let centre = crate::win32::centre_haut::reglages();
+    let atelier = atelier();
     CALQUES.with(|c| {
         let Ok(mut calques) = c.try_borrow_mut() else { return };
-        calques.retain(|cle, _| par_dock.iter().any(|(h, _, _)| h.0 as isize == *cle));
+        // Les rendus revenus de l'atelier.
+        while let Ok(rendu) = atelier.rendus.try_recv() {
+            let Some(calque) = calques.get_mut(&rendu.cle) else { continue };
+            let neuf = calque.vue.is_none() || calque.taille != rendu.taille;
+            calque.ombres = rendu.ombres;
+            calque.centre = rendu.centre;
+            calque.origine = rendu.origine;
+            calque.taille = rendu.taille;
+            calque.pixels = rendu.pixels;
+            calque.en_vol = false;
+            envoyer(calque, &rendu.rects, neuf);
+        }
+        calques.retain(|cle, _| {
+            let garde = par_dock.iter().any(|(h, _, _)| h.0 as isize == *cle);
+            if !garde {
+                let _ = atelier.travaux.send(Message::Oublier(*cle));
+            }
+            garde
+        });
         for (hwnd, barre, ombres) in par_dock {
+            let cle = hwnd.0 as isize;
             let taille = (barre.largeur.round() as i32, barre.hauteur.round() as i32);
             let bloc = centre.bloc(taille.0, barre.bas.round() as i32).map(|b| (b, empreinte_de_la_texture()));
-            let calque = calques
-                .entry(hwnd.0 as isize)
-                .or_insert_with(|| Calque { ombres: Vec::new(), centre: None, origine: barre.origine, taille: (0, 0), pixels: Vec::new(), vue: None });
-            let inchange = calque.ombres == *ombres && calque.centre == bloc && calque.origine == barre.origine && calque.taille == taille;
-            // Rien à poser, et rien de posé.
-            if inchange || taille.0 <= 0 || taille.1 <= 0 || (ombres.is_empty() && bloc.is_none() && calque.vue.is_none()) {
+            let calque = calques.entry(cle).or_insert_with(|| Calque {
+                ombres: Vec::new(),
+                centre: None,
+                origine: barre.origine,
+                taille: (0, 0),
+                pixels: Arc::new(Vec::new()),
+                vue: None,
+                demande: None,
+                en_vol: false,
+            });
+            let voulu: EtatCalque = (ombres.clone(), bloc, barre.origine, taille);
+            // Rien de neuf à demander, ou l'atelier travaille encore : le
+            // prochain tour s'en chargera, avec l'état d'alors.
+            if calque.en_vol || calque.demande.as_ref() == Some(&voulu) {
                 continue;
             }
-            let neuf = calque.taille != taille || calque.vue.is_none();
-            let mut rects = Vec::new();
-            if neuf {
-                calque.pixels = vec![0; (taille.0 * taille.1 * 4) as usize];
-                calque.taille = taille;
-            } else {
-                for o in &calque.ombres {
-                    if let Some([x0, y0, x1, y1]) = rect_dans(o, calque.origine, taille) {
-                        for y in y0..y1 {
-                            calque.pixels[((y * taille.0 + x0) * 4) as usize..((y * taille.0 + x1) * 4) as usize].fill(0);
-                        }
-                        rects.push([x0, y0, x1, y1]);
-                    }
-                }
-                // L'ancien centre s'efface avec la bande qu'il couvrait.
-                if let Some([x0, y0, x1, y1]) = calque.centre.map(|(b, _)| b.rect()) {
-                    let x1 = x1.min(taille.0);
-                    for y in y0..y1.min(taille.1) {
-                        calque.pixels[((y * taille.0 + x0) * 4) as usize..((y * taille.0 + x1) * 4) as usize].fill(0);
-                    }
-                    rects.push([x0, y0, x1, y1.min(taille.1)]);
-                }
+            // Rien à poser, et rien de posé.
+            if taille.0 <= 0 || taille.1 <= 0 || (ombres.is_empty() && bloc.is_none() && calque.vue.is_none()) {
+                continue;
             }
-            // ⛔ Le centre est REPEINT à chaque changement, ombres comprises : les
-            // ombres se composent PAR-DESSUS ce qui est là, et l'effacement des
-            // anciennes a pu en entamer une partie.
-            if let Some((b, empreinte)) = bloc {
+            let textures = ombres.iter().map(calque_centre_de).collect();
+            let texture_centre = bloc.and_then(|(b, empreinte)| {
                 let [_, _, l, h] = b.rect();
-                let texture = if empreinte != 0 { calque_de_texture(barre.origine, (l, h)) } else { None };
-                b.peindre(&mut calque.pixels, taille, texture.as_deref());
-                let [x0, y0, x1, y1] = b.rect();
-                rects.push([x0, y0, x1.min(taille.0), y1.min(taille.1)]);
+                (empreinte != 0)
+                    .then(|| calque_en_cache((barre.origine.0, barre.origine.1, l, h, empreinte, false), || calque_de_texture(barre.origine, (l, h))))
+                    .flatten()
+            });
+            let travail = Travail { cle, etat: voulu.clone(), textures, texture_centre };
+            if atelier.travaux.send(Message::Composer(Box::new(travail))).is_ok() {
+                calque.demande = Some(voulu);
+                calque.en_vol = true;
             }
-            rects.extend(composer(&mut calque.pixels, barre.origine, taille, ombres));
-            calque.centre = bloc;
-            calque.ombres = ombres.clone();
-            calque.origine = barre.origine;
-            envoyer(calque, &rects, neuf);
         }
     });
+}
+
+/// Le calque de texture CENTRÉ (voir `centrer`) d'une ombre, en cache ; `None`
+/// pour une ombre sans texture.
+fn calque_centre_de(ombre: &Ombre) -> Option<Arc<Vec<u8>>> {
+    if ombre.texture == 0 {
+        return None;
+    }
+    calque_en_cache((ombre.x, ombre.y, ombre.largeur, ombre.hauteur, ombre.texture, true), || {
+        let mut c = calque_de(ombre)?;
+        centrer(&mut c);
+        Some(c)
+    })
+}
+
+/// Un travail pour l'atelier : l'état voulu d'un calque, et les calques de
+/// texture déjà lus au GPU (une ombre sans texture : `None`).
+struct Travail {
+    cle: isize,
+    etat: EtatCalque,
+    textures: Vec<Option<Arc<Vec<u8>>>>,
+    texture_centre: Option<Arc<Vec<u8>>>,
+}
+
+enum Message {
+    Composer(Box<Travail>),
+    /// La fenêtre de dock a disparu : son image ne sert plus.
+    Oublier(isize),
+}
+
+/// Un calque composé, et les rectangles qui ont changé depuis le précédent.
+struct Rendu {
+    cle: isize,
+    ombres: Vec<Ombre>,
+    centre: Option<(crate::win32::centre_haut::Bloc, u64)>,
+    origine: (i32, i32),
+    taille: (i32, i32),
+    pixels: Arc<Vec<u8>>,
+    rects: Vec<[i32; 4]>,
+}
+
+struct Atelier {
+    travaux: std::sync::mpsc::Sender<Message>,
+    rendus: std::sync::mpsc::Receiver<Rendu>,
+}
+
+thread_local! {
+    static ATELIER: std::rc::Rc<Atelier> = std::rc::Rc::new(lancer_l_atelier());
+}
+
+fn atelier() -> std::rc::Rc<Atelier> {
+    ATELIER.with(std::rc::Rc::clone)
+}
+
+/// Une image d'atelier : l'état qu'elle montre, et ses pixels.
+type ImageAtelier = (EtatCalque, Vec<u8>);
+
+/// Le fil qui compose les calques. Il garde sa propre image par fenêtre de dock
+/// (la composition est INCRÉMENTALE : il efface les anciennes ombres, puis
+/// peint les nouvelles) et rend une copie de l'image à chaque travail.
+fn lancer_l_atelier() -> Atelier {
+    let (travaux, recus) = std::sync::mpsc::channel::<Message>();
+    let (rendre, rendus) = std::sync::mpsc::channel::<Rendu>();
+    let lance = std::thread::Builder::new().name("ombres-atelier".into()).spawn(move || {
+        let mut images: HashMap<isize, ImageAtelier> = HashMap::new();
+        while let Ok(message) = recus.recv() {
+            match message {
+                Message::Oublier(cle) => {
+                    images.remove(&cle);
+                }
+                Message::Composer(travail) => {
+                    let rendu = composer_le_calque(&mut images, *travail);
+                    if rendre.send(rendu).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+    if let Err(e) = lance {
+        crate::diag!("[ombre_barre] atelier des ombres non lancé : {e}");
+    }
+    Atelier { travaux, rendus }
+}
+
+/// La composition d'un calque — sur le fil de l'atelier.
+fn composer_le_calque(images: &mut HashMap<isize, ImageAtelier>, travail: Travail) -> Rendu {
+    let Travail { cle, etat, textures, texture_centre } = travail;
+    let (taille, origine) = (etat.3, etat.2);
+    let mut rects = Vec::new();
+    let image = images.entry(cle).or_insert_with(|| ((Vec::new(), None, origine, (0, 0)), Vec::new()));
+    let ((anciennes, ancien_centre, ancienne_origine, ancienne_taille), pixels) = image;
+    if *ancienne_taille != taille || pixels.len() != (taille.0 * taille.1 * 4) as usize {
+        *pixels = vec![0; (taille.0 * taille.1 * 4) as usize];
+    } else {
+        for o in anciennes.iter() {
+            if let Some([x0, y0, x1, y1]) = rect_dans(o, *ancienne_origine, taille) {
+                for y in y0..y1 {
+                    pixels[((y * taille.0 + x0) * 4) as usize..((y * taille.0 + x1) * 4) as usize].fill(0);
+                }
+                rects.push([x0, y0, x1, y1]);
+            }
+        }
+        // L'ancien centre s'efface avec la bande qu'il couvrait.
+        if let Some([x0, y0, x1, y1]) = ancien_centre.map(|(b, _)| b.rect()) {
+            let x1 = x1.min(taille.0);
+            for y in y0..y1.min(taille.1) {
+                pixels[((y * taille.0 + x0) * 4) as usize..((y * taille.0 + x1) * 4) as usize].fill(0);
+            }
+            rects.push([x0, y0, x1, y1.min(taille.1)]);
+        }
+    }
+    // ⛔ Le centre est REPEINT à chaque changement, ombres comprises : les
+    // ombres se composent PAR-DESSUS ce qui est là, et l'effacement des
+    // anciennes a pu en entamer une partie.
+    if let Some((b, _)) = etat.1 {
+        b.peindre(pixels, taille, texture_centre.as_deref().map(Vec::as_slice));
+        let [x0, y0, x1, y1] = b.rect();
+        rects.push([x0, y0, x1.min(taille.0), y1.min(taille.1)]);
+    }
+    rects.extend(composer(pixels, origine, taille, &etat.0, &textures));
+    let copie = Arc::new(pixels.clone());
+    image.0 = etat.clone();
+    let (ombres, centre, origine, taille) = etat;
+    Rendu { cle, ombres, centre, origine, taille, pixels: copie, rects }
 }
 
 /// Renvoie le calque au GPU : la texture entière quand elle est `neuve` (créée
@@ -1542,6 +1720,9 @@ fn envoyer(calque: &mut Calque, rects: &[[i32; 4]], neuve: bool) {
                 BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
                 ..Default::default()
             };
+            if calque.pixels.len() != (l * h * 4).max(0) as usize {
+                return;
+            }
             let donnees = D3D11_SUBRESOURCE_DATA { pSysMem: calque.pixels.as_ptr().cast(), SysMemPitch: (l * 4) as u32, SysMemSlicePitch: 0 };
             let mut texture = None;
             let mut vue = None;
@@ -2003,7 +2184,7 @@ fn pixels_de_l_ombre(
     couche: Couche,
     portion: Portion,
     cote: Cote,
-    teinte: impl Fn(f32, f32) -> [u8; 3],
+    teinte: impl Fn(f32, f32) -> [u8; 3] + Sync,
     texture: Option<&[u8]>,
     [rx, ry, rl, rh]: [i32; 4],
 ) -> Vec<u8> {
@@ -2040,11 +2221,53 @@ fn pixels_par_distance(
     portion: Portion,
     epaisseur: f32,
     texture: Option<&[u8]>,
-    distance: impl Fn(f32, f32) -> (f32, [u8; 3], f32, Cote),
+    distance: impl Fn(f32, f32) -> (f32, [u8; 3], f32, Cote) + Sync,
 ) -> Vec<u8> {
+    let (largeur, hauteur) = (largeur.max(0), hauteur.max(0));
+    let mut px = vec![0u8; (largeur * hauteur * 4) as usize];
+    // ⭐ **PAR BANDES DE LIGNES, SUR TOUS LES CŒURS** — même mesure que
+    // `calque_en_cache` : la grande ombre colorée du bas (3588×1250) coûtait
+    // à elle seule ~135 ms d'un cœur, à chaque relevé des couleurs. Chaque
+    // pixel ne dépend que de sa position : les bandes sont indépendantes.
+    let pixels = (largeur * hauteur) as usize;
+    let fils = if pixels < PIXELS_PAR_FIL { 1 } else { std::thread::available_parallelism().map_or(1, |n| n.get()).min(pixels / PIXELS_PAR_FIL) };
+    let lignes_par_bande = (hauteur as usize).div_ceil(fils.max(1)).max(1);
+    let octets_par_bande = lignes_par_bande * largeur as usize * 4;
+    if fils <= 1 || octets_par_bande == 0 {
+        lignes_d_ombre(&mut px, 0, largeur, force, couche, portion, epaisseur, texture, &distance);
+        return px;
+    }
+    std::thread::scope(|portee| {
+        for (n, bande) in px.chunks_mut(octets_par_bande).enumerate() {
+            let distance = &distance;
+            portee.spawn(move || {
+                lignes_d_ombre(bande, (n * lignes_par_bande) as i32, largeur, force, couche, portion, epaisseur, texture, distance);
+            });
+        }
+    });
+    px
+}
+
+/// En dessous, un seul fil : lancer des fils coûte plus que le calcul.
+const PIXELS_PAR_FIL: usize = 64 * 1024;
+
+/// Les lignes `y0..` de `pixels_par_distance` dans `bande` (lignes entières de
+/// `largeur` pixels BGRA, `texture` couvrant toute l'ombre).
+#[allow(clippy::too_many_arguments)]
+fn lignes_d_ombre(
+    bande: &mut [u8],
+    y0: i32,
+    largeur: i32,
+    force: f32,
+    couche: Couche,
+    portion: Portion,
+    epaisseur: f32,
+    texture: Option<&[u8]>,
+    distance: &(impl Fn(f32, f32) -> (f32, [u8; 3], f32, Cote) + Sync),
+) {
     let intensite = couche.intensite as f32 / 100.0;
-    let mut px = Vec::with_capacity((largeur * hauteur * 4) as usize);
-    for y in 0..hauteur {
+    let lignes = if largeur > 0 { bande.len() as i32 / (largeur * 4) } else { 0 };
+    for y in y0..y0 + lignes {
         for x in 0..largeur {
             let (d, teinte, part, barre) = distance(x as f32 + 0.5, y as f32 + 0.5);
             let noir = if d < 0.0 {
@@ -2079,20 +2302,60 @@ fn pixels_par_distance(
                 if couche.teinte_sur(portion) { ((c as f32 + ecart(k)) * opacite).round().clamp(0.0, a as f32) as u8 } else { 0 }
             };
             let [r, g, b] = teinte;
-            px.extend_from_slice(&[pre(b, 2), pre(g, 1), pre(r, 0), a]);
+            let o = (((y - y0) * largeur + x) * 4) as usize;
+            bande[o..o + 4].copy_from_slice(&[pre(b, 2), pre(g, 1), pre(r, 0), a]);
         }
     }
-    px
 }
 
 /// Les pixels d'une ombre posée : par la distance à la zone libre qu'elle borde
 /// pour les côtés, en simple bande pour le haut.
 fn pixels_de(ombre: &Ombre, portion: Portion) -> Vec<u8> {
-    let mut calque = if ombre.texture != 0 { calque_de(ombre) } else { None };
-    if let Some(c) = calque.as_mut() {
-        centrer(c);
+    let calque = if ombre.texture != 0 {
+        calque_en_cache((ombre.x, ombre.y, ombre.largeur, ombre.hauteur, ombre.texture, true), || {
+            let mut c = calque_de(ombre)?;
+            centrer(&mut c);
+            Some(c)
+        })
+    } else {
+        None
+    };
+    pixels_dans(ombre, portion, calque.as_deref().map(Vec::as_slice), [0, 0, ombre.largeur, ombre.hauteur])
+}
+
+/// Clé d'un calque de texture en cache : rectangle écran `(x, y, largeur,
+/// hauteur)`, empreinte de la texture, et « centré » (voir `centrer`).
+type CleCalque = (i32, i32, i32, i32, u64, bool);
+
+/// Au-delà, le cache est vidé : un changement d'écran ou de réglage laisse des
+/// rectangles qui ne reviendront pas.
+const CALQUES_EN_CACHE_MAX: usize = 32;
+
+thread_local! {
+    static CACHE_CALQUES: RefCell<HashMap<CleCalque, Arc<Vec<u8>>>> = RefCell::new(HashMap::new());
+}
+
+/// ⭐ **LE CALQUE DE LA TEXTURE NE DÉPEND QUE DE SA PLACE ET DE LA TEXTURE** —
+/// DÉFAUT RÉEL MESURÉ (2026-11-13, « ce n'est pas fluide ») : les ombres
+/// colorées sont recomposées à chaque relevé des couleurs des barres (toutes les
+/// 250 ms tant qu'une lueur « respire »), et chaque recomposition relisait le
+/// calque de la texture au GPU — ~140 ms sur 4K, sur ~400 ms de recomposition,
+/// à chaque fois. Or la TEINTE seule a changé : place et texture sont les
+/// mêmes, donc le calque aussi. `None` n'est pas mis en cache (GPU absent ou
+/// refus : on réessaiera).
+fn calque_en_cache(cle: CleCalque, calculer: impl FnOnce() -> Option<Vec<u8>>) -> Option<Arc<Vec<u8>>> {
+    if let Some(c) = CACHE_CALQUES.with(|c| c.borrow().get(&cle).cloned()) {
+        return Some(c);
     }
-    pixels_dans(ombre, portion, calque.as_deref(), [0, 0, ombre.largeur, ombre.hauteur])
+    let calque = Arc::new(calculer()?);
+    CACHE_CALQUES.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= CALQUES_EN_CACHE_MAX {
+            c.clear();
+        }
+        c.insert(cle, calque.clone());
+    });
+    Some(calque)
 }
 
 /// Le pixel `(x, y)` de l'ombre (coordonnées de l'ombre), sans sa texture —
@@ -2625,7 +2888,7 @@ mod tests {
         let taille = (1920, 1080);
         let compose = |ombres: &[Ombre]| {
             let mut pixels = vec![0u8; 1920 * 1080 * 4];
-            let rects = composer(&mut pixels, barre.origine, taille, ombres);
+            let rects = composer(&mut pixels, barre.origine, taille, ombres, &[]);
             (pixels, rects)
         };
         let (px, rects) = compose(&[coloree, noire]);

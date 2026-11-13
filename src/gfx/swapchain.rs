@@ -10,12 +10,13 @@
 use windows::core::Result;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11RenderTargetView, ID3D11Texture2D};
+use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_UNSPECIFIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN,
     DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory1, IDXGIFactory2, IDXGISwapChain1, DXGI_PRESENT, DXGI_SCALING_STRETCH,
+    CreateDXGIFactory1, IDXGIFactory2, IDXGISwapChain1, DXGI_ERROR_WAS_STILL_DRAWING, DXGI_PRESENT, DXGI_PRESENT_DO_NOT_WAIT, DXGI_PRESENT_PARAMETERS, DXGI_SCALING_STRETCH,
     DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_DISCARD, DXGI_SWAP_EFFECT_FLIP_DISCARD,
     DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
@@ -152,6 +153,65 @@ impl SwapChain {
     /// aux rares redessins qui restent.
     pub fn present_sans_attente(&self) -> Result<()> {
         unsafe { self.swapchain.Present(0, DXGI_PRESENT(0)).ok() }
+    }
+
+    /// Présente au prochain rafraîchissement de SON écran (`Present(1)`), mais
+    /// **sans jamais bloquer** (`DXGI_PRESENT_DO_NOT_WAIT`) : si la file de cet
+    /// écran est pleine, l'image est abandonnée et `Ok(false)` est rendu —
+    /// l'appelant la refera plus tard.
+    ///
+    /// Pour les docks des écrans SECONDAIRES (voir `app::render_secondary_docks`)
+    /// : leur écran peut tourner bien plus lentement que le principal (60 Hz
+    /// contre 143 Hz, mesuré le 2026-11-13), et un `Present(1)` bloquant y calait
+    /// toute la boucle d'affichage.
+    ///
+    /// `zones` (coordonnées du back buffer, `[x0, y0, x1, y1]`) : les SEULES
+    /// zones à recopier vers la fenêtre (rectangles modifiés de `Present1`,
+    /// admis par le modèle BitBlt). ⭐ Mesuré le 2026-11-13 : recopier toute
+    /// l'image 1920×1080 vers un écran d'une AUTRE carte graphique coûtait
+    /// 8 à 14 ms par affichage, même sans attente — les barres n'en sont
+    /// qu'une fraction. Vide = toute l'image. Si le pilote refuse les
+    /// rectangles, on retombe sur l'image entière.
+    pub fn present_sans_bloquer(&self, zones: &[[i32; 4]]) -> Result<bool> {
+        let hr = self.present_brut(zones, DXGI_PRESENT_DO_NOT_WAIT);
+        if hr == DXGI_ERROR_WAS_STILL_DRAWING {
+            return Ok(false);
+        }
+        hr.ok().map(|()| true)
+    }
+
+    /// `present` (au vsync, bloquant), mais en ne recopiant que `zones` —
+    /// voir `present_sans_bloquer` pour leur forme. Pour le dock PRINCIPAL : sa
+    /// fenêtre couvre tout l'écran et seule sa région est visible.
+    ///
+    /// ⭐ MESURÉ le 2026-11-13 : la recopie BitBlt de l'image 4K entière faisait
+    /// attendre ce `Present` jusqu'à 30 ms au survol — l'écran à 143 Hz
+    /// plafonnait à ~50 images/s alors que le travail de l'image tenait en 7 ms.
+    pub fn present_zones(&self, zones: &[[i32; 4]]) -> Result<()> {
+        self.present_brut(zones, DXGI_PRESENT(0)).ok()
+    }
+
+    fn present_brut(&self, zones: &[[i32; 4]], drapeaux: DXGI_PRESENT) -> windows::core::HRESULT {
+        let mut rects: Vec<RECT> = zones
+            .iter()
+            .filter(|z| z[2] > z[0] && z[3] > z[1])
+            .map(|z| RECT { left: z[0], top: z[1], right: z[2], bottom: z[3] })
+            .collect();
+        if rects.is_empty() {
+            return unsafe { self.swapchain.Present(1, drapeaux) };
+        }
+        let params = DXGI_PRESENT_PARAMETERS {
+            DirtyRectsCount: rects.len() as u32,
+            pDirtyRects: rects.as_mut_ptr(),
+            pScrollRect: std::ptr::null_mut(),
+            pScrollOffset: std::ptr::null_mut(),
+        };
+        let hr = unsafe { self.swapchain.Present1(1, drapeaux, &params) };
+        // Un pilote qui refuse les rectangles : toute l'image, comme avant.
+        if hr.is_err() && hr != DXGI_ERROR_WAS_STILL_DRAWING {
+            return unsafe { self.swapchain.Present(1, drapeaux) };
+        }
+        hr
     }
 }
 

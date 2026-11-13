@@ -1571,6 +1571,10 @@ struct SecondaryDock {
     /// survivre cet état runtime à travers une reconstruction complète.
     bar_revealed: bool,
     bar_away_since: Option<Instant>,
+    /// Instant du dernier rendu, et période de rafraîchissement de SON écran
+    /// — voir `SecondaryDock::rendu_du`.
+    dernier_rendu: Option<Instant>,
+    periode_ecran: Duration,
     // AUCUN CHAMP D'INFOBULLE ICI — cinq d'entre eux (`tooltip_hovered_icon`,
     // `tooltip_hover_start`, `tooltip_text`, `tooltip_font_px`,
     // `tooltip_texture`) vivaient à cette place, ajoutés pour un défaut signalé
@@ -2300,6 +2304,8 @@ fn rebuild_secondary_docks(
                 fullscreen_clock,
                 bar_revealed,
                 bar_away_since,
+                dernier_rendu: None,
+                periode_ecran: periode_d_affichage(None),
             })
         })
         .collect()
@@ -2679,8 +2685,13 @@ fn render_secondary_docks(
     // jamais ici : cette fonction tourne à chaque frame.
     relief: Option<&crate::gfx::relief::JeuRelief>,
     virtual_desktops: Option<&desktops::VirtualDesktops>,
+    animation_globale: bool,
 ) {
+    let maintenant = Instant::now();
     for dock in docks {
+        if !dock.rendu_du(maintenant, animation_globale) {
+            continue;
+        }
         // Obtenir la vue de rendu cible de la chaîne d'échange
         let Some(rtv) = dock.swapchain.rtv() else { continue };
         let w = dock.window.width as f32;
@@ -2693,9 +2704,10 @@ fn render_secondary_docks(
         // pour CE moniteur précis (`dock.window.hwnd`), pas celui de la
         // barre primaire — contrairement au texte de l'horloge/du moniteur
         // système/du titre média, légitimement identiques partout.
-        let refresh_rate_text = display::refresh_rate_hz(dock.window.hwnd)
-            .map(|hz| format!("{hz} Hz"))
-            .unwrap_or_default();
+        let hz = display::refresh_rate_hz(dock.window.hwnd);
+        dock.dernier_rendu = Some(maintenant);
+        dock.periode_ecran = periode_d_affichage(hz);
+        let refresh_rate_text = hz.map(|hz| format!("{hz} Hz")).unwrap_or_default();
         // Nombre de bureaux virtuels À NUMÉROTER sur les pastilles de CET écran
         // (voir `ui::desktop_labels`) — le MÊME partout, comme l'horloge : les
         // bureaux virtuels sont globaux, il n'y en a pas un jeu par moniteur.
@@ -2765,8 +2777,86 @@ fn render_secondary_docks(
                     crate::gfx::releve_barres::relever(dock.window.hwnd.0 as isize, device, ctx, &back_buffer, bandes, couleurs, dock.dock_instance.dock.cases_des_icones(&dock.dock_instance.layout));
                 }
             }
-            let _ = dock.swapchain.present();
+            // ⭐ **JAMAIS BLOQUANT** — DÉFAUT MESURÉ le 2026-11-13 (« ce n'est pas
+            // fluide ») : `Present(1)` attend le rafraîchissement de l'écran
+            // SECONDAIRE (60 Hz, autre carte graphique). Présenté à chaque tour,
+            // il calait toute la boucle sur 60 images/s ; même limité à la
+            // fréquence de son écran, il bloquait ~16 ms par image (30 images/s
+            // sur le principal). ⛔ `Present(0)` essayé aussi : le `Present` du
+            // dock PRIMAIRE attendait alors jusqu'à 30 ms. Une file pleine fait
+            // donc abandonner l'image, refaite à la prochaine échéance.
+            let presente = dock.swapchain.present_sans_bloquer(&zones_des_barres({
+                let l = &dock.dock_instance.layout;
+                [l.total_width, l.total_height, l.top_thickness, l.left_width, l.right_width, l.bottom_thickness]
+            }));
+            if let Ok(false) = presente {
+                dock.dernier_rendu = None;
+            }
         }
+    }
+}
+
+/// Marge autour des barres incluse dans les zones recopiées : les congés de la
+/// zone libre et les coins arrondis débordent un peu de l'épaisseur des barres.
+const MARGE_DES_ZONES_PX: i32 = 64;
+
+/// Les zones d'un dock (coordonnées de sa fenêtre, `[x0, y0, x1, y1]`) où
+/// quelque chose se dessine : ses quatre barres, avec `MARGE_DES_ZONES_PX`.
+/// Voir `SwapChain::present_sans_bloquer` : seules elles sont recopiées.
+///
+/// `[largeur, hauteur, haut, gauche, droite, bas]` : la taille de la fenêtre et
+/// les épaisseurs des barres (`DockLayout`).
+fn zones_des_barres([largeur, hauteur, haut, gauche, droite, bas]: [f32; 6]) -> Vec<[i32; 4]> {
+    let (w, h, m) = (largeur.round() as i32, hauteur.round() as i32, MARGE_DES_ZONES_PX);
+    let epaisseur = |e: f32| (e.round() as i32 + m).min(w.min(h));
+    vec![
+        [0, 0, w, epaisseur(haut)],
+        [0, 0, epaisseur(gauche), h],
+        [w - epaisseur(droite), 0, w, h],
+        [0, h - epaisseur(bas), w, h],
+    ]
+}
+
+#[cfg(test)]
+mod tests_zones_des_barres {
+    use super::*;
+
+    #[test]
+    fn les_zones_couvrent_les_quatre_barres_et_leur_marge() {
+        let z = zones_des_barres([1920.0, 1080.0, 40.0, 0.0, 0.0, 0.0]);
+        assert_eq!(z[0], [0, 0, 1920, 104]);
+        assert_eq!(z[1], [0, 0, 64, 1080]);
+        assert_eq!(z[2], [1856, 0, 1920, 1080]);
+        assert_eq!(z[3], [0, 1016, 1920, 1080]);
+    }
+}
+
+/// Intervalle entre deux rendus d'un dock secondaire où rien ne s'anime (voir
+/// `render_secondary_docks`) — la cadence de secours de la boucle principale.
+const REPOS_SECONDAIRE: Duration = Duration::from_millis(250);
+
+/// Intervalle minimal entre deux rendus d'un dock secondaire : la période de
+/// rafraîchissement de son écran (`hz`), un peu raccourcie pour ne jamais
+/// sauter une image de cet écran. 60 Hz si la fréquence est inconnue.
+fn periode_d_affichage(hz: Option<u32>) -> Duration {
+    let hz = hz.filter(|&h| h > 0).unwrap_or(60);
+    Duration::from_secs_f64(1.0 / f64::from(hz)).saturating_sub(Duration::from_millis(1))
+}
+
+#[cfg(test)]
+mod tests_periode_d_affichage {
+    use super::*;
+
+    #[test]
+    fn un_ecran_a_60_hz_est_redessine_toutes_les_15_ms_environ() {
+        let p = periode_d_affichage(Some(60));
+        assert!(p > Duration::from_millis(15) && p < Duration::from_millis(16), "{p:?}");
+    }
+
+    #[test]
+    fn une_frequence_inconnue_ou_nulle_vaut_60_hz() {
+        assert_eq!(periode_d_affichage(None), periode_d_affichage(Some(60)));
+        assert_eq!(periode_d_affichage(Some(0)), periode_d_affichage(Some(60)));
     }
 }
 
@@ -2774,6 +2864,33 @@ fn render_secondary_docks(
 /// (voir `win32::coins_secondaires`) : une bande masquée (masquage automatique,
 /// plein écran) n'en a pas. La couleur de chaque bout est celle RELEVÉE dans le
 /// rendu (`gfx::releve_barres`) ; avant le premier relevé, la teinte adoucie.
+impl SecondaryDock {
+    /// Ce dock est-il à redessiner ? Au rythme de SON écran s'il a quelque
+    /// chose à animer (souris dessus, ou `animation_globale`), sinon toutes les
+    /// `REPOS_SECONDAIRE`.
+    ///
+    /// ⭐ **POURQUOI** — MESURÉ le 2026-11-13 (« ce n'est pas fluide ») : un
+    /// rendu de ce dock coûte ~5 ms (dont ~4 ms d'affichage vers l'écran d'une
+    /// AUTRE carte graphique), donc à 60 Hz il pesait sur une image sur deux de
+    /// l'écran principal pendant qu'on survole CELUI-CI. Sans souris ni
+    /// animation continue, rien n'y bouge que l'horloge, les textes du moniteur
+    /// et le fond flouté. Recalculé à chaque tour : la souris qui arrive sur ce
+    /// dock le remet tout de suite à pleine cadence.
+    fn rendu_du(&self, maintenant: Instant, animation_globale: bool) -> bool {
+        let actif = animation_globale || self.dock_instance.dock.mouse_pos().is_some();
+        let intervalle = if actif { self.periode_ecran } else { REPOS_SECONDAIRE };
+        self.dernier_rendu.is_none_or(|t| maintenant.duration_since(t) >= intervalle)
+    }
+}
+
+/// Les animations continues qui font bouger TOUS les docks, secondaires
+/// compris (voir `SecondaryDock::rendu_du`).
+fn animation_globale() -> bool {
+    crate::gfx::degrade::is_enabled()
+        || crate::ui::dock::logo_animation_enabled()
+        || crate::gfx::texture_perso::INTERFACE.anime()
+}
+
 fn bandes_secondaires(docks: &[SecondaryDock]) -> Vec<crate::win32::coins_secondaires::Bande> {
     if !crate::win32::coins_secondaires::un_ecran_actif() {
         return Vec::new();
@@ -3592,16 +3709,6 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     // Voir `sys_monitor_font_px` juste au-dessus — même correctif, même
     // raison.
     let mut refresh_rate_font_px = -1;
-
-    // Plafond CHOISI par l'utilisateur pour la boucle de rendu elle-même
-    // (voir plus bas, juste après `swapchain.present()`) — pas à confondre
-    // avec `refresh_rate_text` ci-dessus, qui ne fait qu'AFFICHER la
-    // fréquence réelle de l'écran. `None` tant que jamais personnalisé
-    // (voir `config::load_app_refresh_rate_cap`, doc de fonction) : boucle
-    // calée sur le vsync de l'écran, comportement d'origine. Modifié par le
-    // dispatch de `win32::cef_context::drain_actions` plus bas
-    // ("refresh_rate/<hz|auto>").
-    let mut app_refresh_rate_cap: Option<u32> = config::load_app_refresh_rate_cap();
 
     // Bureaux virtuels (pastilles cliquables de la barre du haut, voir
     // `ui::topbar::desktop_dot_rect`) : `None` si la lecture échoue (valeur de
@@ -6960,7 +7067,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let mut peintures_cef_vues = crate::win32::cef_popup::peintures_visibles();
     // Voir `win32::chien_de_garde` : la pile de ce fil quand la boucle s'arrête.
     crate::win32::chien_de_garde::installer();
+    // Voir `rythme_images` : une ligne par seconde au journal de diagnostic.
+    let mut rythme = crate::rythme_images::RythmeImages::default();
     'main: loop {
+        let debut_tour = Instant::now();
         crate::win32::chien_de_garde::battre();
         // Les coins noirs des écrans (voir `win32::coins_ecran`) : sans changement
         // d'option, de rayon ou d'écrans, `synchroniser` ne touche à rien.
@@ -7556,21 +7666,15 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     let s = menu_scale_qui_tient(1400, 900, echelle_debug, room);
                     crate::win32::cef_calendar::toggle(menu_rect_centre(100, 1400, 900, s, room), &gfx, s, &dates, &rappels_fetes, &notes)
                 }
-                // `button_list_height(COLLAPSED_BUTTON_COUNT, 1, 0)` : la fenêtre
-                // naît à la taille du sous-menu des fréquences REPLIÉ, qui est le
-                // cas courant. Elle GRANDIT ensuite si l'utilisateur déplie le
-                // sous-menu : le plafond n'est plus une hauteur estimée mais la
-                // place réellement disponible sous la fenêtre (voir
-                // `cef_popup::resize_to_content`). Faire naître le menu à la taille
-                // du DÉPLIÉ a été essayé et MESURÉ : saut de 2000 px en plein
-                // visage, la fenêtre naissait plus haute que l'écran.
+                // `button_list_height(COLLAPSED_BUTTON_COUNT, 0, 0)` : la fenêtre
+                // naît à la hauteur estimée, puis la page se mesure elle-même.
                 Some("cef-context") => {
                     let (bw, bh) = (
                         960,
-                        crate::win32::cef_popup::button_list_height(crate::win32::cef_context::COLLAPSED_BUTTON_COUNT, 1, 0),
+                        crate::win32::cef_popup::button_list_height(crate::win32::cef_context::COLLAPSED_BUTTON_COUNT, 0, 0),
                     );
                     let s = menu_scale_qui_tient(bw, bh, echelle_debug, room);
-                    crate::win32::cef_context::toggle(menu_rect((100, 100), bw, bh, s, room), &gfx, s, window.hwnd)
+                    crate::win32::cef_context::toggle(menu_rect((100, 100), bw, bh, s, room), &gfx, s)
                 }
                 Some("cef-network") => {
                     let (bw, bh) = (1380, crate::win32::cef_popup::button_list_height(2, 0, 0));
@@ -10630,14 +10734,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 // rejoint le dispatch `drain_actions` plus
                                 // haut dans cette boucle). `PopupKind::
                                 // Context`/`render_context` restent dans le
-                                // code, INUTILISÉS pour cette icône. Hauteur : celle
-                                // du sous-menu REPLIÉ, comme au harnais de capture
-                                // plus haut ; le plafond du déplié est posé par
-                                // `win32::cef_context::toggle` lui-même.
+                                // code, INUTILISÉS pour cette icône. Hauteur : la
+                                // même estimation qu'au harnais de capture plus haut.
                                 let room = menu_room(origin, active_layout, screen);
                                 let base_h = crate::win32::cef_popup::button_list_height(
                                     crate::win32::cef_context::COLLAPSED_BUTTON_COUNT,
-                                    1,
+                                    0,
                                     0,
                                 );
                                 let s = menu_scale_qui_tient(960, base_h, content_scale, room);
@@ -10645,7 +10747,6 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     menu_rect(anchor, 960, base_h, s, room),
                                     &gfx,
                                     s,
-                                    active_hwnd,
                                 );
                             } else if active_dock.is_spacer(index) {
                                 // Clic droit SIMPLE (sans Ctrl, voir plus
@@ -12283,22 +12384,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 dossier_accent.effective_palette(),
                 dark_mode,
             );
-            // Voir `win32::cef_context::poll`, doc de fonction — même bug
-            // "il faut ouvrir 2 fois les menus" que `win32::cef_network::
-            // poll` juste plus bas, pour la même raison (course avec le
-            // chargement initial de la page).
-            crate::win32::cef_context::poll(window.hwnd);
             for action in crate::win32::cef_context::drain_actions() {
-                // "app/refresh_rate_menu/toggle" — DEMANDE EXPLICITE ("mets
-                // le choix des fréquences dans un sous-menu"), propre à ce
-                // popup (voir `assets/popups/context.html`, bouton
-                // `#freqToggle`) : `toggle_frequency_menu` bascule l'état
-                // ET redimensionne la fenêtre (voir sa doc), rien de plus
-                // à faire ici.
-                if action == "app/refresh_rate_menu/toggle" {
-                    crate::win32::cef_context::toggle_frequency_menu(window.hwnd);
-                    continue;
-                }
                 // "app/settings" — DEMANDE EXPLICITE (2026-10-03) : « au clic
                 // droit sur l'icône NeuraDesk une commande nommée Paramètres »,
                 // précisée ensuite : « pour ouvrir les paramètres de WINDOWS »
@@ -12331,27 +12417,6 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         crate::win32::cef_apropos::toggle(crate::win32::cef_apropos::rect_pour_ecran_primaire(), &gfx);
                     }
                     crate::win32::maj::verifier(true);
-                    continue;
-                }
-                // "app/refresh_rate/<hz|auto>" — DEMANDE EXPLICITE ("une
-                // option... qui permette de choisir la fréquence de
-                // rafraîchissement de l'app"), propre à ce popup (voir
-                // `assets/popups/context.html`) : n'entre PAS dans
-                // `dispatch_power_or_quit_action`, partagée avec
-                // `win32::cef_test_window` qui n'émet jamais cette action.
-                if let Some(value) = action.strip_prefix("app/refresh_rate/") {
-                    match parse_refresh_rate_value(value) {
-                        Some(None) => {
-                            config::clear_app_refresh_rate_cap();
-                            app_refresh_rate_cap = None;
-                        }
-                        Some(Some(hz)) => {
-                            config::save_app_refresh_rate_cap(hz);
-                            app_refresh_rate_cap = Some(hz);
-                        }
-                        None => eprintln!("[neuradesk][cef] fréquence invalide : {value:?}"),
-                    }
-                    crate::win32::cef_context::push_state(window.hwnd);
                     continue;
                 }
                 if dispatch_power_or_quit_action(&action, window.hwnd) {
@@ -14096,12 +14161,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 }
             }
             pending_overflow = boxes.into_iter().reduce(dock::union_rect).map(|r| {
-                [
+                sur_la_grille_du_debordement([
                     r[0].floor() as i32,
                     r[1].floor() as i32,
                     (r[0] + r[2]).ceil() as i32,
                     (r[1] + r[3]).ceil() as i32,
-                ]
+                ])
             });
         }
 
@@ -18244,7 +18309,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             }
 
             // Render les docks secondaires (chaque instance a son propre état et rendu)
-            if !secondary_docks.is_empty() {
+            // Rien n'est dû sur les écrans secondaires (voir `render_secondary_docks`) :
+            // on évite aussi de rassembler leurs textures.
+            let animation_globale = animation_globale();
+            if secondary_docks.iter().any(|d| d.rendu_du(Instant::now(), animation_globale)) {
                 // Regroupe les textures déjà chargées pour la barre primaire
                 // (voir plus haut dans cette fonction) en un seul paquet
                 // partagé — un clone de `Texture` ne fait qu'incrémenter le
@@ -18326,6 +18394,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     &media_title_text,
                     relief.as_ref(),
                     virtual_desktops.as_ref(),
+                    animation_globale,
                 );
             }
             crate::win32::coins_secondaires::synchroniser(&bandes_secondaires(&secondary_docks));
@@ -18447,7 +18516,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             || crate::ui::dock::logo_animation_enabled()
             || crate::gfx::texture_perso::INTERFACE.anime()
             || crate::gfx::texture_perso::TERMINAUX.anime()
-            || dock.magnified_index().is_some();
+            || survol_en_cours(&dock, &secondary_docks);
         // ⭐ **LE MODE ÉCONOMIE SUSPEND LES ANIMATIONS CONTINUES** (voir
         // `ui::performances`, DEMANDE EXPLICITE 2026-11-11 : « gérer la pression
         // sur le processeur et le gpu »). Deux conditions pour les suspendre,
@@ -18472,11 +18541,28 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             || debug_capture.active()
             || Instant::now() < presenter_jusqua
             || derniere_presentation.elapsed() >= PRESENTATION_SECOURS;
+        if crate::diag::enabled() {
+            rythme.tour(debut_tour.elapsed());
+        }
         if presenter {
             // Present(1, 0) attend le vsync : ça cadence naturellement la
             // boucle au taux de rafraîchissement de l'écran, sans busy-loop.
-            swapchain.present()?;
+            let avant_present = Instant::now();
+            swapchain.present_zones(&crate::win32::window::zones_visibles(window.hwnd))?;
             derniere_presentation = Instant::now();
+            if crate::diag::enabled() {
+                use crate::rythme_images::Raison;
+                let raison = if debug_capture.active() {
+                    Raison::Capture
+                } else if Instant::now() < presenter_jusqua {
+                    Raison::Salve
+                } else if anime_sans_fin {
+                    Raison::Anime
+                } else {
+                    Raison::Secours
+                };
+                rythme.image(derniere_presentation, derniere_presentation - avant_present, raison);
+            }
         } else if !anime_sans_fin
             && !crate::win32::cef_popup::une_fenetre_visible()
             && !debug_capture.active()
@@ -18491,9 +18577,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // rythme : c'est le plancher réel de ce sommeil, et il est bon.
             let reste = PRESENTATION_SECOURS.saturating_sub(derniere_presentation.elapsed());
             let ms = reste.as_millis().clamp(1, 1000) as u32;
+            let avant_sommeil = Instant::now();
             unsafe {
                 MsgWaitForMultipleObjectsEx(None, ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             }
+            rythme.sommeil(avant_sommeil.elapsed());
         } else {
             // ⛔ **SANS `Present(1)`, PLUS RIEN NE CADENCE LA BOUCLE** : sans ce
             // sommeil elle dessinerait à vide aussi vite que possible, et le CPU
@@ -18510,32 +18598,17 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             };
             if !reste.is_zero() {
                 std::thread::sleep(reste);
+                rythme.sommeil(reste);
+            }
+        }
+        if crate::diag::enabled() {
+            if let Some(ligne) = rythme.ligne_si_seconde(Instant::now()) {
+                crate::diag!("{ligne}");
             }
         }
         // L'essai d'un motif de l'utilisateur mesure l'écart entre deux images
         // (voir `gfx::shader_utilisateur::surveiller`).
         crate::gfx::shader_utilisateur::surveiller(Instant::now());
-
-        // Plafond de fréquence choisi par l'utilisateur (voir `config::
-        // load_app_refresh_rate_cap`, `win32::cef_context`/`assets/popups/
-        // context.html`) — DEMANDE EXPLICITE ("une option... qui permette de
-        // choisir la fréquence de rafraîchissement de l'app pour les
-        // fréquences les plus courantes"). `Present` ci-dessus cadence déjà
-        // la boucle au vsync DE L'ÉCRAN, qui peut être PLUS RAPIDE que la
-        // cible choisie (p. ex. cible 60 Hz sur un écran 144 Hz) — on ne
-        // peut pas cadencer plus lentement qu'un `Present(1,0)` autrement
-        // qu'en dormant en plus, d'où ce `sleep`, mesuré depuis `now` (début
-        // de cette itération, voir plus haut). Si la cible est déjà atteinte
-        // ou dépassée (cible >= vsync réel, ou aucune cible : `None`), ce
-        // bloc ne fait rien — `Present` reste alors seul facteur limitant,
-        // comportement d'origine.
-        if let Some(hz) = app_refresh_rate_cap.filter(|&hz| hz > 0) {
-            let target_period = Duration::from_secs_f64(1.0 / hz as f64);
-            let elapsed = now.elapsed();
-            if elapsed < target_period {
-                std::thread::sleep(target_period - elapsed);
-            }
-        }
 
         // Voir `win32::debug_capture::DebugCapture::is_last_frame`, doc de
         // fonction — quitte proprement (restauration de la barre des
@@ -18555,6 +18628,59 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     crate::win32::ouverture_fenetres::arreter();
 
     Ok(())
+}
+
+/// Un survol est-il en train d'animer une icône, sur N'IMPORTE QUELLE barre ?
+///
+/// ⛔ **`magnified_index` du dock PRINCIPAL ne suffisait pas** (plainte du
+/// 2026-11-13 : « tout saccade ») : il ne voit ni le balancement ni le fond au
+/// survol quand la magnification est à 100 % (l'icône ne grossit pas), ni un
+/// survol sur un écran SECONDAIRE. La souris immobile n'envoie plus de message,
+/// la salve d'activité retombait après 500 ms et l'animation ne recevait plus
+/// qu'une image par secours de 250 ms. `hovered_index` couvre les trois cas,
+/// décroissance comprise (l'avancement reste > 0 jusqu'au repos).
+/// Pas de la grille sur laquelle la boîte de débordement est arrondie — voir
+/// `sur_la_grille_du_debordement`.
+const GRILLE_DEBORDEMENT_PX: i32 = 64;
+
+/// La boîte de débordement `[x0, y0, x1, y1]` agrandie vers l'EXTÉRIEUR jusqu'à
+/// la grille de `GRILLE_DEBORDEMENT_PX`.
+///
+/// ⭐ **POURQUOI** — MESURÉ le 2026-11-13 (« ce n'est pas fluide ») : la boîte
+/// exacte suit l'icône agrandie, qui grossit et glisse à CHAQUE image d'un
+/// survol. Chaque changement redécoupait la région de la fenêtre plein écran
+/// (`set_visible_region`) ET relançait `raise_to_top` (~5 ms) : le survol ne
+/// tenait plus que ~60 images/s sur l'écran à 143 Hz. Arrondie, la boîte ne
+/// change qu'en franchissant une ligne de la grille. Elle reste un MAJORANT de
+/// la boîte exacte, donc rien de l'icône n'est rogné.
+fn sur_la_grille_du_debordement(r: [i32; 4]) -> [i32; 4] {
+    let g = GRILLE_DEBORDEMENT_PX;
+    [r[0].div_euclid(g) * g, r[1].div_euclid(g) * g, (r[2] + g - 1).div_euclid(g) * g, (r[3] + g - 1).div_euclid(g) * g]
+}
+
+#[cfg(test)]
+mod tests_grille_du_debordement {
+    use super::*;
+
+    #[test]
+    fn la_boite_est_un_majorant_aligne_sur_la_grille() {
+        assert_eq!(sur_la_grille_du_debordement([70, -10, 130, 64]), [64, -64, 192, 64]);
+    }
+
+    #[test]
+    fn une_boite_qui_glisse_un_peu_ne_change_pas() {
+        let a = sur_la_grille_du_debordement([100, 10, 150, 60]);
+        let b = sur_la_grille_du_debordement([103, 12, 155, 63]);
+        assert_eq!(a, b);
+    }
+}
+
+fn survol_en_cours(dock: &Dock, secondary_docks: &[SecondaryDock]) -> bool {
+    dock.hovered_index().is_some()
+        || dock.magnified_index().is_some()
+        || secondary_docks.iter().any(|m| {
+            m.dock_instance.dock.hovered_index().is_some() || m.dock_instance.dock.magnified_index().is_some()
+        })
 }
 
 /// Rectangle (coordonnées écran) de la "zone libre" : l'intérieur du "⊓" du
@@ -20259,49 +20385,6 @@ mod settings_rect_tests {
         let frame_release = settings_rect_for_frame([0, 0, 500, 600], false, &mut snapshot);
         assert_eq!(frame_release, [0, 0, 500, 600]);
         assert_eq!(snapshot, [0, 0, 500, 600]);
-    }
-}
-
-/// Interprète la partie `<value>` de l'action `"refresh_rate/<value>"`
-/// (voir `assets/popups/context.html`, `win32::cef_context::drain_actions`)
-/// — extraite en fonction PURE, même raisonnement que
-/// `settings_rect_for_frame` juste au-dessus (testable sans fenêtre CEF ni
-/// GPU, contrairement au reste de la boucle de dispatch qui l'appelle).
-/// `"auto"` → `Some(None)` (retour à "Automatique", voir
-/// `config::clear_app_refresh_rate_cap`) ; une fréquence valide → `Some(Some(hz))`
-/// (voir `config::save_app_refresh_rate_cap`) ; n'importe quoi d'autre →
-/// `None`, l'appelant journalise plutôt que de faire confiance à une valeur
-/// qui ne peut normalement jamais arriver ici (`assets/popups/context.html`
-/// n'envoie que `"auto"` ou un des `COMMON_HZ`).
-fn parse_refresh_rate_value(value: &str) -> Option<Option<u32>> {
-    if value == "auto" {
-        Some(None)
-    } else {
-        value.parse::<u32>().ok().map(Some)
-    }
-}
-
-#[cfg(test)]
-mod parse_refresh_rate_value_tests {
-    use super::parse_refresh_rate_value;
-
-    #[test]
-    fn auto_revient_a_aucun_plafond() {
-        assert_eq!(parse_refresh_rate_value("auto"), Some(None));
-    }
-
-    #[test]
-    fn une_frequence_valide_est_reconnue() {
-        assert_eq!(parse_refresh_rate_value("144"), Some(Some(144)));
-        assert_eq!(parse_refresh_rate_value("60"), Some(Some(60)));
-    }
-
-    #[test]
-    fn une_valeur_invalide_est_rejetee() {
-        assert_eq!(parse_refresh_rate_value(""), None);
-        assert_eq!(parse_refresh_rate_value("abc"), None);
-        assert_eq!(parse_refresh_rate_value("-30"), None);
-        assert_eq!(parse_refresh_rate_value("60hz"), None);
     }
 }
 

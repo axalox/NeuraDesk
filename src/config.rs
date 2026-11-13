@@ -2368,33 +2368,6 @@ pub fn save_zone_label_font_px(px: u16) {
 
 // `save_zone_labels` et `save_zone_locks` : supprimées — voir la note groupée plus haut.
 
-/// Fréquence (Hz) à laquelle `app::run` plafonne SA PROPRE boucle de rendu
-/// (voir `app::frame_budget`) — DEMANDE EXPLICITE ("une option... qui
-/// permette de choisir la fréquence de rafraîchissement de l'app pour les
-/// fréquences les plus courantes"), choisie via le clic droit sur l'icône
-/// NeuraDesk (`win32::cef_context`, `assets/popups/context.html`). `None`
-/// si jamais personnalisé (choix "Automatique") : `app::run` reste alors calé
-/// sur le vsync de l'écran (`gfx::swapchain::SwapChain::present`),
-/// comportement d'origine.
-pub fn load_app_refresh_rate_cap() -> Option<u32> {
-    read_config_floats("app_refresh_rate.txt")?.first().map(|&v| v as u32)
-}
-
-/// Sauvegarde la fréquence choisie, reprise au prochain lancement. Mêmes
-/// garanties (best-effort) que `save_bar_tint`.
-pub fn save_app_refresh_rate_cap(hz: u32) {
-    write_config("app_refresh_rate.txt", hz.to_string());
-}
-
-/// Supprime le fichier de préférence (voir `save_app_refresh_rate_cap`) —
-/// utilisé quand l'utilisateur revient à "Automatique" : ce choix ne doit
-/// pas être repris comme une valeur personnalisée au prochain lancement.
-pub fn clear_app_refresh_rate_cap() {
-    if let Some(path) = config_path("app_refresh_rate.txt") {
-        let _ = fs::remove_file(path);
-    }
-}
-
 /// Relit la couleur de fond propre à chaque barre (haut, gauche, droite —
 /// voir `ui::dock::Dock::bar_color`), si elle a été personnalisée
 /// individuellement (voir `win32::settings_dash`) — `None` PAR BARRE (pas

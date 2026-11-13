@@ -40,7 +40,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // ⚠️ La MACRO `json!` et la FONCTION `json()` de ce module cohabitent : deux
 // espaces de noms distincts, mais le nom est le même — à ne pas confondre en
@@ -345,8 +345,6 @@ pub struct Moteur {
     /// même si soixante évaluations suivent le même relevé.
     apparus: BTreeSet<String>,
     disparus: BTreeSet<String>,
-    /// Le dernier relevé des processus, et quand il a été fait.
-    dernier_scan: Option<Instant>,
     /// La minute du dernier déclenchement HORAIRE, par nom d'automatisation.
     dernieres: HashMap<String, (i32, u32, u32, u8, u8)>,
     /// Faux tant qu'aucun instantané n'a été pris : le premier ne sert que de base.
@@ -355,16 +353,47 @@ pub struct Moteur {
     journal: VecDeque<Entree>,
 }
 
+thread_local! {
+    /// Les relevés du fil `releve-processus` (voir `dernier_releve_des_processus`).
+    static RELEVES: RefCell<Option<std::sync::mpsc::Receiver<BTreeSet<String>>>> = const { RefCell::new(None) };
+}
+
+/// Le relevé des processus le plus récent arrivé depuis l'appel précédent, ou
+/// `None`.
+///
+/// ⭐ **LE RELEVÉ SE FAIT SUR UN FIL À PART** — DÉFAUT RÉEL MESURÉ (2026-11-13,
+/// « ce n'est pas fluide ») : `CreateToolhelp32Snapshot` et le parcours des
+/// processus coûtaient ~9,5 ms, une fois par seconde, SUR LE FIL DE RENDU —
+/// une image perdue chaque seconde, et plusieurs à 143 Hz. Le fil
+/// `releve-processus` relève toutes les `PERIODE_SCAN` et poste le résultat ;
+/// la boucle ne fait que le prendre.
+fn dernier_releve_des_processus() -> Option<BTreeSet<String>> {
+    RELEVES.with(|r| {
+        let mut r = r.borrow_mut();
+        if r.is_none() {
+            let (envoi, reception) = std::sync::mpsc::channel();
+            let lance = std::thread::Builder::new().name("releve-processus".into()).spawn(move || loop {
+                let exes = tray_icons::executables_en_cours().into_iter().collect::<BTreeSet<String>>();
+                if envoi.send(exes).is_err() {
+                    return;
+                }
+                std::thread::sleep(PERIODE_SCAN);
+            });
+            if let Err(e) = lance {
+                crate::diag!("[automatisations] fil du relevé des processus non lancé : {e}");
+            }
+            *r = Some(reception);
+        }
+        r.as_ref()?.try_iter().last()
+    })
+}
+
 impl Moteur {
     /// **LE SEUL ENDROIT PAR OÙ LE MONDE EXTÉRIEUR ENTRE** : l'heure à CHAQUE
     /// appel, la liste des processus au plus une fois par seconde.
     pub fn rafraichir(&mut self) {
         let heure = Instantane::heure_locale();
-        let perime = self.dernier_scan.map(|t| t.elapsed() >= PERIODE_SCAN).unwrap_or(true);
-        let releve = perime.then(|| {
-            self.dernier_scan = Some(Instant::now());
-            tray_icons::executables_en_cours().into_iter().collect::<BTreeSet<String>>()
-        });
+        let releve = dernier_releve_des_processus();
 
         // L'heure est recopiée à CHAQUE frame ; les processus, seulement au relevé.
         self.instantane.annee = heure.annee;

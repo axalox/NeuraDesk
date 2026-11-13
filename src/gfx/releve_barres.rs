@@ -117,12 +117,34 @@ pub fn bandes(layout: &DockLayout, [_, gauche, droite, dessous]: [f32; 4]) -> [O
 /// voisin s'il en a un à `VOISINAGE` segments au plus — une icône est étroite ;
 /// sinon, son tiers le plus proche : un long pan de barre loin de la teinte (un
 /// dégradé, un flou très coloré) est bien la barre.
+///
+/// ⛔ **UNE TEINTE RÉGLÉE QUI NE DÉCRIT PAS LA BARRE** — DÉFAUT SIGNALÉ
+/// (2026-11-13) : « l'ombrage de couleur de la barre de gauche semble être
+/// calculé à partir de la couleur de la zone centrale de la barre du haut, celui
+/// de la barre de droite réagit à la couleur de mise en avant des icônes ». Une
+/// barre texturée ou transparente peut être RENDUE loin de sa teinte (mesuré :
+/// réglée orange, rendue rouge sombre) : seuls quelques détails passaient alors
+/// le filtre (7 segments sur 32 en haut, 4 sur 32 à droite), et le voisinage les
+/// recopiait sur la barre. Quand moins de la moitié des segments ont un pixel
+/// proche, la référence devient la MÉDIANE de la bande : c'est elle, la barre.
 pub fn profil(pixels: &[u8], pas: usize, largeur: usize, hauteur: usize, reference: [u8; 3], ecarte: impl Fn(usize, usize) -> bool) -> Option<Profil> {
-    let proches = segments_de(pixels, pas, largeur, hauteur, reference, Some(ECART_MAX), &ecarte)?;
-    let libres = segments_de(pixels, pas, largeur, hauteur, reference, None, &ecarte)?;
+    let compte = |s: &[Option<[u8; 3]>; SEGMENTS]| s.iter().filter(|c| c.is_some()).count();
+    let tous = segments_de(pixels, pas, largeur, hauteur, reference, None, &ecarte)?;
+    let pres_de_la_teinte = segments_de(pixels, pas, largeur, hauteur, reference, Some(ECART_MAX), &ecarte)?;
+    // ⛔ Le CENTRE du filtre est la barre telle que RENDUE (voir le test
+    // `une_pastille_proche_de_la_teinte_reglee…`) : la médiane des pixels proches
+    // de la teinte réglée, ou de toute la bande s'ils sont trop rares.
+    let assez = compte(&pres_de_la_teinte) * 2 >= compte(&tous);
+    let centre = mediane_de_la_bande(pixels, pas, largeur, hauteur, assez.then_some(reference), &ecarte).unwrap_or(reference);
+    let libres = segments_de(pixels, pas, largeur, hauteur, centre, None, &ecarte)?;
+    let proches = segments_de(pixels, pas, largeur, hauteur, centre, Some(ECART_MAX), &ecarte)?;
     let segments: [Option<[u8; 3]>; SEGMENTS] = std::array::from_fn(|k| {
         let voisin = (0..=VOISINAGE).find_map(|d| proches[k.saturating_sub(d)].or(proches[(k + d).min(SEGMENTS - 1)]));
-        voisin.or(libres[k])
+        // Un COURT pan loin de la barre (une pastille, un groupe d'icônes) prend
+        // le segment proche le plus près ; un LONG pan (un dégradé) est la barre.
+        let pan = sans_proche_autour(&proches, k);
+        let plus_pres = || (pan < PAN_DE_BARRE).then(|| (0..SEGMENTS).filter(|&c| proches[c].is_some()).min_by_key(|&c| c.abs_diff(k))).flatten().and_then(|c| proches[c]);
+        voisin.or_else(plus_pres).or(libres[k])
     });
     let connus: Vec<usize> = (0..SEGMENTS).filter(|&k| segments[k].is_some()).collect();
     if connus.is_empty() {
@@ -136,6 +158,22 @@ pub fn profil(pixels: &[u8], pas: usize, largeur: usize, hauteur: usize, referen
 
 /// Jusqu'où un segment sans pixel proche de la teinte cherche un voisin qui en a.
 const VOISINAGE: usize = 2;
+
+/// La longueur (en segments) à partir de laquelle une suite de segments sans
+/// pixel proche de la barre est un pan de la barre (un dégradé), et non ce qui la
+/// couvre. MESURÉ (2026-11-13) : les pastilles du pied de la colonne gauche
+/// couvraient 3 segments ; un dégradé couvre des quarts de barre.
+const PAN_DE_BARRE: usize = SEGMENTS / 4;
+
+/// Le nombre de segments consécutifs sans `proches` autour de `k` (`k` compris).
+fn sans_proche_autour(proches: &[Option<[u8; 3]>; SEGMENTS], k: usize) -> usize {
+    if proches[k].is_some() {
+        return 0;
+    }
+    let avant = (0..k).rev().take_while(|&c| proches[c].is_none()).count();
+    let apres = (k + 1..SEGMENTS).take_while(|&c| proches[c].is_none()).count();
+    avant + 1 + apres
+}
 
 /// La médiane de chaque segment (voir `profil`), parmi les pixels à `ecart_max`
 /// au plus de `reference` (`None` : tous) — `None` par segment sans pixel ; `None`
@@ -194,6 +232,48 @@ fn mediane(couleurs: &[[u8; 3]], canaux: &mut [Vec<u8>; 3]) -> [u8; 3] {
         let milieu = canaux[c].len() / 2;
         *canaux[c].select_nth_unstable(milieu).1
     })
+}
+
+/// Le profil d'une bande (voir `profil`), sans les pixels `ombree` ni ceux des
+/// cases d'`icone` — SAUF si ces cases ne laissent pas au moins la moitié des
+/// segments qui ont un pixel hors de l'ombre : leurs trous ne sont alors pas la
+/// barre, mais ce qui luit entre deux icônes. MESURÉ (2026-11-13, colonne de
+/// droite) : deux segments sur 32 restaient, et donnaient sa couleur à toute la
+/// colonne. Sans les cases, la médiane de la bande (voir `profil`) fait le tri.
+pub fn profil_de_la_bande(
+    pixels: &[u8],
+    pas: usize,
+    largeur: usize,
+    hauteur: usize,
+    reference: [u8; 3],
+    ombree: impl Fn(usize, usize) -> bool,
+    icone: impl Fn(usize, usize) -> bool,
+) -> Option<Profil> {
+    let avec_les_cases = |x, y| ombree(x, y) || icone(x, y);
+    let couverts = |ecarte: &dyn Fn(usize, usize) -> bool| {
+        segments_de(pixels, pas, largeur, hauteur, reference, None, &ecarte).map_or(0, |s| s.iter().filter(|c| c.is_some()).count())
+    };
+    if couverts(&avec_les_cases) * 2 >= couverts(&ombree) {
+        profil(pixels, pas, largeur, hauteur, reference, avec_les_cases)
+    } else {
+        profil(pixels, pas, largeur, hauteur, reference, ombree)
+    }
+}
+
+/// La médiane de chaque canal sur toute la bande, parmi les pixels opaques et non
+/// écartés — et, avec `pres_de`, à `ECART_MAX` au plus de cette couleur. `None`
+/// sans pixel (voir `profil`).
+fn mediane_de_la_bande(pixels: &[u8], pas: usize, largeur: usize, hauteur: usize, pres_de: Option<[u8; 3]>, ecarte: &impl Fn(usize, usize) -> bool) -> Option<[u8; 3]> {
+    let ecart = |c: [u8; 3], r: [u8; 3]| c.iter().zip(r).map(|(a, b)| a.abs_diff(b) as u32).sum::<u32>();
+    let couleurs: Vec<[u8; 3]> = (0..hauteur)
+        .flat_map(|y| (0..largeur).map(move |x| (x, y)))
+        .filter_map(|(x, y)| {
+            let p = pixels.get(y * pas + x * 4..y * pas + x * 4 + 4)?;
+            let c = [p[2], p[1], p[0]];
+            (p[3] >= ALPHA_MIN && !ecarte(x, y) && pres_de.is_none_or(|r| ecart(c, r) <= ECART_MAX)).then_some(c)
+        })
+        .collect();
+    (!couleurs.is_empty()).then(|| mediane(&couleurs, &mut Default::default()))
 }
 
 /// Une bande en cours de copie, et la texture staging qui la reçoit.
@@ -308,10 +388,16 @@ fn lire(cle: isize, ctx: &ID3D11DeviceContext, releve: &mut Releve) -> bool {
                 let pas = lu.RowPitch as usize;
                 let octets = unsafe { std::slice::from_raw_parts(lu.pData as *const u8, pas * (hauteur - 1) + largeur * 4) };
                 let (x0, y0) = copie.coin;
-                *profil_lu = profil(octets, pas, largeur, hauteur, reference, |x, y| {
-                    let (fx, fy) = (x0 + x as u32, y0 + y as u32);
-                    crate::win32::ombre_barre::ombree(cle, fx, fy) || dans_une_icone(&copie.icones, fx as f32 + 0.5, fy as f32 + 0.5)
-                });
+                let neuf = profil_de_la_bande(
+                    octets,
+                    pas,
+                    largeur,
+                    hauteur,
+                    reference,
+                    |x, y| crate::win32::ombre_barre::ombree(cle, x0 + x as u32, y0 + y as u32),
+                    |x, y| dans_une_icone(&copie.icones, (x0 + x as u32) as f32 + 0.5, (y0 + y as u32) as f32 + 0.5),
+                );
+                *profil_lu = garder_si_proche(*profil_lu, neuf);
                 unsafe { ctx.Unmap(&copie.staging, 0) };
             }
             Err(e) if e.code() == DXGI_ERROR_WAS_STILL_DRAWING => return false,
@@ -319,6 +405,27 @@ fn lire(cle: isize, ctx: &ID3D11DeviceContext, releve: &mut Releve) -> bool {
         }
     }
     true
+}
+
+/// L'écart (par canal, sur 255) en dessous duquel un nouveau profil ne remplace
+/// pas l'ancien. Une variation de cet ordre ne se voit pas dans une ombre, et
+/// chaque nouveau profil fait recomposer les ombres colorées (plusieurs
+/// dizaines de ms en 4K).
+const ECART_VISIBLE: u8 = 12;
+
+/// ⭐ **UN PROFIL PRESQUE IDENTIQUE N'EST PAS UN NOUVEAU PROFIL** — DÉFAUT RÉEL
+/// MESURÉ (2026-11-13, « ce n'est pas fluide ») : le relevé rendait à chaque
+/// `PERIODE` un profil qui différait de quelques unités sur quelques segments,
+/// et chaque différence faisait recomposer toutes les ombres colorées (~400 ms
+/// sur 4K à l'époque) : la boucle ne tournait plus que 3 fois par seconde.
+/// L'ancien profil est gardé tant qu'aucun segment ne s'en écarte de plus de
+/// `ECART_VISIBLE` ; la comparaison se fait contre le profil GARDÉ, donc une
+/// dérive lente finit bien par passer.
+fn garder_si_proche(ancien: Option<Profil>, neuf: Option<Profil>) -> Option<Profil> {
+    match (ancien, neuf) {
+        (Some(a), Some(n)) if a.iter().zip(n.iter()).all(|(a, n)| a.iter().zip(n.iter()).all(|(a, n)| a.abs_diff(*n) <= ECART_VISIBLE)) => Some(a),
+        _ => neuf,
+    }
 }
 
 /// Lance la copie de chaque bande (bornée au back buffer) vers sa texture
@@ -466,6 +573,57 @@ mod tests {
         assert!(sans.iter().any(|&c| c == [130, 140, 40]), "sans les cases, l'olive passait");
     }
 
+    /// ⛔ **UNE TEINTE RÉGLÉE QUI NE DÉCRIT PAS LA BARRE** — DÉFAUT SIGNALÉ
+    /// (2026-11-13) : « l'ombrage de couleur de la barre de gauche semble être
+    /// calculé à partir de la couleur de la zone centrale de la barre du haut ».
+    /// MESURÉ (capture 4K) : barre du haut réglée orange (189, 54, 5), RENDUE
+    /// rouge sombre (~75, 35, 40) ; seul un petit élément orange (192, 96, 47) vers
+    /// x = 240 passait le filtre, et le voisinage le recopiait sur tout le bout
+    /// gauche — que l'ombre colorée du haut pose sur la colonne de gauche. Ici :
+    /// une barre rouge sombre, un élément orange sur le quart d'UN segment.
+    #[test]
+    fn une_teinte_reglee_loin_de_toute_la_barre_ne_choisit_pas_un_detail() {
+        let (sombre, orange) = ([75, 35, 40, 255], [192, 96, 47, 255]);
+        let segment = 3840 / SEGMENTS;
+        let px = bande(3840, 4, |x, _| if (2 * segment..2 * segment + segment / 4).contains(&x) { orange } else { sombre });
+        let p = profil(&px, 3840 * 4, 3840, 4, [189, 54, 5], |_, _| false).unwrap();
+        assert!(p.iter().all(|&c| c == [75, 35, 40]), "la barre, pas l'élément orange : {:?}", &p[..5]);
+    }
+
+    /// ⛔ **UNE PASTILLE PLUS PROCHE DE LA TEINTE RÉGLÉE QUE LA BARRE ELLE-MÊME** —
+    /// DÉFAUT SIGNALÉ (2026-11-13), ombres de couleur fausses en bas des colonnes.
+    /// MESURÉ : colonne gauche réglée (94, 93, 186), rendue (89, 64, 122) ; le bas
+    /// de la bande traverse des pastilles bleues (71, 143, 208), à 87 de la teinte
+    /// quand la barre en est à 98 : elles passaient le filtre et coloraient le pied
+    /// de la colonne. Le centre du filtre est la barre telle que RENDUE.
+    #[test]
+    fn une_pastille_proche_de_la_teinte_reglee_ne_colore_pas_le_pied_de_la_colonne() {
+        let (barre, pastille) = ([89, 64, 122, 255], [71, 143, 208, 255]);
+        let segment = 2110 / SEGMENTS;
+        let px = bande(4, 2110, |_, y| if y >= 29 * segment || (y / 8) % 4 == 0 { pastille } else { barre });
+        let p = profil(&px, 4 * 4, 4, 2110, [94, 93, 186], |_, _| false).unwrap();
+        assert!(p.iter().all(|&c| c == [89, 64, 122]), "le pied : {:?}", &p[SEGMENTS - 3..]);
+    }
+
+    /// ⛔ **DES CASES D'ICÔNES QUI MANGENT TOUTE LA BANDE** — MESURÉ (2026-11-13,
+    /// colonne de droite, 4×2110) : les cases élargies couvraient 5288 pixels sur
+    /// 8440 ; il ne restait que deux segments, entre deux icônes, et leur couleur
+    /// (une mise en avant) devenait celle de toute la colonne. Ici : barre bleu
+    /// nuit, icônes partout sauf deux trous où luit un liseré clair.
+    #[test]
+    fn des_cases_qui_couvrent_presque_toute_la_bande_ne_la_relisent_pas() {
+        let (nuit, lisere) = ([0, 11, 40, 255], [120, 200, 255, 255]);
+        let segment = 2110 / SEGMENTS;
+        let trou = |y: usize| (14 * segment..15 * segment).contains(&y) || (28 * segment..29 * segment).contains(&y);
+        let px = bande(4, 2110, |_, y| if trou(y) { lisere } else { nuit });
+        let p = profil_de_la_bande(&px, 4 * 4, 4, 2110, [3, 88, 154], |_, _| false, |_, y| !trou(y)).unwrap();
+        assert!(p.iter().all(|&c| c == [0, 11, 40]), "la colonne, pas le liseré : {:?}", &p[..3]);
+        // Des icônes qui laissent la plupart des segments : elles restent écartées.
+        let px = bande(4, 2110, |_, y| if y % segment < segment / 2 { lisere } else { nuit });
+        let p = profil_de_la_bande(&px, 4 * 4, 4, 2110, [0, 11, 40], |_, _| false, |_, y| y % segment < segment / 2).unwrap();
+        assert!(p.iter().all(|&c| c == [0, 11, 40]), "{:?}", &p[..3]);
+    }
+
     /// Le pas d'une ligne staging dépasse souvent sa largeur : les octets de
     /// bourrage ne sont pas des pixels.
     #[test]
@@ -511,5 +669,24 @@ mod tests {
         assert_eq!((gauche, bas), (None, None), "barres masquées");
         let [_, _, _, bas] = bandes(&layout, [60.0, 0.0, 120.0, 80.0]);
         assert_eq!(bas, Some([0, 1080 - 80 + 4, 1920 - 120, 4]), "colonne masquée : le bas va jusqu'au bord");
+    }
+}
+
+
+#[cfg(test)]
+mod tests_garder_si_proche {
+    use super::*;
+
+    #[test]
+    fn un_profil_presque_identique_garde_l_ancien_et_un_vrai_changement_passe() {
+        let ancien: Profil = [[100, 100, 100]; SEGMENTS];
+        let mut proche = ancien;
+        proche[5] = [100 + ECART_VISIBLE, 100, 100 - ECART_VISIBLE];
+        assert_eq!(garder_si_proche(Some(ancien), Some(proche)), Some(ancien));
+        let mut loin = ancien;
+        loin[31] = [100, 100 + ECART_VISIBLE + 1, 100];
+        assert_eq!(garder_si_proche(Some(ancien), Some(loin)), Some(loin));
+        assert_eq!(garder_si_proche(None, Some(proche)), Some(proche));
+        assert_eq!(garder_si_proche(Some(ancien), None), None);
     }
 }

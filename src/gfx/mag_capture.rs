@@ -21,20 +21,21 @@
 //! restent visibles pour elles. Le callback reçoit les pixels en mémoire
 //! (`MAGIMAGEHEADER`, 32 bits par pixel), il n'y a qu'à réduire et flouter.
 //!
-//! **La fenêtre de loupe est créée à la première demande** (première frame du
-//! mode capturable), **sur le seul thread de rendu** (`marquer_fil_de_rendu`,
-//! appelé par `app::run`) et détruite par `release`, avant le device D3D —
-//! même discipline que `gfx::duplication` (aucune fenêtre ne doit survivre au
-//! thread qui possède le device). ⚠️ **Les AUTRES threads de rendu n'en créent
-//! PAS** : `MagSetWindowFilterList` leur rend `ERROR_NOT_SUPPORTED` (mesuré sur
-//! `ouverture-rendu`, 0x80070032) ; ils lisent `LOUPE_OK` — voir `disponible`.
+//! **La fenêtre de loupe vit sur SON PROPRE FIL** (`loupe`), lancé à la
+//! première demande du thread de rendu (`marquer_fil_de_rendu`, appelé par
+//! `app::run`) et arrêté par `release`, avant le device D3D. Ce fil pompe ses
+//! messages (le filtre de fenêtres l'exige : sans boucle de messages,
+//! `MagSetWindowFilterList` rend `ERROR_NOT_SUPPORTED`, mesuré sur
+//! `ouverture-rendu`, 0x80070032) et capture une trame plein écran toutes les
+//! `TRAME_PERIODE` tant que le rendu en demande. ⚠️ **Une seule loupe** : les
+//! autres threads de rendu lisent `LOUPE_OK` — voir `disponible`.
 //!
 //! ⚠️ **COMPROMIS DE FRÉQUENCE** : la capture passe par le CPU, à la
-//! résolution de l'écran. C'est pour cela que `gfx::backdrop` met ses textures
-//! en cache quelques dizaines de millisecondes dans ce mode (voir
-//! `MAG_CACHE_TTL`) au lieu de recapturer à chaque frame comme le chemin GPU.
+//! résolution de l'écran (~18 ms en 4K). Elle tournait sur le fil de rendu et
+//! faisait sauter des images au survol (mesuré le 2026-11-13) ; le rendu ne
+//! fait plus que découper la dernière trame publiée.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -77,18 +78,16 @@ const CLASSE_HOTE: windows::core::PCWSTR = w!("NDMagCaptureHost");
 const GUID_32BPP_RGBA: GUID = GUID::from_u128(0xf5c7ad2d_6a8d_43dd_a7a8_a29935261ae9);
 const GUID_32BPP_BGRA: GUID = GUID::from_u128(0x6fddc324_4e03_4bfe_b185_3d77768dc90c);
 
-/// La dernière image rendue par le callback. `MAGIMAGEHEADER` y est recopié
-/// TEEL QUEL : sa largeur, son pas et son ordre de canaux font partie de la
-/// réponse, pas de la demande.
+/// L'image publiée : la dernière trame COMPLÈTE de la loupe, échangée sous
+/// verrou en O(1) (voir `fil_de_la_loupe`) — le fil de rendu ne la lit que le
+/// temps d'en découper une barre.
 struct Image {
     ok: bool,
     header: MAGIMAGEHEADER,
     data: Vec<u8>,
 }
 
-/// ⛔ `Mutex` et non `thread_local!` : le callback `extern "system"` n'a aucun
-/// contexte, il ne peut pas atteindre un état de thread par une closure.
-static DERNIERE_IMAGE: Mutex<Image> = Mutex::new(Image {
+const IMAGE_VIDE: Image = Image {
     ok: false,
     header: MAGIMAGEHEADER {
         width: 0,
@@ -99,17 +98,28 @@ static DERNIERE_IMAGE: Mutex<Image> = Mutex::new(Image {
         cbSize: 0,
     },
     data: Vec::new(),
-});
+};
+
+/// ⛔ `Mutex` et non `thread_local!` : le fil de la loupe l'écrit, le fil de
+/// rendu la lit.
+static DERNIERE_IMAGE: Mutex<Image> = Mutex::new(IMAGE_VIDE);
+
+thread_local! {
+    /// Le tampon que le CALLBACK remplit — il tourne sur le fil de la loupe,
+    /// pendant `MagSetWindowSource` (garanti par sa doc). Il n'est publié dans
+    /// `DERNIERE_IMAGE` qu'une fois complet.
+    static TAMPON: RefCell<Image> = const { RefCell::new(IMAGE_VIDE) };
+}
+
+/// La zone du moniteur PRINCIPAL couverte par la loupe (`[gauche, haut,
+/// droite, bas]`, pixels écran) — posée par le fil de la loupe à sa création.
+/// Tout rectangle qui en sort (barre d'un écran secondaire) rend `None`.
+static ECRAN: Mutex<Option<RECT>> = Mutex::new(None);
 
 struct Etat {
     hote: HWND,
     loupe: HWND,
-    /// La zone du moniteur PRINCIPAL, en pixels écran — la seule que la
-    /// loupe, fille de l'hôte à (0,0), couvre. Tout rectangle qui en sort
-    /// (barre d'un écran secondaire) rend `None` et garde son ancien fond.
     ecran: RECT,
-    /// Instant de la dernière trame pleine capturée — voir `TRAME_TTL`.
-    derniere: Option<Instant>,
     /// Fenêtres déjà posées dans le filtre — on ne rappelle
     /// `MagSetWindowFilterList` que si l'ensemble change (des popups
     /// s'ouvrent et se ferment en permanence).
@@ -120,24 +130,15 @@ struct Etat {
     filtre_ok: bool,
 }
 
-/// Une trame de loupe est la PLEINE ÉCRAN (voir `Etat::ecran`), partagée par
-/// tous les rectangles d'un même lot : la recapturer par barre multiplierait
-/// la copie plein écran par le nombre de barres. Elle est donc gardée ce
-/// délai — juste en dessous du cache par rectangle de `gfx::backdrop`, qui
-/// décide lui de la fréquence du flou.
-const TRAME_TTL: Duration = Duration::from_millis(30);
+/// L'intervalle entre deux trames de la loupe. Le fond flouté ne porte que du
+/// détail flou : ~16 images/s ne se distinguent pas d'un rafraîchissement à
+/// chaque frame, et chaque trame coûte ~18 ms de CPU en 4K — sur LE FIL DE LA
+/// LOUPE, plus sur celui du rendu.
+const TRAME_PERIODE: Duration = Duration::from_millis(60);
 
-thread_local! {
-    static ETAT: RefCell<Option<Etat>> = const { RefCell::new(None) };
-    /// La loupe a déjà échoué à se créer : ne pas réessayer à chaque frame.
-    static ECHEC: Cell<bool> = const { Cell::new(false) };
-    /// `release` a été appelé — plus aucune création, même si le rendu
-    /// posait encore une question pendant la sortie.
-    static LIBERE: Cell<bool> = const { Cell::new(false) };
-    /// Échecs de capture consécutifs, pour basculer définitivement vers le
-    /// repli (transparence sans flou) si la loupe ne rend jamais rien.
-    static ECHECS: Cell<u32> = const { Cell::new(0) };
-}
+/// Sans demande du rendu depuis ce délai, la loupe ne capture plus : aucune
+/// image n'est dessinée (barres au repos), personne ne regarde son fond.
+const DEMANDE_RECENTE: Duration = Duration::from_millis(500);
 
 /// Au-delà de ce nombre d'échecs consécutifs, on considère la loupe
 /// indisponible sur cette machine — `gfx::backdrop` et `gfx::quad_renderer`
@@ -145,159 +146,183 @@ thread_local! {
 /// l'utilisateur).
 const ECHECS_MAX: u32 = 30;
 
-/// Le thread de RENDU — celui qui possède le device D3D et donc le seul à
-/// pouvoir créer la fenêtre de loupe. Posé par `app::run` au démarrage.
+/// Le thread de RENDU — le seul qui LANCE le fil de la loupe. Posé par
+/// `app::run` au démarrage.
 static FIL_RENDU: OnceLock<std::thread::ThreadId> = OnceLock::new();
 
-/// La loupe DU THREAD DE RENDU fonctionne-t-elle ? Lu par les autres threads
-/// de rendu (voir `disponible`) : sans ça, chacun tentait de créer SA loupe et
-/// `MagSetWindowFilterList` la refusait (`ERROR_NOT_SUPPORTED`, 0x80070032) —
-/// mesuré sur `ouverture-rendu`, qui n'a pas la boucle de messages qui rend le
-/// filtre possible.
+/// La loupe fonctionne-t-elle ? Posé par le fil de la loupe, lu par tous les
+/// fils de rendu (voir `disponible`).
 static LOUPE_OK: AtomicBool = AtomicBool::new(false);
+/// La loupe a échoué (création, filtre, ou `ECHECS_MAX` trames vides) : plus
+/// aucune tentative.
+static ECHEC: AtomicBool = AtomicBool::new(false);
+/// `release` a été appelé — plus aucun lancement, même si le rendu posait
+/// encore une question pendant la sortie.
+static LIBERE: AtomicBool = AtomicBool::new(false);
+/// Le fil de la loupe, pour l'arrêter (`release`) : sa poignée et son
+/// identifiant natif (pour `PostThreadMessageW`).
+static FIL_LOUPE: Mutex<Option<(std::thread::JoinHandle<()>, u32)>> = Mutex::new(None);
+/// Dernière demande d'image du rendu — voir `DEMANDE_RECENTE`.
+static DEMANDE: Mutex<Option<Instant>> = Mutex::new(None);
 
-/// Déclare `fil` (le thread appelant) comme thread de rendu — voir
-/// `FIL_RENDU`. Idempotent : la première déclaration gagne.
+/// Déclare le thread appelant comme thread de rendu — voir `FIL_RENDU`.
+/// Idempotent : la première déclaration gagne.
 pub fn marquer_fil_de_rendu() {
     let _ = FIL_RENDU.set(std::thread::current().id());
 }
 
-/// La loupe est-elle utilisable ? Crée la fenêtre à la première demande, et
-/// seulement quand le mode capturable est actif (hors de ce mode, la Desktop
-/// Duplication rapide reste la source).
+/// La loupe est-elle utilisable ? Lance son fil à la première demande du fil
+/// de RENDU, et seulement quand le mode capturable est actif (hors de ce mode,
+/// la Desktop Duplication rapide reste la source).
 ///
-/// ⚠️ **UNE SEULE LOUPE, SUR LE THREAD DE RENDU** (voir `FIL_RENDU`) : les
-/// autres threads qui affichent une fenêtre propre (effet d'ouverture,
-/// aperçus…) interrogent cette fonction pour savoir si le fond flouté existe ;
-/// ils lisent `LOUPE_OK` au lieu d'en créer une, qui échouerait chez eux (voir
-/// la doc de `LOUPE_OK`).
+/// ⭐ **LA LOUPE A SON PROPRE FIL** — DÉFAUT RÉEL MESURÉ (2026-11-13, « ce
+/// n'est pas fluide ») : la trame plein écran coûtait ~18 ms SUR LE FIL DE
+/// RENDU, une frame sur quelques-unes — à 143 Hz, chacune de ces frames en
+/// faisait sauter deux ou trois, et le survol saccadait. Le fil `loupe`
+/// possède maintenant la fenêtre et sa boucle de messages (le filtre de
+/// fenêtres en a besoin : sans elle, `MagSetWindowFilterList` rend
+/// `ERROR_NOT_SUPPORTED`, mesuré sur `ouverture-rendu`) ; le rendu ne fait que
+/// découper la dernière trame publiée.
+///
+/// ⚠️ **UNE SEULE LOUPE** : seul le fil de rendu lance le fil de la loupe ; les
+/// autres (effet d'ouverture, aperçus…) lisent `LOUPE_OK`.
 pub fn disponible() -> bool {
     if !crate::gfx::capture_visibility::est_capturable() {
         return false;
     }
-    if ETAT.with(|e| e.borrow().is_some()) {
+    if LOUPE_OK.load(Ordering::Relaxed) {
         return true;
     }
-    if ECHEC.with(Cell::get) || LIBERE.with(Cell::get) {
+    if ECHEC.load(Ordering::Relaxed) || LIBERE.load(Ordering::Relaxed) {
         return false;
     }
-    if let Some(fil) = FIL_RENDU.get() {
-        if *fil != std::thread::current().id() {
-            return LOUPE_OK.load(Ordering::Relaxed);
-        }
+    if FIL_RENDU.get().is_some_and(|fil| *fil != std::thread::current().id()) {
+        return false;
     }
-    match Etat::creer() {
-        Ok(etat) => {
-            ETAT.with(|e| *e.borrow_mut() = Some(etat));
-            LOUPE_OK.store(true, Ordering::Relaxed);
-            true
+    lancer_le_fil();
+    // Le fil vient peut-être de naître : la loupe sera prête dans un instant,
+    // et les premières frames se passent de flou.
+    LOUPE_OK.load(Ordering::Relaxed)
+}
+
+/// Lance le fil de la loupe s'il ne tourne pas déjà.
+fn lancer_le_fil() {
+    let Ok(mut fil) = FIL_LOUPE.lock() else { return };
+    if fil.is_some() {
+        return;
+    }
+    let (envoi, reception) = std::sync::mpsc::channel::<u32>();
+    match std::thread::Builder::new().name("loupe".into()).spawn(move || fil_de_la_loupe(envoi)) {
+        Ok(poignee) => {
+            // L'identifiant natif, pour `PostThreadMessageW` : le fil l'envoie
+            // dès sa naissance.
+            let natif = reception.recv_timeout(Duration::from_secs(2)).unwrap_or(0);
+            *fil = Some((poignee, natif));
         }
         Err(err) => {
-            eprintln!(
-                "[neuradesk] capture par loupe indisponible (fil {:?}, natif {}, nom {:?}), transparence sans flou : {err}",
-                std::thread::current().id(),
-                unsafe { windows::Win32::System::Threading::GetCurrentThreadId() },
-                std::thread::current().name()
-            );
-            ECHEC.with(|e| e.set(true));
-            false
+            eprintln!("[neuradesk] fil de la loupe non lancé, transparence sans flou : {err}");
+            ECHEC.store(true, Ordering::Relaxed);
         }
     }
+}
+
+/// Le corps du fil de la loupe : crée la fenêtre, puis capture une trame toutes
+/// les `TRAME_PERIODE` tant que le rendu en demande, en pompant ses messages.
+fn fil_de_la_loupe(annoncer: std::sync::mpsc::Sender<u32>) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, MsgWaitForMultipleObjectsEx, PeekMessageW, TranslateMessage, MSG,
+        MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, WM_QUIT,
+    };
+    let _ = annoncer.send(unsafe { windows::Win32::System::Threading::GetCurrentThreadId() });
+    let mut etat = match Etat::creer() {
+        Ok(etat) => etat,
+        Err(err) => {
+            eprintln!("[neuradesk] capture par loupe indisponible, transparence sans flou : {err}");
+            ECHEC.store(true, Ordering::Relaxed);
+            return;
+        }
+    };
+    if let Ok(mut ecran) = ECRAN.lock() {
+        *ecran = Some(etat.ecran);
+    }
+    let mut echecs = 0u32;
+    let mut derniere: Option<Instant> = None;
+    'fil: loop {
+        // La boucle de messages : le filtre de fenêtres en a besoin, et une
+        // fenêtre dont le fil ne pompe pas bloque les diffusions du système.
+        let mut msg = MSG::default();
+        while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+            if msg.message == WM_QUIT {
+                break 'fil;
+            }
+            unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        if LIBERE.load(Ordering::Relaxed) {
+            break;
+        }
+        let demandee = DEMANDE.lock().ok().and_then(|d| *d).is_some_and(|t| t.elapsed() < DEMANDE_RECENTE);
+        let due = derniere.is_none_or(|t| t.elapsed() >= TRAME_PERIODE);
+        // La toute première trame part sans attendre de demande : `LOUPE_OK`
+        // n'est posé qu'après une image réussie, et c'est lui qui fait venir
+        // les demandes.
+        if (demandee || derniere.is_none()) && due {
+            derniere = Some(Instant::now());
+            if etat.capturer_une_trame() {
+                echecs = 0;
+                LOUPE_OK.store(true, Ordering::Relaxed);
+            } else {
+                echecs += 1;
+                if echecs >= ECHECS_MAX {
+                    eprintln!("[neuradesk] la loupe ne rend pas d'image, transparence sans flou");
+                    ECHEC.store(true, Ordering::Relaxed);
+                    LOUPE_OK.store(false, Ordering::Relaxed);
+                    break;
+                }
+            }
+        }
+        let attente = derniere.map_or(TRAME_PERIODE, |t| TRAME_PERIODE.saturating_sub(t.elapsed())).max(Duration::from_millis(1));
+        unsafe {
+            MsgWaitForMultipleObjectsEx(None, attente.as_millis() as u32, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        }
+    }
+    etat.detruire();
+    LOUPE_OK.store(false, Ordering::Relaxed);
 }
 
 /// Capture `rect` ([x, y, largeur, hauteur], coordonnées écran physiques) en
 /// excluant nos fenêtres, puis réduit le résultat d'un facteur `facteur`
 /// (moyenne des blocs — le flou qui suit efface de toute façon le détail).
 ///
-/// Rend `(largeur, hauteur, RGBA8)` ou `None` si la loupe est indisponible
-/// pour cette frame — l'appelant garde alors sa texture précédente.
+/// Rend `(largeur, hauteur, RGBA8)` ou `None` si aucune trame n'est encore
+/// prête ou si `rect` sort de l'écran principal — l'appelant garde alors sa
+/// texture précédente. Ne capture RIEN lui-même : il découpe la dernière trame
+/// du fil de la loupe, et lui signale qu'on regarde (`DEMANDE`).
 pub fn capturer(rect: [i32; 4], facteur: u32) -> Option<(u32, u32, Vec<u8>)> {
     if !disponible() {
         return None;
     }
-
-    ETAT.with(|etat| {
-        let mut etat = etat.borrow_mut();
-        let etat = etat.as_mut()?;
-        etat.rafraichir_exclusions();
-        // Voir `rafraichir_exclusions` : capturer sans filtre reviendrait à se
-        // photographier soi-même.
-        if !etat.filtre_ok {
-            noter_echec();
-            return None;
-        }
-
-        // Un rectangle hors du moniteur principal (barre d'un écran
-        // secondaire) n'est pas couvert par la loupe : on le dit tout de
-        // suite, sans rien capturer.
-        let zone = RECT {
-            left: rect[0],
-            top: rect[1],
-            right: rect[0] + rect[2].max(1),
-            bottom: rect[1] + rect[3].max(1),
-        };
-        if zone.left < etat.ecran.left
-            || zone.top < etat.ecran.top
-            || zone.right > etat.ecran.right
-            || zone.bottom > etat.ecran.bottom
-        {
-            return None;
-        }
-
-        // La trame PLEINE ÉCRAN est partagée par tout un lot de rectangles —
-        // voir `TRAME_TTL`. Une nouvelle capture repart d'un tampon marqué
-        // invalide, le callback le remplit.
-        let frais = etat.derniere.map_or(false, |t| t.elapsed() < TRAME_TTL);
-        if !frais {
-            if let Ok(mut image) = DERNIERE_IMAGE.lock() {
-                image.ok = false;
-            }
-            unsafe {
-                // ⚠️ La fenêtre de loupe ne bouge ni ne change de taille après
-                // sa création (voir `Etat::creer`) : seule la source est
-                // reposée, et elle est TOUJOURS la pleine écran. La
-                // redimensionner entre deux rectangles plantait le processus.
-                if !MagSetWindowSource(etat.loupe, etat.ecran).as_bool() {
-                    return None;
-                }
-            }
-            etat.derniere = Some(Instant::now());
-        }
-
-        // ⚠️ Le callback a été appelé PENDANT `MagSetWindowSource` (garanti par
-        // sa doc) — le verrou n'est donc jamais tenu pendant l'appel.
-        let image = DERNIERE_IMAGE.lock().ok()?;
-        if !image.ok {
-            return None;
-        }
-        let source = Source::depuis_header(&image.header)?;
-        let reduit = source.reduire_region(&image.data, zone, etat.ecran, facteur);
-        drop(image);
-
-        match reduit {
-            Some((l, h, pixels)) => {
-                ECHECS.with(|e| e.set(0));
-                Some((l, h, pixels))
-            }
-            None => {
-                noter_echec();
-                None
-            }
-        }
-    })
-}
-
-/// Budget d'échecs — voir `ECHECS_MAX`. Hors de `capturer` pour ne pas tenir
-/// le verrou de `DERNIERE_IMAGE` pendant le comptage.
-fn noter_echec() {
-    ECHECS.with(|e| {
-        let n = e.get() + 1;
-        e.set(n);
-        if n >= ECHECS_MAX && !ECHEC.with(Cell::get) {
-            eprintln!("[neuradesk] la loupe ne rend pas d'image, transparence sans flou");
-            ECHEC.with(|x| x.set(true));
-        }
-    });
+    if let Ok(mut demande) = DEMANDE.lock() {
+        *demande = Some(Instant::now());
+    }
+    let ecran = (*ECRAN.lock().ok()?)?;
+    let zone = RECT {
+        left: rect[0],
+        top: rect[1],
+        right: rect[0] + rect[2].max(1),
+        bottom: rect[1] + rect[3].max(1),
+    };
+    if zone.left < ecran.left || zone.top < ecran.top || zone.right > ecran.right || zone.bottom > ecran.bottom {
+        return None;
+    }
+    let image = DERNIERE_IMAGE.lock().ok()?;
+    if !image.ok {
+        return None;
+    }
+    let source = Source::depuis_header(&image.header)?;
+    source.reduire_region(&image.data, zone, ecran, facteur)
 }
 
 impl Etat {
@@ -384,25 +409,62 @@ impl Etat {
                 return Err(err);
             }
 
-            // La source ne quittera plus la pleine écran — voir `capturer`.
+            // La source ne quittera plus la pleine écran — voir `capturer_une_trame`.
             let ecran = RECT {
                 left: 0,
                 top: 0,
                 right: ecran_l,
                 bottom: ecran_h,
             };
-            let mut etat = Self {
+            Ok(Self {
                 hote,
                 loupe,
                 ecran,
-                derniere: None,
                 exclues: Vec::new(),
-                filtre_ok: true,
-            };
-            etat.rafraichir_exclusions();
-            let _ = MagSetWindowSource(loupe, ecran);
-            etat.derniere = Some(Instant::now());
-            Ok(etat)
+                filtre_ok: false,
+            })
+        }
+    }
+
+    /// Une trame plein écran, publiée dans `DERNIERE_IMAGE` si elle est
+    /// complète. `false` : filtre refusé ou image vide (voir `ECHECS_MAX`).
+    fn capturer_une_trame(&mut self) -> bool {
+        self.rafraichir_exclusions();
+        // Voir `rafraichir_exclusions` : capturer sans filtre reviendrait à se
+        // photographier soi-même.
+        if !self.filtre_ok {
+            return false;
+        }
+        TAMPON.with(|t| t.borrow_mut().ok = false);
+        // ⚠️ La fenêtre de loupe ne bouge ni ne change de taille après sa
+        // création (voir `creer`) : seule la source est reposée, et elle est
+        // TOUJOURS la pleine écran. La redimensionner plantait le processus.
+        if !unsafe { MagSetWindowSource(self.loupe, self.ecran) }.as_bool() {
+            return false;
+        }
+        // Le callback a rempli `TAMPON` PENDANT `MagSetWindowSource`. On
+        // l'ÉCHANGE avec l'image publiée : le verrou n'est tenu que le temps
+        // d'un échange de pointeurs, jamais d'une copie de 33 Mo.
+        TAMPON.with(|t| {
+            let mut tampon = t.borrow_mut();
+            if !tampon.ok {
+                return false;
+            }
+            let Ok(mut publiee) = DERNIERE_IMAGE.lock() else { return false };
+            std::mem::swap(&mut *publiee, &mut *tampon);
+            true
+        })
+    }
+
+    fn detruire(self) {
+        unsafe {
+            if !self.loupe.is_invalid() {
+                let _ = DestroyWindow(self.loupe);
+            }
+            if !self.hote.is_invalid() {
+                let _ = DestroyWindow(self.hote);
+            }
+            let _ = MagUninitialize();
         }
     }
 
@@ -473,9 +535,18 @@ unsafe extern "system" fn recueillir_image(
     _clipped: RECT,
     _dirty: HRGN,
 ) -> BOOL {
-    let Ok(mut image) = DERNIERE_IMAGE.lock() else {
-        return BOOL(0);
-    };
+    // Sur le fil de la loupe, pendant `MagSetWindowSource` : voir `TAMPON`.
+    TAMPON.with(|t| {
+        let Ok(mut image) = t.try_borrow_mut() else {
+            return BOOL(0);
+        };
+        recopier(&mut image, srcdata, srcheader)
+    })
+}
+
+/// Recopie l'image du callback dans `image` ; `BOOL(0)` si son format n'est
+/// pas lisible.
+unsafe fn recopier(image: &mut Image, srcdata: *mut core::ffi::c_void, srcheader: MAGIMAGEHEADER) -> BOOL {
     image.header = srcheader;
     image.ok = false;
     if srcdata.is_null() || srcheader.cbSize == 0 {
@@ -487,7 +558,7 @@ unsafe extern "system" fn recueillir_image(
     // Le tampon est réutilisé d'une frame à l'autre : pas d'allocation par
     // capture au-delà de sa croissance initiale.
     image.data.resize(srcheader.cbSize, 0);
-    std::ptr::copy_nonoverlapping(srcdata as *const u8, image.data.as_mut_ptr(), srcheader.cbSize);
+    unsafe { std::ptr::copy_nonoverlapping(srcdata as *const u8, image.data.as_mut_ptr(), srcheader.cbSize) };
     image.ok = true;
     BOOL(1)
 }
@@ -616,23 +687,27 @@ impl Source {
     }
 }
 
-/// Détruit la fenêtre de loupe et rend la main à `Magnification.dll` — à
-/// appeler AVANT que le device D3D ne meure, comme `gfx::duplication::release`
-/// (voir `app::run`).
+/// Arrête le fil de la loupe (qui détruit sa fenêtre et rend la main à
+/// `Magnification.dll`) — à appeler avant que le device D3D ne meure, comme
+/// `gfx::duplication::release` (voir `app::run`).
 pub fn release() {
-    let etat = ETAT.with(|e| e.borrow_mut().take());
-    if let Some(etat) = etat {
-        unsafe {
-            if !etat.loupe.is_invalid() {
-                let _ = DestroyWindow(etat.loupe);
+    LIBERE.store(true, Ordering::Relaxed);
+    let fil = FIL_LOUPE.lock().ok().and_then(|mut f| f.take());
+    if let Some((poignee, natif)) = fil {
+        if natif != 0 {
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW(
+                    natif,
+                    windows::Win32::UI::WindowsAndMessaging::WM_QUIT,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
             }
-            if !etat.hote.is_invalid() {
-                let _ = DestroyWindow(etat.hote);
-            }
-            let _ = MagUninitialize();
         }
+        // Le fil se réveille au plus toutes les `TRAME_PERIODE` et lit
+        // `LIBERE` : l'attente est courte.
+        let _ = poignee.join();
     }
-    LIBERE.with(|l| l.set(true));
     LOUPE_OK.store(false, Ordering::Relaxed);
 }
 

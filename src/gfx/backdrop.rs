@@ -125,7 +125,7 @@ pub fn capture_blurred_batch(device: &ID3D11Device, rects: &[[i32; 4]]) -> Vec<R
         // Ne devrait jamais arriver en pratique (le device existe déjà,
         // donc son contexte immédiat aussi) — repli GDI par sécurité plutôt
         // que de propager une erreur qui ferait disparaître tout arrière-plan.
-        Err(_) => return rects.iter().map(|&rect| capture_blurred_rect_gdi(device, rect)).collect(),
+        Err(_) => return rects.iter().map(|&rect| capture_blurred_rect_gdi_en_fond(device, rect)).collect(),
     };
 
     // Une seule capture de bureau partagée pour tout le lot (les trois
@@ -160,7 +160,7 @@ pub fn capture_blurred_batch(device: &ID3D11Device, rects: &[[i32; 4]]) -> Vec<R
                     }
                 }
             }
-            capture_blurred_rect_gdi(device, rect)
+            capture_blurred_rect_gdi_en_fond(device, rect)
         })
         .collect()
 }
@@ -172,6 +172,99 @@ pub fn capture_blurred_batch(device: &ID3D11Device, rects: &[[i32; 4]]) -> Vec<R
 /// existe pour éteindre (même défaut que `gfx::duplication::release`).
 pub fn release_cache() {
     MAG_CACHE.with(|cache| cache.borrow_mut().clear());
+    GDI_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
+/// Âge à partir duquel un fond GDI est redemandé au fil de capture (voir
+/// `capture_blurred_rect_gdi_en_fond`) — même cadence que la loupe.
+const GDI_CACHE_TTL: Duration = Duration::from_millis(60);
+
+/// Un fond GDI : sa dernière texture, l'instant de sa capture, et si une
+/// nouvelle capture est en cours au fil.
+struct EntreeGdi {
+    texture: Texture,
+    quand: Instant,
+    oublie: Instant,
+    en_cours: bool,
+}
+
+/// Une capture GDI faite au fil : rectangle, taille, pixels déjà floutés.
+type CaptureGdi = ([i32; 4], u32, u32, Vec<u8>);
+
+struct FilGdi {
+    demandes: std::sync::mpsc::Sender<[i32; 4]>,
+    rendues: std::sync::mpsc::Receiver<CaptureGdi>,
+}
+
+thread_local! {
+    static GDI_CACHE: RefCell<std::collections::HashMap<[i32; 4], EntreeGdi>> = RefCell::new(std::collections::HashMap::new());
+    static FIL_GDI: Option<FilGdi> = lancer_le_fil_gdi();
+}
+
+/// Le fil qui capture et floute les fonds GDI — voir
+/// `capture_blurred_rect_gdi_en_fond`. `None` si le fil n'a pas pu naître :
+/// les captures redeviennent alors immédiates.
+fn lancer_le_fil_gdi() -> Option<FilGdi> {
+    let (demandes, recues) = std::sync::mpsc::channel::<[i32; 4]>();
+    let (rendre, rendues) = std::sync::mpsc::channel::<CaptureGdi>();
+    let lance = std::thread::Builder::new().name("fonds-gdi".into()).spawn(move || {
+        while let Ok(rect) = recues.recv() {
+            let (largeur, hauteur, pixels) = capture_floutee_gdi(rect);
+            if rendre.send((rect, largeur, hauteur, pixels)).is_err() {
+                return;
+            }
+        }
+    });
+    match lance {
+        Ok(_) => Some(FilGdi { demandes, rendues }),
+        Err(e) => {
+            crate::diag!("[backdrop] fil des fonds GDI non lancé : {e}");
+            None
+        }
+    }
+}
+
+/// Le repli GDI (`capture_blurred_rect_gdi`), mais **hors du fil d'affichage**.
+///
+/// ⭐ **POURQUOI** — MESURÉ le 2026-11-13 (« ce n'est pas fluide ») : les barres
+/// d'un écran SECONDAIRE passent toujours par ce repli (la duplication ne couvre
+/// que l'écran principal). Sur un écran branché à une AUTRE carte graphique,
+/// `StretchBlt` + flou coûtaient **~19 ms à chaque rendu**, sur le fil
+/// d'affichage : l'écran principal tombait à 30 images/s. Le fil `fonds-gdi`
+/// capture désormais en arrière-plan ; on rend ici la dernière texture prête
+/// (au plus ~`GDI_CACHE_TTL` + une capture de retard — du détail flou). Seule la
+/// TOUTE PREMIÈRE capture d'un rectangle reste immédiate, pour ne jamais
+/// dessiner de fond vide.
+fn capture_blurred_rect_gdi_en_fond(device: &ID3D11Device, rect: [i32; 4]) -> Result<Texture> {
+    let maintenant = Instant::now();
+    let fil = FIL_GDI.with(|f| f.as_ref().map(|f| (f.demandes.clone(), f.rendues.try_iter().collect::<Vec<_>>())));
+    let Some((demandes, rendues)) = fil else {
+        return capture_blurred_rect_gdi(device, rect);
+    };
+    GDI_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        for (r, largeur, hauteur, pixels) in rendues {
+            let Some(entree) = cache.get_mut(&r) else { continue };
+            entree.en_cours = false;
+            if let Ok(texture) = Texture::from_rgba(device, largeur, hauteur, &pixels) {
+                entree.texture = texture;
+                entree.quand = maintenant;
+            }
+        }
+        // Un rectangle qui n'est plus demandé (barre déplacée, écran retiré)
+        // ne garde pas sa texture à vie.
+        cache.retain(|_, e| maintenant.duration_since(e.oublie) < MAG_CACHE_OUBLI);
+        if let Some(entree) = cache.get_mut(&rect) {
+            entree.oublie = maintenant;
+            if !entree.en_cours && maintenant.duration_since(entree.quand) >= GDI_CACHE_TTL && demandes.send(rect).is_ok() {
+                entree.en_cours = true;
+            }
+            return Ok(entree.texture.clone());
+        }
+        let texture = capture_blurred_rect_gdi(device, rect)?;
+        cache.insert(rect, EntreeGdi { texture: texture.clone(), quand: maintenant, oublie: maintenant, en_cours: false });
+        Ok(texture)
+    })
 }
 
 /// Âge maximal d'une texture de la loupe avant nouvelle capture. La loupe
@@ -284,12 +377,18 @@ fn rect_within(rect: [i32; 4], desktop_rect: RECT) -> bool {
 /// sous-échantillonnée (voir `DOWNSCALE`) puis flou boîte CPU (voir
 /// `box_blur`) — l'ancien chemin, avant l'ajout de `gfx::duplication`/
 /// `gfx::blur`, gardé comme filet de sécurité.
-fn capture_blurred_rect_gdi(device: &ID3D11Device, [x, y, w, h]: [i32; 4]) -> Result<Texture> {
+fn capture_blurred_rect_gdi(device: &ID3D11Device, rect: [i32; 4]) -> Result<Texture> {
+    let (width, height, blurred) = capture_floutee_gdi(rect);
+    Texture::from_rgba(device, width, height, &blurred)
+}
+
+/// La partie CPU du repli GDI — capture réduite puis flou — sans GPU, donc
+/// faisable sur n'importe quel fil (voir `lancer_le_fil_gdi`).
+fn capture_floutee_gdi([x, y, w, h]: [i32; 4]) -> (u32, u32, Vec<u8>) {
     let width = (w.max(1) as u32 / DOWNSCALE).max(1);
     let height = (h.max(1) as u32 / DOWNSCALE).max(1);
     let pixels = unsafe { capture_screen_region_scaled(x, y, w.max(1) as u32, h.max(1) as u32, width, height) };
-    let blurred = box_blur(&pixels, width, height, BLUR_RADIUS);
-    Texture::from_rgba(device, width, height, &blurred)
+    (width, height, box_blur(&pixels, width, height, BLUR_RADIUS))
 }
 
 /// Capture le rectangle écran `(x, y, src_width, src_height)` via GDI, DÉJÀ

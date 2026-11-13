@@ -253,6 +253,10 @@ pub struct TooltipWindow {
     /// valide n'est à l'écran — voir `show`, qui ne redessine que si cela
     /// change.
     dernier_dessin: Option<DessinRetenu>,
+    /// Rectangle écran et `hWndInsertAfter` du dernier `SetWindowPos` — `None`
+    /// tant que la fenêtre est cachée. Voir `show` : la fenêtre n'est replacée
+    /// que si l'un des deux change.
+    pose: Option<([i32; 4], isize)>,
 }
 
 /// Signature de la dernière image composée dans le swap chain de l'infobulle
@@ -334,6 +338,7 @@ impl TooltipWindow {
                 fond_rect: None,
                 fond_seq: 0,
                 dernier_dessin: None,
+                pose: None,
             })
         }
     }
@@ -375,7 +380,8 @@ impl TooltipWindow {
         // (`!shown`) ; sinon on se contente de viser la pleine opacité, ce qui
         // laisse une infobulle en train de s'éteindre se rallumer doucement au
         // lieu de claquer. Même couple que `window_previews::PreviewPanel::show`.
-        if !self.shown {
+        let deja_montree = self.shown;
+        if !deja_montree {
             self.fade.restart();
         }
         self.fade.fade_in();
@@ -442,16 +448,21 @@ impl TooltipWindow {
             // **SAUF L'INFOBULLE D'UNE PAGE** (`au_dessus_des_popups`) : elle
             // appartient au popup survolé, et passer sous lui la rendait
             // invisible — elle va donc en tête de la bande topmost.
+            //
+            // ⭐ **SEULEMENT SI QUELQUE CHOSE A CHANGÉ** — MESURÉ le 2026-11-13
+            // (« ce n'est pas fluide ») : `show` est appelé à CHAQUE image tant
+            // que l'infobulle est due, et ce `SetWindowPos` TOPMOST d'une fenêtre
+            // composée par DWM, suivi de `ShowWindow` et de l'opacité reposés eux
+            // aussi à chaque image, coûtait plusieurs ms par image au survol.
             let insert_after = self.insertion();
-            SetWindowPos(
-                self.hwnd,
-                insert_after,
-                box_x.round() as i32,
-                box_y.round() as i32,
-                width as i32,
-                height as i32,
-                SWP_NOACTIVATE,
-            )?;
+            let pose = (
+                [box_x.round() as i32, box_y.round() as i32, width as i32, height as i32],
+                insert_after.map_or(0, |h| h.0 as isize),
+            );
+            if !deja_montree || self.pose != Some(pose) {
+                SetWindowPos(self.hwnd, insert_after, pose.0[0], pose.0[1], pose.0[2], pose.0[3], SWP_NOACTIVATE)?;
+                self.pose = Some(pose);
+            }
         }
 
         match &mut self.swapchain {
@@ -548,6 +559,11 @@ impl TooltipWindow {
             self.dernier_dessin = Some(signature);
         }
 
+        // Déjà montrée : la fenêtre est visible et `tick` pose l'opacité quand
+        // elle change — rien à refaire (voir le `SetWindowPos` ci-dessus).
+        if deja_montree {
+            return Ok(());
+        }
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
         }
@@ -615,6 +631,7 @@ impl TooltipWindow {
                 let _ = ShowWindow(self.hwnd, SW_HIDE);
             }
             self.shown = false;
+            self.pose = None;
         }
     }
 

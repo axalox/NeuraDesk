@@ -3255,12 +3255,22 @@ pub struct QuadBatch<'a> {
     /// Rectangle de découpe (`x, y, largeur, hauteur` en pixels, coordonnées
     /// de la fenêtre) — voir `QuadBatch::clipped`. `None` = aucun découpage.
     pub clip: Option<[f32; 4]>,
+    /// Le lot subit le FONDU du haut des colonnes (`QuadRenderer::poser_fondu`).
+    /// Vrai pour le seul contenu DÉFILANT des colonnes latérales — leurs lots
+    /// découpés (`clipped`).
+    ///
+    /// ⛔ **DÉFAUT SIGNALÉ (2026-11-13)** : « les icônes de la barre du haut
+    /// passent sous la barre de gauche quand elles sont magnifiées ». Le fondu
+    /// s'appliquait à TOUT pixel de contenu dans la bande, donc aussi à une
+    /// icône de la barre du haut qui, agrandie, y descend : elle s'effaçait
+    /// comme si la colonne passait devant.
+    pub fondu: bool,
 }
 
 impl<'a> QuadBatch<'a> {
     /// Lot ordinaire, non découpé.
     pub fn new(texture: Option<&'a ID3D11ShaderResourceView>, instances: &'a [QuadInstance]) -> Self {
-        Self { texture, instances, clip: None }
+        Self { texture, instances, clip: None, fondu: false }
     }
 
     /// Lot découpé à `clip` : rien de ce qu'il dessine n'apparaîtra en dehors.
@@ -3277,7 +3287,7 @@ impl<'a> QuadBatch<'a> {
         instances: &'a [QuadInstance],
         clip: [f32; 4],
     ) -> Self {
-        Self { texture, instances, clip: Some(clip) }
+        Self { texture, instances, clip: Some(clip), fondu: true }
     }
 }
 
@@ -3574,7 +3584,13 @@ impl QuadRenderer {
 
             let ombres = self.ombres.take();
             let drapeau = [if ombres.is_some() { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0];
-            update_constant_buffer(ctx, &self.constant_buffer, viewport_w, viewport_h, screen_origin, self.fondu.take(), drapeau, self.texture.take())?;
+            let (fondu, texture) = (self.fondu.take(), self.texture.take());
+            let sans_fondu = [[0.0; 4]; 2];
+            // Le fondu n'est posé que pour les lots qui le demandent (voir
+            // `QuadBatch::fondu`) ; on ne réécrit les constantes qu'au
+            // changement, donc deux fois au plus par colonne.
+            let mut fondu_pose = false;
+            update_constant_buffer(ctx, &self.constant_buffer, viewport_w, viewport_h, screen_origin, sans_fondu, drapeau, texture)?;
 
             let viewport = D3D11_VIEWPORT {
                 TopLeftX: 0.0,
@@ -3657,6 +3673,12 @@ impl QuadRenderer {
                 // on les dessine en plusieurs appels.
                 if batch.instances.is_empty() {
                     continue;
+                }
+                let veut_fondu = batch.fondu && fondu != sans_fondu;
+                if veut_fondu != fondu_pose {
+                    let bandes = if veut_fondu { fondu } else { sans_fondu };
+                    update_constant_buffer(ctx, &self.constant_buffer, viewport_w, viewport_h, screen_origin, bandes, drapeau, texture)?;
+                    fondu_pose = veut_fondu;
                 }
                 ctx.RSSetScissorRects(Some(&[scissor_rect(batch.clip, viewport_w, viewport_h)]));
                 ctx.PSSetShaderResources(0, Some(&[batch.texture.cloned()]));

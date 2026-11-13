@@ -470,8 +470,16 @@ mod tests {
         use std::os::windows::io::IntoRawHandle;
         const ONGLET: u32 = 4_000_000_002;
         let _file = FILE_COMMUNE.lock().unwrap_or_else(|e| e.into_inner());
-        let relais = std::env::current_exe().expect("exe").parent().and_then(|d| d.parent()).expect("dossier").join("neuradesk-admin.exe");
-        assert!(relais.is_file(), "{} absent : cargo build --release d'abord", relais.display());
+        // ⛔ Le binaire de test n'est pas toujours à `release/deps/` : Cargo 1.100
+        // le range sous `release/build/neuradesk/<hash>/`. On remonte jusqu'au
+        // dossier qui contient le relais.
+        let exe = std::env::current_exe().expect("exe");
+        let relais = exe
+            .ancestors()
+            .skip(1)
+            .map(|d| d.join("neuradesk-admin.exe"))
+            .find(|r| r.is_file())
+            .unwrap_or_else(|| panic!("neuradesk-admin.exe introuvable au-dessus de {} : cargo build --release d'abord", exe.display()));
         let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
         avec_sessions(|s| s.insert(ONGLET, Session { generation, canal: Canal::Attente }));
         let lancer = |relais: &std::path::Path, parametres: &str| {
