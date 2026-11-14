@@ -1287,9 +1287,11 @@
       // Les PASTILLES de bureaux virtuels : leur TAILLE est un réglage de barre.
       // AVANT « fenêtres », dont la règle « bureaux virtuels » les attraperait.
       [/pastille/, "barres"],
-      // Captures et partage : ce qui se produit après une capture, et les effets
-      // d'affichage réservés au mode capturable.
-      [/capture|lueur|degrade|shader|motif/, "captures"],
+      // Captures et partage : ce qui se produit après une capture. Les lueurs et
+      // le dégradé animé y vivaient tant qu'ils étaient réservés au mode
+      // capturable ; ils valent dans les deux modes depuis le 2026-11-14 et
+      // tombent dans « apparence » (le groupe par défaut).
+      [/capture/, "captures"],
       // Fenêtres et bureaux : aperçus, ouverture/fondu, plein écran, bureaux
       // virtuels, et la sphère des FENÊTRES ouvertes.
       [/apercu|ouverture|fondu|plein ecran|bureaux virtuels|sphere/, "fenetres"],
@@ -1336,6 +1338,7 @@
       apparence: [
         "Thèmes", "Couleur de mise en avant", "Style", "Typographie",
         "Jeu d'icônes", "Texture de l'interface", "Transparence et flou",
+        "Lueurs", "Dégradé animé et motifs",
         "Ombres", "Menus", "Survol et magnification", "Infobulles",
         "Échelle de l'interface",
       ],
@@ -1366,7 +1369,6 @@
       terminaux: ["Police des terminaux", "Texture des terminaux", "Vue sphère des terminaux"],
       captures: [
         "Captures d'écran et éditeur",
-        "Lueurs", "Dégradé animé et motifs",
       ],
       systeme: [
         "Modules et applets", "Performances", "Affichage et DPI",
@@ -5222,11 +5224,8 @@
       // gfx::lueur). En % de l'écran PRINCIPAL ; bornes POUSSÉES par Rust.
       section(scroll, (box) => {
         box.appendChild(el("h2", {}, ["Lueurs"]));
-        box.appendChild(el("p", { class: "hint" }, ["Des dégradés radiaux clairs posés sur les barres et les panneaux, en mode capturable seulement."]));
-        checkboxRow(box, state.lueur, "Lueurs : dégradés radiaux clairs sur les barres et les panneaux (mode capturable seulement)", (checked) => go("lueur", checked ? "1" : "0"));
-        if (state.lueur && !state.captureVisible) {
-          box.appendChild(el("p", { class: "hint" }, ["Sans effet tant que l'interface n'est pas visible sur les captures d'écran (voir « Transparence et flou »)."]));
-        }
+        box.appendChild(el("p", { class: "hint" }, ["Des dégradés radiaux clairs posés sur les barres et les panneaux, que l'interface soit visible ou non sur les captures d'écran."]));
+        checkboxRow(box, state.lueur, "Lueurs : dégradés radiaux clairs sur les barres et les panneaux", (checked) => go("lueur", checked ? "1" : "0"));
         // L'ÉDITEUR (DEMANDE EXPLICITE, 2026-10-14) : ajouter des lueurs, les
         // placer, régler leur flou — un dash à part, aussi ouvert par son applet.
         // LES EFFETS ENREGISTRÉS (DEMANDE EXPLICITE, 2026-10-14) : en choisir un
@@ -5246,16 +5245,13 @@
 
       // Dégradé animé et motifs (voir gfx::degrade) — DEMANDE EXPLICITE
       // (2026-09-26) : « commun comme si tous les panneaux ne faisaient qu'un »,
-      // seulement en mode capturable. Préréglages en BOUTONS (pas de <select>
+      // dans les deux modes depuis le 2026-11-14. Préréglages en BOUTONS (pas de <select>
       // en CEF).
       section(scroll, (box) => {
         box.appendChild(el("h2", {}, ["Dégradé animé et motifs"]));
-        box.appendChild(el("p", { class: "hint" }, ["Un fond animé commun aux barres et aux panneaux, en mode capturable seulement. Préréglages, motif, shaders et couleurs se choisissent ci-dessous."]));
-        checkboxRow(box, state.degradeEnabled, "Dégradé animé à la place des couleurs (mode capturable seulement)", (checked) => go("degrade", checked ? "1" : "0"));
+        box.appendChild(el("p", { class: "hint" }, ["Un fond animé commun aux barres et aux panneaux, qui remplace leur couleur et leur flou, que l'interface soit visible ou non sur les captures d'écran. Préréglages, motif, shaders et couleurs se choisissent ci-dessous."]));
+        checkboxRow(box, state.degradeEnabled, "Dégradé animé à la place des couleurs", (checked) => go("degrade", checked ? "1" : "0"));
         if (state.degradeEnabled) {
-          if (!state.captureVisible) {
-            box.appendChild(el("p", { class: "hint" }, ["Sans effet tant que l'interface n'est pas visible sur les captures d'écran (case ci-dessus)."]));
-          }
           checkboxRow(box, state.degradeAccent, "Mise en avant des panneaux tirée du dégradé", (checked) => go("degrade-accent", checked ? "1" : "0"));
           box.appendChild(el("div", { class: "small-label" }, ["Motif"]));
           const modes = el("div", { class: "size-choices" });

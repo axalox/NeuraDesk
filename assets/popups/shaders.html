@@ -414,7 +414,7 @@
     boutonPause.title = state.enPause ? "Relancer l'animation du dégradé (Ctrl+Espace)" : "Figer l'animation du dégradé (Ctrl+Espace)";
     // Un motif ne se voit que si le dégradé est DESSINÉ — le dire plutôt que de
     // laisser croire que « Appliquer » n'a rien fait.
-    const absent = "Le dégradé animé n'est pas dessiné : cochez-le dans les Réglages, en mode « visible sur les captures ».";
+    const absent = "Le dégradé animé n'est pas dessiné : cochez-le dans les Réglages.";
     if (!state.degradeVisible && !avis.textContent) dire(absent);
     else if (state.degradeVisible && avis.textContent === absent) dire("");
   };

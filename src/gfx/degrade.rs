@@ -8,14 +8,12 @@
 //!   de la fenêtre (`QuadRenderer::render_at`). Une barre et un panneau
 //!   voisins montrent donc les deux morceaux d'une même image, qui continue
 //!   d'un écran à l'autre (le repère est l'écran VIRTUEL).
-//! - **Mode capturable seulement** (`gfx::capture_visibility`) : le dégradé
-//!   REMPLACE alors la teinte ET le fond flouté — c'est son dessein (« pas le
-//!   mode transparent ») — donc son rendu est OPAQUE, comme le fond qu'il
-//!   remplace, y compris depuis que la loupe (`gfx::mag_capture`) fournit un
-//!   fond dans ce mode. Ce n'est que sans fond du tout (loupe indisponible,
-//!   repli `sans_fond` de `gfx::quad_renderer`) qu'il garde l'alpha de
-//!   transparence réglé par l'utilisateur. Hors de ce mode, la case est sans
-//!   effet (`actif`).
+//! - **Dans les deux modes** (depuis le 2026-11-14, voir `actif` ; réservé
+//!   avant au mode capturable) : le dégradé REMPLACE la teinte ET le fond
+//!   flouté, donc son rendu est OPAQUE, comme le fond qu'il remplace. Ce n'est
+//!   que sans fond du tout (mode capturable sans loupe, repli `sans_fond` de
+//!   `gfx::quad_renderer`) qu'il garde l'alpha de transparence réglé par
+//!   l'utilisateur.
 //!
 //! L'algorithme (« Mesh ») : cinq couleurs portées par cinq points qui
 //! orbitent lentement, mélangées par pondération inverse à la distance
@@ -533,9 +531,17 @@ pub fn set_enabled(enabled: bool) {
     ENABLED.store(enabled, Ordering::Relaxed);
 }
 
-/// Le dégradé est dessiné : case cochée ET mode capturable.
+/// Le dégradé est dessiné : case cochée.
+///
+/// ⭐ **DANS LES DEUX MODES DEPUIS LE 2026-11-14** — DEMANDE EXPLICITE : « rendre
+/// les lueurs compatibles avec le mode sans capture ainsi que les shaders ».
+/// Il était réservé au mode capturable (demande du 2026-09-26, « pas le mode
+/// transparent »). Rien ne l'y obligeait techniquement : le shader des fonds est
+/// le même dans les deux modes, avec un fond flouté dans chacun (la Desktop
+/// Duplication hors capture, la loupe dans le mode capturable) — le dégradé le
+/// remplace pareillement.
 pub fn actif() -> bool {
-    is_enabled() && crate::gfx::capture_visibility::is_enabled()
+    is_enabled()
 }
 
 /// Case « Mise en avant tirée du dégradé » — DEMANDE EXPLICITE (2026-09-27,

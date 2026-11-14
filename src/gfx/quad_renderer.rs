@@ -3085,7 +3085,7 @@ float4 PSMain(PSInput input) : SV_TARGET {
         //    côté du calque des ombres en Ombres.x.
         bool sans_fond = Ombres.y > 0.5;
         float3 rgb = sans_fond ? input.Color.rgb : lerp(backdrop.rgb, input.Color.rgb, tint);
-        // Dégradé animé (mode capturable seulement, voir `gfx::degrade`) :
+        // Dégradé animé (les deux modes depuis le 2026-11-14, voir `gfx::degrade`) :
         // il REMPLACE la teinte, évalué au pixel ÉCRAN — d'où l'origine de la
         // fenêtre ajoutée à `SV_POSITION` (pixels de la fenêtre).
         if (DegActif > 0.5) {

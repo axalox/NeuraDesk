@@ -1184,9 +1184,7 @@
     construireLaListe();
     montrerLesEffets();
     const avis = document.getElementById("avis");
-    avis.textContent = !state.captureVisible
-      ? "Les lueurs ne se dessinent qu'en mode « visible sur les captures d'écran » (Réglages)."
-      : !state.active ? "Cochez « Lueurs dessinées » pour les voir sur les barres et les panneaux." : "";
+    avis.textContent = !state.active ? "Cochez « Lueurs dessinées » pour les voir sur les barres et les panneaux." : "";
   };
 </script>
 </body>

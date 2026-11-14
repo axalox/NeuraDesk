@@ -30,8 +30,11 @@
 //! autour du `centre` de rotation. Un disque étant rond, tourner les centres suffit
 //! à faire tourner le fond.
 //!
-//! ⚠️ **MODE CAPTURABLE SEULEMENT** (`capture_visibility`) : en mode transparent, les
-//! fonds sont le bureau flouté, et une tache blanche dessus n'aurait pas de sens.
+//! ⭐ **DANS LES DEUX MODES DEPUIS LE 2026-11-14** (DEMANDE EXPLICITE). Elles étaient
+//! réservées au mode capturable (« en mode transparent, les fonds sont le bureau
+//! flouté ») ; mais la loupe donne AUSSI un bureau flouté dans le mode capturable
+//! (`gfx::mag_capture`), et les lueurs s'y mêlent très bien — l'argument ne
+//! distinguait plus les deux modes.
 //!
 //! Positions et rayons en FRACTIONS de l'écran PRINCIPAL (origine `(0, 0)` en
 //! coordonnées écran) : le réglage survit à un changement de résolution, et un
@@ -1038,10 +1041,10 @@ impl Default for LueurGpu {
     }
 }
 
+/// ⭐ **DANS LES DEUX MODES DEPUIS LE 2026-11-14** (« rendre les lueurs
+/// compatibles avec le mode sans capture ») : elles se mêlent au fond, flouté ou
+/// non, par le même shader — plus de garde sur `capture_visibility`.
 pub(crate) fn constantes() -> LueurGpu {
-    if !crate::gfx::capture_visibility::is_enabled() {
-        return LueurGpu::default();
-    }
     let ecran = unsafe { [GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)] }.map(|v| v.max(1) as f32);
     let t = maintenant();
     // Les lueurs retirées dont le fondu est fini ne se dessinent plus.
