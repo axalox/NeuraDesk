@@ -34,6 +34,8 @@ fn main() {
     // Les polices embarquées des terminaux — voir `copy_polices_de_terminal_assets`,
     // qui explique pourquoi ce dossier a son propre copieur.
     copy_polices_de_terminal_assets();
+    // Les planches de la mascotte voir `copy_mascottes_assets`.
+    copy_mascottes_assets();
     // Le module injecté — voir `copy_window_hook_dll` (facultatif : absent si
     // la crate `window-hook` n'a jamais été construite).
     copy_window_hook_dll();
@@ -49,7 +51,7 @@ fn main() {
 /// case cochée ne fait rien et le journal le dit — l'application démarre.
 fn copy_window_hook_dll() {
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR non fourni par Cargo");
-    let Some(target_dir) = std::path::Path::new(&out_dir).ancestors().nth(3) else {
+    let Some(target_dir) = dossier_de_l_exe(&out_dir) else {
         return;
     };
     // Deux emplacements : le `target/` de la crate (build ordinaire) et le
@@ -140,7 +142,7 @@ fn copy_popup_assets() {
     println!("cargo:rerun-if-changed=assets/popups");
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR non fourni par Cargo");
-    let Some(target_dir) = std::path::Path::new(&out_dir).ancestors().nth(3) else {
+    let Some(target_dir) = dossier_de_l_exe(&out_dir) else {
         eprintln!("cargo:warning=impossible de déduire target/<profil>/ depuis OUT_DIR={out_dir}");
         return;
     };
@@ -197,7 +199,7 @@ fn copy_sound_assets() {
     println!("cargo:rerun-if-changed=son");
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR non fourni par Cargo");
-    let Some(target_dir) = std::path::Path::new(&out_dir).ancestors().nth(3) else {
+    let Some(target_dir) = dossier_de_l_exe(&out_dir) else {
         return;
     };
 
@@ -247,7 +249,7 @@ fn copy_polices_de_terminal_assets() {
     println!("cargo:rerun-if-changed=assets/popups/fonts");
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR non fourni par Cargo");
-    let Some(target_dir) = std::path::Path::new(&out_dir).ancestors().nth(3) else {
+    let Some(target_dir) = dossier_de_l_exe(&out_dir) else {
         return;
     };
 
@@ -272,5 +274,61 @@ fn copy_polices_de_terminal_assets() {
                 }
             }
         }
+    }
+}
+
+/// Copie `assets/popups/mascottes/` à côté de l'exe — les planches des
+/// personnages de la mascotte (`win32::mascotte`, page-mascot, licence MIT jointe),
+/// lues par la fenêtre ET par la page des Réglages pour ses vignettes.
+///
+/// Son propre copieur pour la même raison que les polices : `copy_popup_assets`
+/// ne descend pas dans les sous-dossiers et ignore `.webp`. Aucun filtre
+/// d'extension (la licence voyage avec les images).
+fn copy_mascottes_assets() {
+    println!("cargo:rerun-if-changed=assets/popups/mascottes");
+
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR non fourni par Cargo");
+    let Some(target_dir) = dossier_de_l_exe(&out_dir) else {
+        return;
+    };
+
+    let src = std::path::Path::new("assets/popups/mascottes");
+    if !src.is_dir() {
+        return;
+    }
+    let dst = target_dir.join("assets/popups/mascottes");
+    if let Err(err) = std::fs::create_dir_all(&dst) {
+        eprintln!("cargo:warning=échec création {}: {err}", dst.display());
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(src) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(name) = path.file_name() {
+                if let Err(err) = std::fs::copy(&path, dst.join(name)) {
+                    eprintln!("cargo:warning=échec copie {}: {err}", path.display());
+                }
+            }
+        }
+    }
+}
+
+/// Le dossier de l'exe compilé (`<cible>/<profil>/`), déduit d'`OUT_DIR`.
+///
+/// ⛔ **PAS UN NOMBRE FIXE D'ANCÊTRES** : avant Cargo 1.100, `OUT_DIR` valait
+/// `<profil>/build/<paquet>-<empreinte>/out` (le 3ᵉ ancêtre était le profil) ;
+/// depuis, c'est `<profil>/build/<paquet>/<empreinte>/out` — un niveau de plus.
+/// L'ancien `ancestors().nth(3)` copiait alors TOUTES les pages, sons et polices
+/// dans `<profil>/build/`, à côté de rien : l'exe lisait des pages périmées sans
+/// aucun journal (mesuré le 2026-11-14). On remonte jusqu'au dossier `build`
+/// et on prend son parent, ce qui vaut pour les deux dispositions.
+fn dossier_de_l_exe(out_dir: &str) -> Option<&std::path::Path> {
+    let chemin = std::path::Path::new(out_dir);
+    match chemin.ancestors().find(|a| a.file_name().is_some_and(|n| n == "build")) {
+        Some(build) => build.parent(),
+        None => chemin.ancestors().nth(3),
     }
 }

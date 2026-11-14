@@ -85,6 +85,15 @@ de l'utilisateur** au moment du rendu. Aucun fichier de police n'est copié, ni 
 dépôt, ni dans l'exe, ni dans l'archive : si la police est absente, le thème retombe sur
 « NeuraDesk ».
 
+### Personnages de la mascotte — page-mascot
+
+Les 57 planches de `assets/popups/mascottes/` (52 personnages et 5 styles du renard),
+leurs vignettes et l'icône `mascotte.png` (dans les quatre jeux d'icônes) sont tirées
+de **page-mascot**, © 2026 Kamran Ahmed (`github.com/nilbuild/page-mascot`), sous
+licence **MIT** — texte intégral joint sous `assets/popups/mascottes/LICENSE-page-mascot.txt`.
+Les planches ont été réduites de 1080 à 768 px ; le comportement (regard en huit
+secteurs, réactions au clic) est porté depuis son `src/mascot.tsx`.
+
 ---
 
 ## 2. Police

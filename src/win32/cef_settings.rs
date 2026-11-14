@@ -2875,6 +2875,17 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
                 None => crate::diag!("[gpu] identité de carte refusée : {id:?}"),
             },
             ["carte-graphique-relancer"] => crate::app::request_reload(),
+            // ⭐ **LA MASCOTTE** (voir `win32::mascotte`) — chaque choix
+            // s'applique tout de suite à la fenêtre si elle est affichée. Le nom
+            // arrive encodé par `go` (les `fox-ink` n'ont rien à décoder, mais un
+            // nom refusé doit l'être pour la bonne raison).
+            ["mascotte-afficher", flag] => crate::win32::mascotte::afficher(*flag == "1"),
+            ["mascotte-personnage", nom] => crate::win32::mascotte::choisir_personnage(&percent_decode(nom)),
+            ["mascotte-taille", taille] => match taille.parse::<u32>() {
+                Ok(taille) => crate::win32::mascotte::choisir_taille(taille),
+                Err(_) => crate::diag!("[mascotte] taille refusée : {taille:?}"),
+            },
+            ["mascotte-plein-ecran", flag] => crate::win32::mascotte::choisir_plein_ecran(*flag == "1"),
             ["dash-icon-scale", percent] => {
                 if let Ok(percent) = percent.parse::<u32>() {
                     let scale = percent as f32 / 100.0;
@@ -5269,6 +5280,7 @@ fn push_state(refs: &SettingsRefs) {
                 "reversi": refs.features.reversi,
                 "bovo": refs.features.bovo,
                 "patience": refs.features.patience,
+                "mascotte": refs.features.mascotte,
                 "display_settings": refs.features.display_settings,
                 "optional_features": refs.features.optional_features,
                 "notifications": refs.features.notifications,
@@ -5867,6 +5879,24 @@ fn push_state(refs: &SettingsRefs) {
             json!(crate::gfx::carte_graphique::choix_au_lancement()),
         );
         objet.insert("carteGraphiqueEffective".into(), json!(crate::gfx::carte_graphique::effective()));
+        // ⭐ **LA MASCOTTE** (voir `win32::mascotte`) : les personnages (nom de
+        // fichier, libellé, famille — la page en tire ses vignettes) et les
+        // réglages RELUS du disque. `mascotteAffichee` dit la fenêtre, pas le
+        // fichier.
+        objet.insert(
+            "mascottes".into(),
+            json!(crate::win32::mascotte::PERSONNAGES
+                .iter()
+                .map(|p| json!({ "nom": p.nom, "libelle": p.libelle, "famille": p.famille }))
+                .collect::<Vec<_>>()),
+        );
+        let mascotte = crate::win32::mascotte::reglages();
+        objet.insert("mascottePersonnage".into(), json!(mascotte.personnage));
+        objet.insert("mascotteTaille".into(), json!(mascotte.taille));
+        objet.insert("mascotteTailleMin".into(), json!(crate::win32::mascotte::TAILLE_MIN));
+        objet.insert("mascotteTailleMax".into(), json!(crate::win32::mascotte::TAILLE_MAX));
+        objet.insert("mascottePleinEcran".into(), json!(mascotte.plein_ecran));
+        objet.insert("mascotteAffichee".into(), json!(crate::win32::mascotte::est_affichee()));
     }
     // Lit le dock : hors d'`etat_ajoute`, qui n'a pas `refs`.
     if let Some(objet) = payload.as_object_mut() {

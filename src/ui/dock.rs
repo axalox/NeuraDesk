@@ -2959,6 +2959,19 @@ impl Dock {
             hidden: false,
             sorte: SorteEspace::Rond,
         });
+        // ⭐ **MASCOTTE** (voir `win32::mascotte`) — EN DERNIER, même règle.
+        // Sa place par défaut (dans Intégrés, après « Patience ») est posée par `app::run`.
+        icons.push(Icon {
+            label: 'm',
+            color: bar_fg,
+            has_texture: false,
+            external_texture: true,
+            is_spacer: false,
+            spacer_size: 0.0,
+            zone_height: 0.0, zone_lead: 0.0, zone_columns: DEFAULT_ZONE_COLUMNS, zone_locked: false, zone_show_name: false, zone_permanent: false,
+            hidden: false,
+            sorte: SorteEspace::Rond,
+        });
         // Les épingles de la VRAIE barre des tâches Windows (voir
         // `win32::taskbar_pins`) ne sont PAS créées ici — voir
         // `ensure_winpin_capacity`, appelée PLUS TARD par `app::run`, après
@@ -13112,8 +13125,9 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
         // NOMBRE D'APPLETS** : chaque applet ajoutée au dock allonge la barre d'une
         // case, et c'est ici qu'on rend la place — sinon le repliement maximal ne
         // suffit plus à tout faire tenir (mesuré à l'ajout de la Patience,
-        // 2026-11-10 : 8 épingles dynamiques débordaient encore d'une case).
-        dock.set_dynamic_apps(7);
+        // 2026-11-10 : 8 épingles dynamiques débordaient encore d'une case ;
+        // puis 7 → 6 à l'ajout de la Mascotte, 2026-11-14).
+        dock.set_dynamic_apps(6);
         dock.empilement_force = Some(reglage);
         dock
     }
@@ -16445,14 +16459,15 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
         // ⚠️ **JUSQU'À 49** — Reversi (2026-11-10), même raison.
         // ⚠️ **JUSQU'À 50** — Bovo (2026-11-10), même raison.
         // ⚠️ **JUSQU'À 51** — la Patience (2026-11-10), même raison.
-        let avant = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 92, 93];
+        // ⚠️ **JUSQU'À 52** — la Mascotte (2026-11-14), même raison.
+        let avant = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 92, 93];
         dock.set_icon_order(avant.clone(), vec![], vec![], vec![]);
 
         // --- RETRAIT de l'épingle 5 ---
         dock.decaler_le_bloc_des_epingles(5, limite, true);
         assert_eq!(
             barre(&dock),
-            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 92, 93],
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 92, 93],
             "sa citation part, celles de ]5, 92[ reculent d'un cran, et RIEN au-dessus ne bouge"
         );
 
@@ -16460,7 +16475,7 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
         dock.decaler_le_bloc_des_epingles(5, limite, false);
         assert_eq!(
             barre(&dock),
-            vec![0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 92, 93],
+            vec![0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 92, 93],
             "l'ajout est l'inverse du retrait — la citation de 5, elle, est reposée par l'APPELANT"
         );
     }

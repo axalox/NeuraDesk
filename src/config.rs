@@ -3274,6 +3274,17 @@ pub fn save_carte_graphique(id: &str) {
     write_config("carte_graphique.txt", id.to_string());
 }
 
+/// Les réglages de la mascotte (voir `win32::mascotte::lire_reglages`) :
+/// personnage, taille, plein écran, affichée, place. `None` tant qu'elle n'a
+/// jamais été réglée.
+pub fn load_mascotte() -> Option<String> {
+    fs::read_to_string(config_path("mascotte.txt")?).ok()
+}
+
+pub fn save_mascotte(contenu: &str) {
+    write_config("mascotte.txt", contenu.to_string());
+}
+
 /// Relit le multiplicateur de TRANSPARENCE des éléments des panneaux (voir
 /// `win32::cef_popup::popup_alpha`) — même convention que `load_hover_scale` :
 /// `None` tant que l'utilisateur n'a jamais touché le curseur, auquel cas c'est
@@ -3682,6 +3693,9 @@ pub const BOVO_INTEGRES: &str = "bovo_integres";
 /// **DRAPEAU DE MIGRATION DE « PATIENCE »** posé par `app::run` la première
 /// fois qu'il range l'applet dans Intégrés, juste après « Bovo ». Le nom porte la ZONE.
 pub const PATIENCE_INTEGRES: &str = "patience_integres";
+/// **DRAPEAU DE MIGRATION DE LA MASCOTTE** (voir `win32::mascotte`) : posée une
+/// fois dans Intégrés, après « Patience ». Le nom porte la ZONE.
+pub const MASCOTTE_INTEGRES: &str = "mascotte_integres";
 
 /// **DRAPEAU DE MIGRATION DU MONITEUR SYSTÈME** — posé par `app::run` la première
 /// fois qu'il range l'applet dans Intégrés, juste après l'éditeur des textures.

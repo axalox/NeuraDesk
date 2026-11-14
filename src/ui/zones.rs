@@ -1187,7 +1187,11 @@ mod tests {
         // applet) : **57 est redevenu une APPLET**, les trois remplisseurs sont
         // **60, 58 et 59**. Le test a rendu `[168, 59, 57, 148, 147, 146, 58]` contre
         // `[168, 59, 148, 147, 146, 58]`.
-        let haut_droite = vec![9, 11, 10, 60, 2, 58, 12, 1, 8, 148, 147, 146, 59];
+        // ⚠️ **REMONTÉES UNE DIX-HUITIÈME FOIS le 2026-11-14** (la Mascotte, 54ᵉ
+        // applet) : **58 est redevenu une APPLET**, les trois remplisseurs sont
+        // **61, 59 et 60**. Le test a rendu `[168, 60, 58, 148, 147, 146, 59]` contre
+        // `[168, 60, 148, 147, 146, 59]`.
+        let haut_droite = vec![9, 11, 10, 61, 2, 59, 12, 1, 8, 148, 147, 146, 60];
         (gauche, droite, haut_gauche, haut_droite)
     }
 
@@ -1595,7 +1599,7 @@ mod tests {
         // ⚠️ Puis **57** le 2026-11-10 (Reversi), avec la fixture.
         // ⚠️ Puis **58** le 2026-11-10 (Bovo), avec la fixture.
         // ⚠️ Puis **59** le 2026-11-10 (la Patience), avec la fixture.
-        assert_eq!(dock.spacer_index_at_rank(ordres, ZoneKey::new(BarLetter::Haut, 7).unwrap()), Some(59));
+        assert_eq!(dock.spacer_index_at_rank(ordres, ZoneKey::new(BarLetter::Haut, 7).unwrap()), Some(60));
         // Au-dela du dernier rang, aucun espace.
         assert_eq!(dock.spacer_index_at_rank(ordres, cle(4)), None);
     }

@@ -1008,6 +1008,12 @@ impl DockInstance {
         if let Some(instance) = &patience_instance {
             push_icon_batch(&mut batches, &textures.patience, instance, clipped_for(patience_icon_index));
         }
+        // MASCOTTE (voir `win32::mascotte`) — même règle, `+ 1`.
+        let mascotte_icon_index = patience_icon_index + 1;
+        let mascotte_instance = self.dock.external_glyph_instance(mascotte_icon_index, &layout, effective_topbar_text_color);
+        if let Some(instance) = &mascotte_instance {
+            push_icon_batch(&mut batches, &textures.mascotte, instance, clipped_for(mascotte_icon_index));
+        }
         let moniteur_instance = self.dock.external_glyph_instance(moniteur_icon_index, &layout, effective_topbar_text_color);
         if let Some(instance) = &moniteur_instance {
             push_icon_batch(&mut batches, &textures.moniteur, instance, clipped_for(moniteur_icon_index));
@@ -1650,6 +1656,7 @@ pub struct DockTextures {
     pub reversi: Texture,
     pub bovo: Texture,
     pub patience: Texture,
+    pub mascotte: Texture,
 }
 
 /// Bundle of rendered bar background textures.
@@ -1681,7 +1688,7 @@ mod tests {
 
     /// Les applets, DANS L'ORDRE de `Dock::new` — c'est la table de
     /// résolution de tout ce fichier, et de `apply_topbar_features`.
-    const APPLETS: [&str; 49] = [
+    const APPLETS: [&str; 50] = [
         "alimentation",
         "terminal",
         "son",
@@ -1754,6 +1761,8 @@ mod tests {
         "bovo",
         // PATIENCE (2026-11-10) — même règle, EN FIN.
         "patience",
+        // MASCOTTE (2026-11-14) — même règle, EN FIN.
+        "mascotte",
     ];
 
     /// **LE TEST QUI AURAIT ATTRAPÉ LE DÉFAUT DE DISPLAY2 (2026-09-23).**
@@ -1877,6 +1886,7 @@ mod tests {
             reversi: true,
             bovo: true,
             patience: true,
+            mascotte: true,
         };
         crate::app::apply_topbar_features(&mut instance.dock, PINS, &features);
 

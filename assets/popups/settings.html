@@ -622,6 +622,21 @@
     background: rgba(var(--popup-accent-rgb), calc(0.3 * var(--popup-fond-alpha, 1)));
     font-weight: 600;
   }
+  /* La grille des personnages de la mascotte (section « Mascotte ») : une
+     vignette de face par personnage, la choisie entourée. */
+  .mascottes { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+  .mascottes button {
+    all: unset; cursor: pointer; width: 56px; height: 56px; border-radius: var(--nd-rayon-surface);
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(var(--popup-accent-rgb), calc(0.10 * var(--popup-fond-alpha, 1)));
+    outline: 2px solid transparent; outline-offset: -2px;
+  }
+  .mascottes button:hover { background: rgba(var(--popup-accent-rgb), calc(0.22 * var(--popup-fond-alpha, 1))); }
+  .mascottes button.selected {
+    background: rgba(var(--popup-accent-rgb), calc(0.32 * var(--popup-fond-alpha, 1)));
+    outline-color: rgb(var(--popup-accent-rgb));
+  }
+  .mascottes img { width: 48px; height: 48px; pointer-events: none; }
   /* Onglets de navigation de haut niveau — "Interface" / "Écran N" (voir
      `renderMainTabs`), DEMANDE EXPLICITE : "je veux un onglet [...] intitulé
      Interface [...] d'autres onglets [...] intitulé Écran + numéro [...]".
@@ -2001,6 +2016,9 @@
       // DEMANDE (2026-11-10) : la PATIENCE — les QUATRE réussites de KDE
       // (KPatience : Klondike, FreeCell, Spider, Yukon), page `patience.html`.
       ["patience", "Patience"],
+      // DEMANDE (2026-11-14) : la MASCOTTE — un personnage posé à l'écran
+      // (réglée dans sa section « Mascotte »).
+      ["mascotte", "Mascotte"],
       ["minuteur", "Minuteur"],
       ["surveillance", "Surveillance de serveurs"],
       // DEMANDE EXPLICITE (2026-09-26) : « dans la zone réglages ajouter une
@@ -2120,7 +2138,7 @@
     // case restait trompeur, et ils sont désactivés d'office côté Rust (voir
     // `app::SECONDARY_DEFAULT_DISABLED_FEATURES`).
     const SECONDARY_TOPBAR_FEATURES =
-      TOPBAR_FEATURES.filter(([name]) => !["terminal", "theme_toggle", "night_light", "printer", "calendar", "image_editor", "screen_capture", "minuteur", "surveillance", "windows_update", "device_manager", "observateur_evenements", "display_settings", "calculatrice", "ssh", "couleurs", "optional_features", "notifications", "recherche", "automatisations", "meteo", "verrouillage", "caracteres", "kaomoji", "aide", "proprietes_systeme", "scanner", "shaders", "phonetique", "maths", "lueurs", "textures", "narrateur", "loupe", "moniteur", "enregistrer", "clavier", "jeu2048", "cinq_ou_plus", "quadrapassel", "lightsoff", "reversi", "bovo", "patience"].includes(name));
+      TOPBAR_FEATURES.filter(([name]) => !["terminal", "theme_toggle", "night_light", "printer", "calendar", "image_editor", "screen_capture", "minuteur", "surveillance", "windows_update", "device_manager", "observateur_evenements", "display_settings", "calculatrice", "ssh", "couleurs", "optional_features", "notifications", "recherche", "automatisations", "meteo", "verrouillage", "caracteres", "kaomoji", "aide", "proprietes_systeme", "scanner", "shaders", "phonetique", "maths", "lueurs", "textures", "narrateur", "loupe", "moniteur", "enregistrer", "clavier", "jeu2048", "cinq_ou_plus", "quadrapassel", "lightsoff", "reversi", "bovo", "patience", "mascotte"].includes(name));
     // Noms de `SECONDARY_TOPBAR_FEATURES` dont l'état par défaut (avant tout
     // réglage propre à cet écran) est désactivé, indépendamment du réglage
     // PRIMAIRE — même liste que `app::SECONDARY_DEFAULT_DISABLED_FEATURES`
@@ -3419,6 +3437,8 @@
         // La carte graphique : la liste des cartes, et la ligne « redémarrer ».
         cartes: (state.cartesGraphiques || []).map((c) => c.id).join("|"),
         carteEnAttente: state.carteGraphique !== state.carteGraphiqueAuLancement,
+        // La mascotte : le personnage entouré et les deux cases.
+        mascotte: [state.mascottePersonnage, state.mascotteAffichee, state.mascottePleinEcran, (state.mascottes || []).length].join("|"),
       });
     }
 
@@ -3622,6 +3642,7 @@
     // Toute catégorie sans correspondance retombe sur l'engrenage. Les noms
     // renvoyés sont des classes `ico-*` livrées par `tools/icones_phosphor.py`.
     const REGLES_ICONES = [
+      [/mascotte/, "cursor-click"],
       [/sauvegarde|configuration/, "archive"],
       [/meteo/, "cloud-sun"],
       [/monde|fuseau/, "globe"],
@@ -6058,6 +6079,37 @@
         box.appendChild(el("p", { class: "hint" }, ["Pour les jeux en plein écran exclusif. Un jeu Unity, Unreal ou Source lancé depuis le dock démarre en fenêtre sans bordure, à la taille de la zone centrale, comme avec les options de lancement de Steam — sans toucher au jeu lui-même. Ne s'applique pas aux jeux lancés par Steam ou un autre lanceur, ni à ceux dont les options de lancement choisissent déjà un mode d'affichage."]));
       });
 
+      // ⭐ **LA MASCOTTE** (voir `win32::mascotte`) — DEMANDE EXPLICITE
+      // (2026-11-14) : « tous les 52, réaction au clic, affichable en plein
+      // écran suivant les réglages ». Le personnage, la case affichée et le
+      // plein écran sont dans `computeStructureKey` (boutons sélectionnés).
+      section(scroll, (box) => {
+        box.appendChild(el("h2", {}, ["Mascotte"]));
+        checkboxRow(box, state.mascotteAffichee, "Afficher la mascotte à l'écran",
+          (checked) => go("mascotte-afficher", checked ? "1" : "0"));
+        checkboxRow(box, state.mascottePleinEcran, "La garder visible par-dessus les applications en plein écran",
+          (checked) => go("mascotte-plein-ecran", checked ? "1" : "0"));
+        box.appendChild(el("p", { class: "hint" }, ["Décochée, la mascotte s'efface quand une application passe en plein écran sur son écran, comme les barres, et revient ensuite. Un jeu en plein écran exclusif la cache toujours : Windows ne laisse rien s'afficher par-dessus."]));
+        slider(box, { label: "Taille", min: state.mascotteTailleMin || 64, max: state.mascotteTailleMax || 320, step: 10, value: state.mascotteTaille || 140, valueLabel: (v) => v + " px", dataKey: "mascotte-taille", onInput: (v) => go("mascotte-taille", v) });
+        let famille = null;
+        let grille = null;
+        for (const m of state.mascottes || []) {
+          if (m.famille !== famille) {
+            famille = m.famille;
+            box.appendChild(el("div", { class: "small-label" }, [famille]));
+            grille = el("div", { class: "mascottes" });
+            box.appendChild(grille);
+          }
+          const bouton = el("button", {
+            class: m.nom === state.mascottePersonnage ? "selected" : "",
+            title: m.libelle,
+            onclick: () => go("mascotte-personnage", m.nom),
+          }, [el("img", { src: "mascottes/" + m.nom + "-vignette.webp", alt: m.libelle })]);
+          grille.appendChild(bouton);
+        }
+        box.appendChild(el("p", { class: "hint" }, ["Elle suit le pointeur du regard. Un clic la fait réagir (quatre clics rapides l'étourdissent), glisser la déplace, la molette change sa taille. Immobile deux minutes, elle s'endort. Personnages de page-mascot, par Kamran Ahmed (licence MIT)."]));
+      });
+
       // Horloge plein écran — DEMANDE EXPLICITE ("quand s'affiche une
       // fenêtre en plein écran il y ait la possibilité de n'afficher qu'une
       // petite barre centrée en haut ou en bas de l'écran avec l'horloge
@@ -6499,6 +6551,7 @@
       updateSegmented("performances-preset", state.performancesPreset);
       updateSegmented("carte-graphique", state.carteGraphique);
       updateSlider("performances-cadence", state.performancesCadence || 144, (v) => v + " i/s");
+      updateSlider("mascotte-taille", state.mascotteTaille || 140, (v) => v + " px");
       updateSlider("tooltip-scale", state.tooltipScalePercent, (v) => v + "%");
       updateSlider("tooltip-fade-ms", state.tooltipFadeMs, (v) => v + " ms");
       updateSlider("tooltip-delay", state.tooltipDelaySecs, (v) => v + " s");

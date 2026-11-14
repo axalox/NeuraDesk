@@ -676,3 +676,14 @@ FreeCell, Spider, Yukon). L'icône vient du thème **Breeze** (KDE) :
 - Glyphe Segoe Fluent : `E8C7` (deux cartes superposées, distinct).
   ⚠️ Même recette binaire que Bovo : masque `lum < 190`, miettes `α < 8` à zéro, recentrage
   sur la boîte réelle, blanc reconstruit par l'alpha APRÈS `au_gabarit`.
+
+## mascotte.png — la mascotte (2026-11-14)
+
+DEMANDE : un personnage de page-mascot posé à l'écran (`win32::mascotte`). Source :
+`github.com/nilbuild/page-mascot` (MIT, © 2026 Kamran Ahmed), `public/mascots/`.
+
+- `fluent_couleur/` et `fluent_3d/` : la case CENTRALE (de face) de `fox-directions.webp`,
+  mise au gabarit (128 px, encre 116).
+- `mascotte.png` et `energy/` : la même case de `fox-ink-directions.webp` (le renard au
+  trait), l'encre tirée de l'obscurité et peinte en blanc.
+- Script : `C:/ndwork/scripts/mascotte_icones.py`. Glyphe Fluent : E899 (Emoji2).

@@ -134,6 +134,8 @@ pub(crate) const REVERSI_ICON_PNG: &[u8] = include_bytes!("../../TopbarIcons/rev
 pub(crate) const BOVO_ICON_PNG: &[u8] = include_bytes!("../../TopbarIcons/bovo.png");
 /// Icône « Patience » — l'icône Breeze de KDE (monochrome tiré de sa luminosité).
 pub(crate) const PATIENCE_ICON_PNG: &[u8] = include_bytes!("../../TopbarIcons/patience.png");
+/// La MASCOTTE (voir `win32::mascotte`) : le renard de page-mascot (MIT) au trait.
+pub(crate) const MASCOTTE_ICON_PNG: &[u8] = include_bytes!("../../TopbarIcons/mascotte.png");
 /// Icône « minuteur » — comptes à rebours et alarmes (voir `win32::minuteur`).
 /// RASTÉRISÉE depuis Keyline Icons (MIT), comme la capture d'écran (voir
 /// `TopbarIcons/SOURCE.md`).

@@ -505,7 +505,7 @@ fn hwnd_monitor(hwnd: HWND) -> HMONITOR {
 /// écran existait où que ce soit, contrairement au commentaire déjà présent
 /// dans `app::run` qui décrivait (sans jamais l'appliquer) le comportement
 /// par écran attendu.
-fn fullscreen_window_on_monitor(exclude: HWND, monitor: HMONITOR) -> Option<HWND> {
+pub(crate) fn fullscreen_window_on_monitor(exclude: HWND, monitor: HMONITOR) -> Option<HWND> {
     if let Some(hwnd) = foreground_fullscreen_window(exclude) {
         // Plein écran détecté, mais sur un AUTRE écran que `monitor` : sans
         // rapport avec la barre qui pose la question.

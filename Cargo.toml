@@ -211,7 +211,7 @@ windows = { version = "0.62", features = [
 # presse-papiers) : voir `win32::wallpaper_color` — le fond d'écran configuré
 # par l'utilisateur (`SPI_GETDESKWALLPAPER`) peut être dans n'importe lequel
 # de ces trois formats, pas seulement PNG.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp"] }
 # Fichier de configuration utilisateur (voir `config::load_pinned_apps`) —
 # analysé via `toml::Table` à la main (pas de macro `Derive`/`serde_derive`
 # supplémentaire), pour rester cohérent avec le reste du projet qui évite
