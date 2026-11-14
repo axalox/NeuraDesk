@@ -3416,6 +3416,9 @@
           s.separatorSize !== null,
           // Taille des vignettes d'aperçu de fenêtres : meme convention.
         ]),
+        // La carte graphique : la liste des cartes, et la ligne « redémarrer ».
+        cartes: (state.cartesGraphiques || []).map((c) => c.id).join("|"),
+        carteEnAttente: state.carteGraphique !== state.carteGraphiqueAuLancement,
       });
     }
 
@@ -5695,6 +5698,30 @@
         box.appendChild(el("p", { class: "hint" }, ["Plafonne les images présentées quand une animation tourne (dégradé, logo, textures, magnification) : c'est là que le processeur et le GPU travaillent. Le survol et les clics gardent leur réactivité. Au maximum, NeuraDesk suit la fréquence de l'écran, comme avant ce réglage."]));
         checkboxRow(box, state.performancesEconomie, "Suspendre les animations quand la souris n'est pas sur les barres", (checked) => go("performances-economie", checked ? "1" : "0"));
         box.appendChild(el("p", { class: "hint" }, ["Les animations reprennent dès que la souris entre sur une barre, et restent actives tant qu'un panneau est ouvert. Une image est présentée dès que quelque chose change : seul le mouvement permanent s'arrête."]));
+        // ⭐ **LA CARTE GRAPHIQUE** — DEMANDE EXPLICITE (2026-11-14) : « ajoute
+        // un choix de carte graphique dans les réglages ». Des boutons, pas un
+        // `<select>` (il ne s'ouvre pas dans une page CEF hors écran). Vaut au
+        // PROCHAIN lancement (voir `gfx::carte_graphique`) : la ligne
+        // « redémarrer » n'apparaît que si le choix enregistré diffère de celui
+        // du lancement — `carteEnAttente` est dans `computeStructureKey`.
+        const cartes = state.cartesGraphiques || [];
+        if (cartes.length) {
+          segmented(box, {
+            label: "Carte graphique",
+            options: [{ value: "windows", label: "Laisser Windows choisir" }].concat(cartes.map((c) => ({ value: c.id, label: c.nom }))),
+            value: state.carteGraphique,
+            dataKey: "carte-graphique",
+            onSelect: (v) => go("carte-graphique", v),
+          });
+          box.appendChild(el("p", { class: "hint" }, [
+            "Carte utilisée en ce moment : " + (state.carteGraphiqueEffective || "inconnue") + ". « Laisser Windows choisir » suit Paramètres › Système › Écran › Graphiques. La carte qui pilote l'écran principal évite une copie d'image entre cartes.",
+          ]));
+          if (state.carteGraphique !== state.carteGraphiqueAuLancement) {
+            const ligne = el("p", { class: "hint" }, ["Le changement de carte s'appliquera au prochain lancement de NeuraDesk. "]);
+            ligne.appendChild(el("button", { class: "action", onclick: () => go("carte-graphique-relancer") }, ["Redémarrer NeuraDesk maintenant"]));
+            box.appendChild(ligne);
+          }
+        }
       });
 
       // ⭐ **LES NOTIFICATIONS DE WINDOWS SOUS L'HORLOGE** (voir
@@ -6470,6 +6497,7 @@
       // peut devenir "" quand un curseur est déplacé : `updateSegmented` éteint
       // alors tous les boutons, ce qui est exactement ce qu'il faut dire.
       updateSegmented("performances-preset", state.performancesPreset);
+      updateSegmented("carte-graphique", state.carteGraphique);
       updateSlider("performances-cadence", state.performancesCadence || 144, (v) => v + " i/s");
       updateSlider("tooltip-scale", state.tooltipScalePercent, (v) => v + "%");
       updateSlider("tooltip-fade-ms", state.tooltipFadeMs, (v) => v + " ms");

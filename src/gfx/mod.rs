@@ -2,6 +2,7 @@ pub mod backdrop;
 pub mod blur;
 pub mod capture;
 pub mod capture_visibility;
+pub mod carte_graphique;
 pub mod cef_texture;
 pub mod degrade;
 pub mod degrade_sauvegardes;

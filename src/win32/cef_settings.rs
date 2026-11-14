@@ -2861,6 +2861,20 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
                     );
                 }
             }
+            // ⭐ **LA CARTE GRAPHIQUE** (voir `gfx::carte_graphique`) — vaut au
+            // PROCHAIN lancement : seul le fichier change ici. Une identité
+            // mal formée est ignorée (la page peut envoyer n'importe quoi).
+            //
+            // ⛔ **L'IDENTITÉ ARRIVE ENCODÉE** : `go` passe chaque segment par
+            // `encodeURIComponent`, et `10DE&2C02&53101462` arrive en
+            // `10DE%262C02%2653101462`. Sans décodage, chaque carte était
+            // refusée EN SILENCE (« je clique et rien ne se passe »,
+            // 2026-11-14) ; seul « windows », sans `&`, passait.
+            ["carte-graphique", id] => match carte_graphique_recue(id) {
+                Some(id) => config::save_carte_graphique(&id),
+                None => crate::diag!("[gpu] identité de carte refusée : {id:?}"),
+            },
+            ["carte-graphique-relancer"] => crate::app::request_reload(),
             ["dash-icon-scale", percent] => {
                 if let Ok(percent) = percent.parse::<u32>() {
                     let scale = percent as f32 / 100.0;
@@ -3742,6 +3756,13 @@ fn preparer_l_import() {
             message_de_sauvegarde(format!("Import refusé : {err}."));
         }
     }
+}
+
+/// L'identité de carte graphique reçue de la page (segment ENCODÉ par
+/// `encodeURIComponent`), décodée puis validée — `None` si mal formée.
+fn carte_graphique_recue(segment: &str) -> Option<String> {
+    let id = percent_decode(segment);
+    crate::gfx::carte_graphique::id_valide(&id).then_some(id)
 }
 
 /// **L'UTILISATEUR A CONFIRMÉ** — l'import s'appliquera au redémarrage, une fois
@@ -5825,6 +5846,27 @@ fn push_state(refs: &SettingsRefs) {
         objet.insert("performancesCadence".into(), json!(crate::ui::performances::cadence()));
         objet.insert("performancesEconomie".into(), json!(crate::ui::performances::economie()));
         objet.insert("performancesPreset".into(), json!(crate::ui::performances::preset_courant()));
+        // ⭐ **LA CARTE GRAPHIQUE** (voir `gfx::carte_graphique`) : la liste,
+        // le choix ENREGISTRÉ (relu du disque : il peut différer de celui du
+        // lancement, d'où `carteGraphiqueAuLancement`), et la carte qui tourne
+        // vraiment.
+        objet.insert(
+            "cartesGraphiques".into(),
+            json!(crate::gfx::carte_graphique::cartes()
+                .iter()
+                .map(|c| json!({ "id": c.id, "nom": c.nom }))
+                .collect::<Vec<_>>()),
+        );
+        objet.insert(
+            "carteGraphique".into(),
+            json!(config::load_carte_graphique()
+                .unwrap_or_else(|| crate::gfx::carte_graphique::WINDOWS.to_string())),
+        );
+        objet.insert(
+            "carteGraphiqueAuLancement".into(),
+            json!(crate::gfx::carte_graphique::choix_au_lancement()),
+        );
+        objet.insert("carteGraphiqueEffective".into(), json!(crate::gfx::carte_graphique::effective()));
     }
     // Lit le dock : hors d'`etat_ajoute`, qui n'a pas `refs`.
     if let Some(objet) = payload.as_object_mut() {
@@ -6163,7 +6205,7 @@ mod tests {
                 "la rangée « {cle} » n'est jamais rafraîchie par `updateSegmented`"
             );
         }
-        assert_eq!(vues, 17, "nombre de rangées de boutons dans la page (la texture de l'interface, puis celle des terminaux, le 2026-10-15 ; la couleur des ombres, le 2026-10-19 ; les coins du centre de la barre du haut, le 2026-10-31 ; la forme du retour à la fermeture, le 2026-11-04 ; les formes de l'ouverture, de la réduction et de l'agrandissement, le 2026-11-05 ; le PROFIL de performances, le 2026-11-11)");
+        assert_eq!(vues, 18, "nombre de rangées de boutons dans la page (la texture de l'interface, puis celle des terminaux, le 2026-10-15 ; la couleur des ombres, le 2026-10-19 ; les coins du centre de la barre du haut, le 2026-10-31 ; la forme du retour à la fermeture, le 2026-11-04 ; les formes de l'ouverture, de la réduction et de l'agrandissement, le 2026-11-05 ; le PROFIL de performances, le 2026-11-11 ; la CARTE GRAPHIQUE, le 2026-11-14)");
     }
 
     #[test]
@@ -6559,6 +6601,44 @@ mod tests {
         // tant que le panneau n'est pas rouvert.
         assert!(PAGE.contains("updateSegmented(\"performances-preset\""), "le profil ne se rafraîchit pas");
         assert!(PAGE.contains("updateSlider(\"performances-cadence\""), "le curseur ne se rafraîchit pas");
+    }
+
+    /// ⭐ **LA CARTE GRAPHIQUE** : mêmes deux défauts possibles que pour les
+    /// performances, plus un troisième — la ligne « redémarrer » ne paraîtrait
+    /// jamais si `carteEnAttente` manquait à `computeStructureKey`.
+    ///
+    /// **MUTATION** retirer un bras, une clé, l'`updateSegmented` ou l'entrée
+    /// de la clé de structure : le test nomme la moitié manquante.
+    #[test]
+    fn une_carte_choisie_dans_la_page_est_acceptee_malgre_l_encodage() {
+        // Ce que `go("carte-graphique", "10DE&2C02&53101462")` envoie
+        // réellement : `encodeURIComponent` encode les `&`.
+        assert_eq!(carte_graphique_recue("10DE%262C02%2653101462").as_deref(), Some("10DE&2C02&53101462"));
+        assert_eq!(carte_graphique_recue("windows").as_deref(), Some("windows"));
+        assert_eq!(carte_graphique_recue("..%2Fx"), None);
+    }
+
+    #[test]
+    fn la_carte_graphique_est_cablee_des_deux_cotes() {
+        const PAGE: &str = include_str!("../../assets/popups/settings.html");
+        let dispatch = include_str!("cef_settings.rs").split("#[cfg(test)]").next().unwrap_or("");
+
+        for verbe in ["carte-graphique", "carte-graphique-relancer"] {
+            assert!(PAGE.contains(&format!("go(\"{verbe}\"")), "aucun contrôle n'émet `{verbe}`");
+        }
+        for bras in ["[\"carte-graphique\", id]", "[\"carte-graphique-relancer\"]"] {
+            assert!(dispatch.contains(bras), "RIEN ne reçoit `{bras}`");
+        }
+        for cle in ["cartesGraphiques", "carteGraphique", "carteGraphiqueAuLancement", "carteGraphiqueEffective"] {
+            assert!(dispatch.contains(&format!("\"{cle}\"")), "`push_state` n'envoie pas `{cle}`");
+            assert!(PAGE.contains(&format!("state.{cle}")), "la page ne lit pas `{cle}`");
+        }
+        assert!(PAGE.contains("updateSegmented(\"carte-graphique\""), "le choix ne s'allume pas");
+        let cle_de_structure = PAGE.split("function computeStructureKey").nth(1).and_then(|s| s.split("function render").next());
+        assert!(
+            cle_de_structure.is_some_and(|s| s.contains("carteEnAttente:")),
+            "la ligne « redémarrer » n'est pas dans la clé de structure"
+        );
     }
 }
 

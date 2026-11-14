@@ -315,6 +315,23 @@ wrap_app! {
                         }
                     }
                 }
+                // ⭐ **LA CARTE GRAPHIQUE CHOISIE** (voir `gfx::carte_graphique`) :
+                // la MÊME que celle du device Direct3D, sinon les textures
+                // partagées des pages ne s'ouvrent pas. Posée sur le processus
+                // NAVIGATEUR seulement : Chromium la recopie lui-même dans la
+                // ligne de commande du processus GPU. Le choix est figé au
+                // lancement (`choix_au_lancement`) ; un sous-processus qui
+                // relirait le disque après un changement de réglage partirait
+                // sur une autre carte que le device.
+                let navigateur = _process_type.map_or(true, |t| t.to_string().is_empty());
+                if navigateur {
+                    if let Some(carte) = crate::gfx::carte_graphique::choisie() {
+                        let valeur = crate::gfx::carte_graphique::valeur_cef(carte);
+                        crate::diag!("[gpu] Chromium sur {} (use-adapter-luid={valeur})", carte.nom);
+                        command_line
+                            .append_switch_with_value(Some(&"use-adapter-luid".into()), Some(&valeur.as_str().into()));
+                    }
+                }
             }
         }
 

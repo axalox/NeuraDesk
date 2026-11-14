@@ -3204,6 +3204,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     theme::apply_dark_mode_to_window(window.hwnd);
     crate::win32::coins_ecran::set_proprietaire(window.hwnd);
     let gfx = GfxDevice::new()?;
+    crate::gfx::carte_graphique::noter_effective(&gfx.device);
     // Voir `GpuCacheGuard`, doc de type — DÉCLARÉ APRÈS `gfx` À DESSEIN : les
     // locales se détruisent en ordre inverse, donc ce garde meurt avant le
     // device, ce qui libère les caches GPU (`thread_local!`, sinon détruits

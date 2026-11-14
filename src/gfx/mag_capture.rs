@@ -263,12 +263,8 @@ fn fil_de_la_loupe(annoncer: std::sync::mpsc::Sender<u32>) {
         if LIBERE.load(Ordering::Relaxed) {
             break;
         }
-        let demandee = DEMANDE.lock().ok().and_then(|d| *d).is_some_and(|t| t.elapsed() < DEMANDE_RECENTE);
-        let due = derniere.is_none_or(|t| t.elapsed() >= TRAME_PERIODE);
-        // La toute première trame part sans attendre de demande : `LOUPE_OK`
-        // n'est posé qu'après une image réussie, et c'est lui qui fait venir
-        // les demandes.
-        if (demandee || derniere.is_none()) && due {
+        let demande = DEMANDE.lock().ok().and_then(|d| *d);
+        if faut_capturer(demande, derniere, Instant::now()) {
             derniere = Some(Instant::now());
             if etat.capturer_une_trame() {
                 echecs = 0;
@@ -290,6 +286,30 @@ fn fil_de_la_loupe(annoncer: std::sync::mpsc::Sender<u32>) {
     }
     etat.detruire();
     LOUPE_OK.store(false, Ordering::Relaxed);
+}
+
+/// Faut-il capturer une trame maintenant ?
+///
+/// ⭐ **SEULEMENT POUR UNE DEMANDE PAS ENCORE SERVIE** — DEMANDE EXPLICITE
+/// (2026-11-14) : « serait-il possible de baisser l'utilisation de la rtx
+/// 5080 ? ». La loupe capturait toutes les `TRAME_PERIODE` (~16 trames/s) tant
+/// qu'une demande datait de moins de `DEMANDE_RECENTE`. Au repos, le rendu ne
+/// présente qu'une image toutes les 250 ms : 12 trames sur 16 n'étaient jamais
+/// lues. Mesuré sur la RTX 5080, au repos, mode capturable : **12,1 %** du
+/// moteur 3D pour NeuraDesk, contre **0,46 %** sans la loupe — la capture
+/// Magnification d'un écran 4K passe par le GPU.
+///
+/// Désormais une trame part seulement si le rendu en a demandé une APRÈS le
+/// début de la précédente. Pendant une salve (survol, panneau), le rendu
+/// demande à chaque image : la loupe reste plafonnée à `TRAME_PERIODE`, comme
+/// avant. La toute première trame part sans demande : `LOUPE_OK` n'est posé
+/// qu'après une image réussie, et c'est lui qui fait venir les demandes.
+fn faut_capturer(demande: Option<Instant>, derniere: Option<Instant>, maintenant: Instant) -> bool {
+    let Some(derniere) = derniere else { return true };
+    let due = maintenant.saturating_duration_since(derniere) >= TRAME_PERIODE;
+    let nouvelle = demande
+        .is_some_and(|d| d > derniere && maintenant.saturating_duration_since(d) < DEMANDE_RECENTE);
+    due && nouvelle
 }
 
 /// Capture `rect` ([x, y, largeur, hauteur], coordonnées écran physiques) en
@@ -803,5 +823,23 @@ mod tests {
             cbSize: 64,
         };
         assert!(Source::depuis_header(&header).is_none());
+    }
+
+    /// **MUTATION** : revenir à « une demande RÉCENTE suffit » fait capturer
+    /// une seconde trame pour la même demande — le deuxième cas échoue.
+    #[test]
+    fn la_loupe_ne_capture_que_pour_une_demande_pas_encore_servie() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        // Première trame : sans demande.
+        assert!(faut_capturer(None, None, t0));
+        // Demande faite AVANT la dernière trame : déjà servie, même récente.
+        assert!(!faut_capturer(Some(ms(0)), Some(ms(10)), ms(100)));
+        // Demande APRÈS la dernière trame, période écoulée : on capture.
+        assert!(faut_capturer(Some(ms(80)), Some(ms(10)), ms(100)));
+        // Demande nouvelle mais période pas écoulée : on attend.
+        assert!(!faut_capturer(Some(ms(30)), Some(ms(10)), ms(40)));
+        // Demande nouvelle mais trop vieille : plus personne ne regarde.
+        assert!(!faut_capturer(Some(ms(20)), Some(ms(10)), ms(20) + DEMANDE_RECENTE));
     }
 }

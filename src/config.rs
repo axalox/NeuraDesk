@@ -3260,6 +3260,20 @@ pub fn save_performances(cadence: u32, economie: bool) {
     write_config("performances.txt", format!("{cadence},{}", u8::from(economie)));
 }
 
+/// **LA CARTE GRAPHIQUE CHOISIE** (voir `gfx::carte_graphique`) :
+/// `fabricant&modèle&sous-système`, ou `windows`. `None` tant que le réglage
+/// n'a jamais été touché, ou si le fichier est illisible — Windows choisit
+/// alors, comme avant le réglage.
+pub fn load_carte_graphique() -> Option<String> {
+    let texte = fs::read_to_string(config_path("carte_graphique.txt")?).ok()?;
+    let id = texte.trim();
+    crate::gfx::carte_graphique::id_valide(id).then(|| id.to_string())
+}
+
+pub fn save_carte_graphique(id: &str) {
+    write_config("carte_graphique.txt", id.to_string());
+}
+
 /// Relit le multiplicateur de TRANSPARENCE des éléments des panneaux (voir
 /// `win32::cef_popup::popup_alpha`) — même convention que `load_hover_scale` :
 /// `None` tant que l'utilisateur n'a jamais touché le curseur, auquel cas c'est

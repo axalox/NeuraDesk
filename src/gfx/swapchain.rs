@@ -16,7 +16,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory1, IDXGIFactory2, IDXGISwapChain1, DXGI_ERROR_WAS_STILL_DRAWING, DXGI_PRESENT, DXGI_PRESENT_DO_NOT_WAIT, DXGI_PRESENT_PARAMETERS, DXGI_SCALING_STRETCH,
+    IDXGIDevice, IDXGIFactory2, IDXGISwapChain1, DXGI_ERROR_WAS_STILL_DRAWING, DXGI_PRESENT, DXGI_PRESENT_DO_NOT_WAIT, DXGI_PRESENT_PARAMETERS, DXGI_SCALING_STRETCH,
     DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_DISCARD, DXGI_SWAP_EFFECT_FLIP_DISCARD,
     DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
@@ -61,7 +61,13 @@ impl SwapChain {
     /// compose bien avec l'alpha — c'est l'intention d'origine de ce fichier,
     /// que le passage au modèle *flip* avait silencieusement cassée.
     pub fn new(device: &ID3D11Device, hwnd: HWND, width: u32, height: u32, transparent: bool) -> Result<Self> {
-        let factory: IDXGIFactory2 = unsafe { CreateDXGIFactory1() }?;
+        // LA FABRIQUE DE LA CARTE DU DEVICE, pas une fabrique neuve : quand le
+        // device est créé sur une carte EXPLICITE (`gfx::carte_graphique`),
+        // DXGI exige que le swap chain vienne de la fabrique qui a produit
+        // cette carte. Valable aussi quand Windows a choisi la carte.
+        let dxgi_device: IDXGIDevice = windows::core::Interface::cast(device)?;
+        // SAFETY : interfaces valides.
+        let factory: IDXGIFactory2 = unsafe { dxgi_device.GetAdapter()?.GetParent() }?;
 
         let desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: width,
