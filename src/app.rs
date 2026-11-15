@@ -2905,6 +2905,7 @@ fn animation_globale() -> bool {
     crate::gfx::degrade::is_enabled()
         || crate::ui::dock::logo_animation_enabled()
         || crate::gfx::texture_perso::INTERFACE.anime()
+        || crate::gfx::lueur::anime()
 }
 
 fn bandes_secondaires(docks: &[SecondaryDock]) -> Vec<crate::win32::coins_secondaires::Bande> {
@@ -18508,6 +18509,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             || crate::ui::dock::logo_animation_enabled()
             || crate::gfx::texture_perso::INTERFACE.anime()
             || crate::gfx::texture_perso::TERMINAUX.anime()
+            || crate::gfx::lueur::anime()
             || survol_en_cours(&dock, &secondary_docks);
         // ⭐ **LE MODE ÉCONOMIE SUSPEND LES ANIMATIONS CONTINUES** (voir
         // `ui::performances`, DEMANDE EXPLICITE 2026-11-11 : « gérer la pression

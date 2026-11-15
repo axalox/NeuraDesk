@@ -344,6 +344,18 @@ pub enum Duree {
 }
 
 impl Element {
+    /// Vrai si cette lueur change avec le temps (voir `anime`) : elle se
+    /// déplace, clignote, change de couleur, tourne sur elle-même, ou son
+    /// dégradé défile ou change de teinte.
+    fn anime(&self) -> bool {
+        self.mouvement != Mouvement::Fixe
+            || self.apparition
+            || (self.cycle_couleur && self.nb_etapes > 0)
+            || self.rotation_propre != 0.0
+            || self.teinte != 0.0
+            || (self.defilement != 0.0 && self.degrade != Degrade::Aucun)
+    }
+
     pub const PAR_DEFAUT: Element = Element {
         x: 0.5,
         y: 0.0,
@@ -772,6 +784,28 @@ pub fn retirer(i: usize) {
 
 pub fn active() -> bool {
     SCENE.with(|s| s.borrow().active)
+}
+
+/// ⭐ **VRAI SI LES LUEURS CHANGENT D'UNE IMAGE À L'AUTRE** — la boucle de
+/// `app::run` ne présente une image que si quelque chose bouge (voir
+/// `app::animation_globale`). Défaut SIGNALÉ (2026-11-15) : « les barres ne
+/// semblent plus réagir aux lueurs » — elles n'y étaient pas comptées, et hors
+/// du mode capturable une lueur animée n'était redessinée qu'au secours de 250 ms.
+pub fn anime() -> bool {
+    SORTANTES.with(|sortantes| SCENE.with(|s| bouge(&s.borrow(), &sortantes.borrow(), BASCULE.with(Cell::get), maintenant())))
+}
+
+/// Pure (voir `anime`) : un fondu en cours (case basculée à `bascule`, lueur
+/// ajoutée ou retirée), ou une scène allumée dont quelque chose se déplace,
+/// tourne ou change de couleur.
+fn bouge(scene: &Scene, sortantes: &[(Element, f64)], bascule: f64, t: f64) -> bool {
+    let en_fondu = |depuis: f64| t - depuis < FONDU_AJOUT;
+    if en_fondu(bascule) || sortantes.iter().any(|(_, parti)| en_fondu(*parti)) {
+        return true;
+    }
+    scene.active
+        && !scene.elements.is_empty()
+        && (scene.rotation != 0.0 || scene.elements.iter().any(|e| en_fondu(e.nee_a) || e.anime()))
 }
 
 /// Les images que la scène DESSINE (lueurs présentes puis retirées qui
@@ -1244,6 +1278,44 @@ mod tests {
     use super::*;
 
     const ECRAN: [f32; 2] = [3840.0, 2160.0];
+
+    /// ⭐ Défaut SIGNALÉ (2026-11-15) : « les barres ne semblent plus réagir aux
+    /// lueurs ». La boucle ne présente une image que si quelque chose BOUGE, et
+    /// les lueurs n'y étaient pas comptées : hors du mode capturable, une lueur
+    /// dont seul le dégradé défile n'était redessinée qu'au secours de 250 ms.
+    #[test]
+    fn une_lueur_dont_le_degrade_defile_demande_des_images() {
+        let e = Element { degrade: Degrade::Lineaire, defilement: 2.0, ..Element::PAR_DEFAUT };
+        let scene = Scene { active: true, elements: vec![e], ..Scene::default() };
+        assert!(bouge(&scene, &[], f64::NEG_INFINITY, 100.0));
+        let e = Element { teinte: -0.5, ..Element::PAR_DEFAUT };
+        let scene = Scene { active: true, elements: vec![e], ..Scene::default() };
+        assert!(bouge(&scene, &[], f64::NEG_INFINITY, 100.0));
+    }
+
+    #[test]
+    fn une_scene_immobile_ou_eteinte_ne_demande_pas_d_images() {
+        let immobile = Scene { active: true, elements: vec![Element::PAR_DEFAUT], ..Scene::default() };
+        assert!(!bouge(&immobile, &[], f64::NEG_INFINITY, 100.0));
+        let e = Element { mouvement: Mouvement::Orbite, ..Element::PAR_DEFAUT };
+        let eteinte = Scene { active: false, elements: vec![e], ..Scene::default() };
+        assert!(!bouge(&eteinte, &[], f64::NEG_INFINITY, 100.0));
+    }
+
+    /// Les fondus (case basculée, lueur ajoutée ou retirée) sont des animations
+    /// aussi — même pour une scène immobile, et seulement pendant `FONDU_AJOUT`.
+    #[test]
+    fn les_fondus_demandent_des_images_le_temps_du_fondu() {
+        let immobile = Scene { active: true, elements: vec![Element::PAR_DEFAUT], ..Scene::default() };
+        assert!(bouge(&immobile, &[], 99.9, 100.0));
+        assert!(!bouge(&immobile, &[], 90.0, 100.0));
+        assert!(bouge(&immobile, &[(Element::PAR_DEFAUT, 99.9)], f64::NEG_INFINITY, 100.0));
+        assert!(!bouge(&immobile, &[(Element::PAR_DEFAUT, 90.0)], f64::NEG_INFINITY, 100.0));
+        let nee = Element { nee_a: 99.9, ..Element::PAR_DEFAUT };
+        assert!(bouge(&Scene { active: true, elements: vec![nee], ..Scene::default() }, &[], f64::NEG_INFINITY, 100.0));
+        let tourne = Scene { active: true, rotation: 1.0, elements: vec![Element::PAR_DEFAUT], ..Scene::default() };
+        assert!(bouge(&tourne, &[], f64::NEG_INFINITY, 100.0));
+    }
 
     #[test]
     fn la_lueur_s_eteint_hors_du_mode_capturable() {
