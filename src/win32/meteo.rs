@@ -580,8 +580,9 @@ fn fil_de_meteo(mut lieu: Option<Lieu>, ordres: Receiver<Ordre>, nouvelles: Send
 /// résultat, voir `candidats_depuis`).
 pub(crate) fn geocoder(nom: &str) -> Result<Option<Candidat>, String> {
     let url = format!(
-        "https://geocoding-api.open-meteo.com/v1/search?name={}&count=1&language=fr&format=json",
-        encoder_query(nom)
+        "https://geocoding-api.open-meteo.com/v1/search?name={}&count=1&language={}&format=json",
+        encoder_query(nom),
+        crate::ui::langue::courante().code()
     );
     get_json(&url).and_then(|v| candidats_depuis(&v)).map(|villes| villes.into_iter().next())
 }
@@ -589,8 +590,10 @@ pub(crate) fn geocoder(nom: &str) -> Result<Option<Candidat>, String> {
 /// Géocode un nom et propose les villes trouvées.
 fn chercher(nom: &str, nouvelles: &Sender<Nouvelle>) {
     let url = format!(
-        "https://geocoding-api.open-meteo.com/v1/search?name={}&count={CANDIDATS_MAX}&language=fr&format=json",
-        encoder_query(nom)
+        "https://geocoding-api.open-meteo.com/v1/search?name={}&count={CANDIDATS_MAX}&language={}&format=json",
+        encoder_query(nom),
+        // Les noms de pays et de régions dans la langue de l'interface.
+        crate::ui::langue::courante().code()
     );
     match get_json(&url).and_then(|v| candidats_depuis(&v)) {
         Ok(villes) if villes.is_empty() => {

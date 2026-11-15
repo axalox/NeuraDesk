@@ -161,10 +161,21 @@ fn langue_du_systeme() -> String {
     use windows::Win32::Globalization::GetUserDefaultLocaleName;
     let mut buffer = [0u16; 85]; // LOCALE_NAME_MAX_LENGTH
     let n = unsafe { GetUserDefaultLocaleName(&mut buffer) };
-    if n <= 1 {
-        return "fr-FR".to_string();
+    let systeme = if n <= 1 { "fr-FR".to_string() } else { String::from_utf16_lossy(&buffer[..(n as usize - 1)]) };
+    accorder_a_l_interface(systeme, crate::ui::langue::courante())
+}
+
+/// Le format régional de Windows, SAUF s'il contredit la langue de l'interface
+/// (choisie dans les Réglages) : une interface en anglais n'affiche pas ses
+/// dates « en français », et inversement.
+fn accorder_a_l_interface(systeme: String, langue: crate::ui::langue::Langue) -> String {
+    use crate::ui::langue::Langue;
+    let est_francais = systeme.to_ascii_lowercase().starts_with("fr");
+    match langue {
+        Langue::En if est_francais => "en-GB".to_string(),
+        Langue::Fr if !est_francais => "fr-FR".to_string(),
+        _ => systeme,
     }
-    String::from_utf16_lossy(&buffer[..(n as usize - 1)])
 }
 
 pub fn init(args: &Args, app: &mut cef::App) {
@@ -650,6 +661,25 @@ wrap_display_handler! {
             // `true` : l'hôte se charge de l'affichage.
             true as _
         }
+
+        /// Le RELEVÉ DES TEXTES NON TRADUITS (voir `ui::langue`,
+        /// `NEURADESK_I18N_RELEVE`) : seules les lignes `[i18n]` sont
+        /// journalisées ; le reste de la console est laissé à CEF.
+        fn on_console_message(
+            &self,
+            _browser: Option<&mut Browser>,
+            _level: LogSeverity,
+            message: Option<&CefString>,
+            _source: Option<&CefString>,
+            _line: ::std::os::raw::c_int,
+        ) -> ::std::os::raw::c_int {
+            let Some(message) = message.map(|m| m.to_string()) else { return false as _ };
+            if message.starts_with("[i18n]") {
+                crate::diag!("{message}");
+                return true as _;
+            }
+            false as _
+        }
     }
 }
 
@@ -681,7 +711,15 @@ wrap_load_handler! {
     }
 
     impl LoadHandler {
-        fn on_load_end(&self, browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _http_status_code: ::std::os::raw::c_int) {
+        fn on_load_end(&self, browser: Option<&mut Browser>, frame: Option<&mut Frame>, _http_status_code: ::std::os::raw::c_int) {
+            // ⭐ LA LANGUE DE L'INTERFACE (voir `ui::langue`) : rien en français ;
+            // sinon le moteur de traduction, une fois par page (il se garde
+            // lui-même d'une seconde injection).
+            if let (Some(script), Some(frame)) = (crate::ui::langue::script_des_pages(), frame) {
+                if frame.is_main() != 0 {
+                    frame.execute_java_script(Some(&CefString::from(script)), Some(&CefString::from("")), 0);
+                }
+            }
             if let Some(host) = browser.and_then(|b| b.host()) {
                 host.set_zoom_level(self.handler.zoom_level);
             }

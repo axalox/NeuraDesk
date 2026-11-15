@@ -969,7 +969,7 @@
              `cef_notes::push_state`) : c'est lui qui sait s'il reste quelque
              chose a annuler, la page ne fait que l'afficher. -->
         <div class="historique">
-          <button id="annuler" title="Annuler la derniere action (Ctrl+Z)"><span class="ico ico-arrow-u-up-left"></span> Annuler</button>
+          <button id="annuler" data-i18n-ctx="historique" title="Annuler la derniere action (Ctrl+Z)"><span class="ico ico-arrow-u-up-left"></span> Annuler</button>
           <button id="refaire" title="Refaire (Ctrl+Y)"><span class="ico ico-arrow-u-up-right"></span> Refaire</button>
         </div>
         <input type="search" id="search" placeholder="Rechercher…">
@@ -1355,7 +1355,7 @@
         el("span", {}, [MOIS[mois] + " " + annee]),
         el("button", { title: "Mois suivant", onclick: () => changerMois(1) }, ["›"]),
       ]);
-      const grille = el("div", { class: "cal-grille" }, JOURS_COURTS.map((l) => el("span", { class: "cal-nom" }, [l])));
+      const grille = el("div", { class: "cal-grille" }, JOURS_COURTS.map((l, i) => el("span", { class: "cal-nom", "data-i18n-ctx": "jour-" + i }, [l])));
       // Lundi en tête : `getDay()` compte depuis le dimanche.
       const decalage = (new Date(annee, mois, 1).getDay() + 6) % 7;
       for (let i = 0; i < decalage; i += 1) grille.appendChild(el("span", {}, []));
@@ -1880,6 +1880,7 @@
         // local, rien n'est envoyé avant « Enregistrer ».
         const jours = JOURS_COURTS.map((lettre, i) => el("button", {
           class: "jour-btn" + (alarmeDraft.jours & (1 << i) ? " active" : ""),
+          "data-i18n-ctx": "jour-" + i,
           title: "Répéter le " + ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"][i]
             + " — avec des jours choisis, la date devient le jour de début",
           onclick: () => { alarmeDraft.jours ^= (1 << i); renderList(); },
@@ -2382,6 +2383,8 @@
           formaterNote(note.content, (rang) => go("cocher", note.id, rang)),
         ]);
         if (replier) corps.dataset.repliable = "1";
+        // Le TEXTE de l'utilisateur : jamais traduit (voir `assets/i18n/pages.js`).
+        corps.setAttribute("data-no-i18n", "");
         corps.ndNote = note;
         card.appendChild(corps);
         if (replier) {

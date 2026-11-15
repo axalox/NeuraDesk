@@ -498,6 +498,8 @@
     // au milieu d'un long texte serait sinon invisible), occurrence surlignée.
     function texteDeRangee(entry, cherche) {
       const div = el("div", { class: "preview-text" });
+      // Le texte COPIÉ par l'utilisateur : jamais traduit (`assets/i18n/pages.js`).
+      div.setAttribute("data-no-i18n", "");
       const pos = cherche ? trouver(entry.text, cherche) : null;
       if (!pos) { div.textContent = entry.text; return div; }
       const [debut, fin] = pos;

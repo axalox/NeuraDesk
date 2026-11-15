@@ -110,6 +110,9 @@ pub(crate) fn boite_de_l_encre(rgba: &[u8], width: u32, height: u32) -> Option<(
 /// boîte (voir `boite_de_l_encre` et `ui::desktop_labels`, dont les ratios de
 /// police se calibrent sur ces mesures).
 pub(crate) fn rendre_rgba(text: &str, font_px: i32, font_name: &str, bold: bool) -> Result<(u32, u32, Vec<u8>)> {
+    // ⭐ LA LANGUE DE L'INTERFACE — voir `ui::langue` : tout ce que Rust dessine
+    // passe ici (et par `measure_text`, qui doit mesurer le MÊME texte).
+    let text = crate::ui::langue::traduire(text);
     let wide: Vec<u16> = text.encode_utf16().collect();
     let font_name_wide: Vec<u16> = font_name.encode_utf16().chain(std::iter::once(0)).collect();
 
@@ -213,6 +216,7 @@ unsafe fn create_font(font_px: i32, font_name_wide: &[u16], bold: bool) -> windo
 /// caractères : un libellé en majuscules larges (« OUTILS ») et un autre en
 /// minuscules étroites n'occupent pas la même place à taille égale.
 pub fn measure_text(text: &str, font_px: i32, font_name: &str, bold: bool) -> (u32, u32) {
+    let text = crate::ui::langue::traduire(text);
     let wide: Vec<u16> = text.encode_utf16().collect();
     let font_name_wide: Vec<u16> = font_name.encode_utf16().chain(std::iter::once(0)).collect();
     unsafe {

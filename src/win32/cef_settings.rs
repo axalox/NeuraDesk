@@ -1146,6 +1146,11 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
             // envoie un NOM, `percent_decode` le rend, et le module enregistre.
             // ⚠️ **Un nom inconnu n'écrit RIEN** : un fichier portant un nom que
             // le code ne connaît pas serait un réglage muet.
+            // ⭐ LA LANGUE DE L'INTERFACE (voir `ui::langue`) — enregistrée,
+            // appliquée au prochain démarrage. Un nom inconnu n'écrit rien.
+            ["langue", nom] => {
+                crate::ui::langue::set_preference(&percent_decode(nom));
+            }
             ["position-bandeau", nom] => {
                 crate::win32::bandeau::set_position(&percent_decode(nom));
             }
@@ -6006,6 +6011,11 @@ fn etat_ajoute() -> serde_json::Value {
         // passent par `etat_ajoute`, fusionné à plat — la page ne voit aucune
         // différence.
         "policeTerminal": crate::ui::style::police_des_terminaux().unwrap_or_default(),
+        // La langue : le choix enregistré, celle de la session, celle du
+        // prochain démarrage (voir `ui::langue`).
+        "langue": crate::ui::langue::preference().nom(),
+        "langueActive": crate::ui::langue::courante().code(),
+        "langueAuProchain": crate::ui::langue::au_prochain_demarrage().code(),
         // La durée de NeuraDesk (`0` = comme Windows), celle que Windows
         // applique (relue : l'utilisateur peut la changer dans Windows), et la
         // liste des choix — la page ne la recopie pas.
@@ -6235,7 +6245,7 @@ mod tests {
                 "la rangée « {cle} » n'est jamais rafraîchie par `updateSegmented`"
             );
         }
-        assert_eq!(vues, 18, "nombre de rangées de boutons dans la page (la texture de l'interface, puis celle des terminaux, le 2026-10-15 ; la couleur des ombres, le 2026-10-19 ; les coins du centre de la barre du haut, le 2026-10-31 ; la forme du retour à la fermeture, le 2026-11-04 ; les formes de l'ouverture, de la réduction et de l'agrandissement, le 2026-11-05 ; le PROFIL de performances, le 2026-11-11 ; la CARTE GRAPHIQUE, le 2026-11-14)");
+        assert_eq!(vues, 19, "nombre de rangées de boutons dans la page (la LANGUE, le 2026-11-15 ; la texture de l'interface, puis celle des terminaux, le 2026-10-15 ; la couleur des ombres, le 2026-10-19 ; les coins du centre de la barre du haut, le 2026-10-31 ; la forme du retour à la fermeture, le 2026-11-04 ; les formes de l'ouverture, de la réduction et de l'agrandissement, le 2026-11-05 ; le PROFIL de performances, le 2026-11-11 ; la CARTE GRAPHIQUE, le 2026-11-14)");
     }
 
     #[test]

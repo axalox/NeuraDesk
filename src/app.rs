@@ -15835,7 +15835,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     None
                 } else {
                     let (texture, w, h) =
-                        text::render_text(&gfx.device, &media_title_text, media_title_font_px, topbar::MEDIA_TITLE_FONT_NAME, false)?;
+                        // Le titre d'une VIDÉO ou d'un morceau : jamais traduit.
+                        crate::ui::langue::sans_traduction(|| text::render_text(&gfx.device, &media_title_text, media_title_font_px, topbar::MEDIA_TITLE_FONT_NAME, false))?;
                     Some((texture, w as f32, h as f32))
                 };
             }

@@ -766,6 +766,7 @@
       const vue = vues[cote];
       if (!vue) return;
       vue.titre.textContent = state.nom || "";
+      vue.titre.setAttribute("data-no-i18n", ""); // contenu : jamais traduit (assets/i18n/pages.js)
       // ⭐ **LE CHEMIN COMPLET** — `state.dossier`, que Rust envoyait DÉJÀ pour
       // d'autres usages (le parent, l'épinglage) : il n'y avait qu'à l'afficher.
       // ⚠️ Il est aussi posé en `title`, pour qu'un chemin très long reste
@@ -795,7 +796,7 @@
           // fichier se LANCE. C'est la seule distinction dont le clic ait besoin.
           // Ctrl/Maj : la case entre dans la SÉLECTION au lieu de s'ouvrir.
           onclick: (ev) => cliquerUneCase(ev, cote, e),
-        }, [visuel, el("span", { class: "nom" }, [e.nom])]);
+        }, [visuel, el("span", { class: "nom", "data-no-i18n": "" }, [e.nom])]);
         // ⚠️ `dataset` et non `setAttribute` : `el` ne connaît que `class` et les
         // `on…`. Le CHEMIN est la clé du cache d'icônes de la page (voir
         // `setIcons`), c'est la seule donnée que la case doive porter.

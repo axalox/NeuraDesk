@@ -1296,7 +1296,7 @@
       // virtuels, et la sphère des FENÊTRES ouvertes.
       [/apercu|ouverture|fondu|plein ecran|bureaux virtuels|sphere/, "fenetres"],
       // Système : modules, performances, affichage/DPI, sauvegarde.
-      [/module|fonctionnalite|performance|dpi|sauvegarde|configuration|affichage/, "systeme"],
+      [/module|fonctionnalite|performance|dpi|sauvegarde|configuration|affichage|^langue/, "systeme"],
       // Barres et dock : tout ce qui touche les barres, les icônes, les zones,
       // les dossiers, la visibilité et les verrous. « icone » n'y figure PAS :
       // « Jeu d'icônes » est une apparence, et les catégories d'icônes des
@@ -1371,7 +1371,7 @@
         "Captures d'écran et éditeur",
       ],
       systeme: [
-        "Modules et applets", "Performances", "Affichage et DPI",
+        "Langue", "Modules et applets", "Performances", "Affichage et DPI",
         "Sauvegarde de la configuration",
       ],
     };
@@ -1393,7 +1393,7 @@
         .map((box) => {
           const g = box.dataset.groupe || "apparence";
           const h2 = box.querySelector("h2");
-          return { box, a: rangGroupe(g), b: rangDansGroupe(h2 ? h2.textContent : "", g) };
+          return { box, a: rangGroupe(g), b: rangDansGroupe(box.dataset.titre || (h2 ? h2.textContent : ""), g) };
         })
         .sort((x, y) => x.a - y.a || x.b - y.b)
         .forEach(({ box }) => scroll.appendChild(box));
@@ -3191,6 +3191,7 @@
       if (!state) return "none";
       return JSON.stringify({
         auto: state.autoColorScheme,
+        langue: state.langue + "/" + state.langueAuProchain,
         verrousAffiche: state.verrous.affiche,
         // Les horloges du monde : ajouter, retirer ou déplacer redessine la liste.
         horlogesMonde: JSON.stringify(state.horlogesMonde || []),
@@ -3625,6 +3626,9 @@
         box.id = `section-${sectionIdCounter++}`;
         const groupe = groupeCategorie(heading.textContent);
         box.dataset.groupe = groupe;
+        // Le titre FRANÇAIS, gardé : en anglais, `ui::langue` réécrit le `<h2>`,
+        // et les tables (`ORDRE_GROUPES`, `voirAussi`) parlent français.
+        box.dataset.titre = heading.textContent;
         sectionCategories.push({ id: box.id, label: heading.textContent, groupe });
       }
       scroll.appendChild(box);
@@ -3716,7 +3720,7 @@
     function rubriqueParTitre(titre) {
       for (const box of document.querySelectorAll("#scroll > .section")) {
         const h2 = box.querySelector("h2");
-        if (h2 && h2.textContent === titre) return box;
+        if (h2 && (box.dataset.titre || h2.textContent) === titre) return box;
       }
       return null;
     }
@@ -5697,6 +5701,28 @@
       // elle vient du profil Qualité, et le curseur montre alors son maximum
       // avec un indice qui le dit — plutôt qu'un second contrôle à tenir
       // cohérent avec le premier.
+      // ⭐ LA LANGUE DE L'INTERFACE (voir `ui::langue`) — « Automatique » suit
+      // la langue d'affichage de Windows. Le choix vaut au prochain démarrage :
+      // l'indice le dit quand il diffère de la langue en cours.
+      section(scroll, (box) => {
+        box.appendChild(el("h2", {}, ["Langue"]));
+        segmented(box, {
+          label: "Langue de l'interface",
+          options: [
+            { value: "auto", label: "Automatique" },
+            { value: "fr", label: "Français" },
+            { value: "en", label: "English" },
+          ],
+          value: state.langue || "auto",
+          dataKey: "langue",
+          onSelect: (v) => go("langue", v),
+        });
+        box.appendChild(el("p", { class: "hint" }, ["Automatique : français si Windows est en français, anglais sinon."]));
+        if (state.langueAuProchain && state.langueAuProchain !== state.langueActive) {
+          box.appendChild(el("p", { class: "hint" }, ["Le changement de langue prendra effet au prochain démarrage de NeuraDesk."]));
+        }
+      });
+
       section(scroll, (box) => {
         box.appendChild(el("h2", {}, ["Performances"]));
         segmented(box, {
@@ -6444,6 +6470,7 @@
       updateSlider("left-icon-scale", state.leftIconScale, (v) => v + "%");
       if (state.coinsEcran) updateSlider("coins-ecran-rayon", state.coinsEcranRayon, (v) => v + "px");
       updateSegmented("running-dot-shape", state.runningDotShape);
+      updateSegmented("langue", state.langue || "auto");
       updateSegmented("ombre-couleur-affichee", state.ombreCouleurAffichee ? "affichee" : "reglee");
       if (state.ombreCentreHaut) {
         const c = state.ombreCentreHaut;

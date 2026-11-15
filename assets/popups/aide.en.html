@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<!--
+  L'AIDE — le panneau de l'applet (voir `win32::cef_aide`).
+
+  ÉTAT REÇU (`window.setState`) :
+    { contentScale, ancre, demande } — le texte est ici, il ne change pas. `ancre` :
+    l'`id` d'un titre où amener la page, à chaque nouvelle `demande` (voir
+    `cef_aide::ouvrir_a`, appelé depuis les Réglages).
+
+  ⚠️ **CETTE PAGE N'ÉMET QU'UN VERBE : `close`**, sa croix — DEMANDE EXPLICITE
+  (2026-10-18) : « que tous les dashs aient une croix de fermeture ». Elle ne
+  navigue pas ; `cef_aide::dispatch_actions` ne connaît que ce verbe.
+
+  ⚠️ **ELLE NE CHARGE PAS `menu.js`** : ce n'est ni un menu ni un popup mesuré,
+  c'est un PANNEAU — même famille que la météo et la recherche.
+
+  ⚠️ **ELLE POSE SA PROPRE `color`**, et c'est OBLIGATOIRE : elle charge
+  `style.css` sans `menu.css`, donc si elle ne la posait pas, le navigateur
+  mettrait du NOIR sur le bureau flouté. C'est le défaut qu'a porté
+  `caracteres.html` pendant deux demandes.
+
+  ⛔ **LES TEXTES SONT À RELIRE.** Ils décrivent ce que le dépôt fait, mais
+  l'utilisateur seul sait ce qui est vrai de SON usage — et une aide qui se trompe
+  est pire que pas d'aide.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<!-- LE MENU DU CLIC DROIT COMMUN — DEMANDE DU 2026-10-28 : « copier du texte en le
+     sélectionnant à la souris et en utilisant le clic droit sur la page d'aide ».
+     Le bouton droit est transmis à CEF par `cef_popup::dispatch_input`
+     (`WM_RBUTTONDOWN`, appui ET relâchement d'un coup, le UP n'arrivant jamais) et le
+     menu natif de Chromium est vidé par `cef_app::NeuraDeskContextMenuHandler` : sans
+     ce script, un clic droit ici ne faisait RIEN DU TOUT. Ce script est déjà le menu
+     des vingt autres pages ; sur un texte sélectionné hors champ, il offre « Copier »,
+     qui part vers `neuradesk://edition/copier` → `CefFrame::copy`. -->
+<script src="menu_contextuel.js"></script>
+<style>
+  html { --text-scale: 1; font-family: var(--nd-police); }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    font-size: 14px;
+    display: flex;
+    flex-direction: column;
+    /* Même grossissement que les autres panneaux : `zoom` seul, avec les deux
+       dimensions inversées pour que le panneau continue de remplir sa fenêtre. */
+    zoom: var(--text-scale);
+    width: calc(100vw / var(--text-scale));
+    height: calc(100vh / var(--text-scale));
+    overflow: hidden;
+    user-select: none;
+  }
+  /* ⭐ **LA ZONE DE LECTURE EST SÉLECTIONNABLE.** `body { user-select: none }` ci-
+     dessus est là pour que le clic sur les boutons du bandeau ne sélectionne pas leur
+     titre ; il hérite jusque dans le texte, et c'est ce qui empêchait la sélection à la
+     souris. `user-select` s'HÉRITE, donc le poser ici la rend à tout ce qui est lu :
+     paragraphes, listes, `<b>`, `<kbd>` et les `.adresse` (qui la posaient déjà). Le
+     bandeau du haut reste hors de portée. */
+  #corps { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 18px 18px; user-select: text; }
+  /* LE LOGO EN TÊTE (2026-11-08). L'image a un fond TRANSPARENT (le noir d'origine
+     rendu en alpha) : posée sur une carte noire, elle retrouve son aspect d'origine
+     quel que soit le thème — sur un fond clair, le halo seul se délave. Même image
+     que l'écran d'accueil (`win32::ecran_accueil`). */
+  .logo { display: block; width: 100%; max-width: 520px; margin: 4px auto 14px; padding: 10px 14px;
+          box-sizing: border-box; background: #000; border-radius: 12px; user-select: none; }
+  .logo img { display: block; width: 100%; height: auto; -webkit-user-drag: none; }
+  /* ⛔ **LE TITRE D'UNE SECTION PORTE LA MÊME COULEUR QUE LE RESTE DU TEXTE.** Il
+     portait `--popup-accent-rgb` : cette variable est `Palette::emphasis`, la
+     TEINTE de l'accent, faite pour les aplats et les bordures translucides — pas
+     pour du texte. Le contrat est écrit dans `cef_popup::push_window_palette` :
+     « un texte dérivé de l'accent bascule vers une couleur SOMBRE dès que
+     l'accent est clair, et devient illisible ». Config réelle du 2026-10-28 :
+     `aide_accent_color.txt` = `0.9,0.9,0.9` (un accent QUASI BLANC), et les titres
+     des sections rendaient à **lumière moyenne 210** sur un fond à 252 —
+     ~1,5 : 1, soit de l'encre invisible. Hiérarchie portée par le **gras**, plus
+     par la couleur : `--popup-fg-rgb` est le pôle FIXE du texte, qui ne suit rien.
+     ⚠️ **ET LA MÊME OPACITÉ QUE `p`** : pleine puissance, le titre rendait à
+     lumière moyenne 82 (pixel le plus sombre 20) contre 111 (47) pour le
+     paragraphe — même couleur, mais plus FONCÉ que le reste, donc pas « la même
+     couleur ». Le .88 des paragraphes est ce qui donne l'encre commune. */
+  h2 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 18px 0 6px;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    opacity: calc(.88 * max(1, var(--popup-alpha, 1)));
+  }
+  h2:first-child { margin-top: 8px; }
+  p { margin: 6px 0; line-height: 1.5; opacity: calc(.88 * max(1, var(--popup-alpha, 1))); }
+  ul { margin: 6px 0; padding-left: 18px; }
+  li { margin: 3px 0; line-height: 1.5; opacity: calc(.88 * max(1, var(--popup-alpha, 1))); }
+  /* Le geste, mis en avant — c'est la moitié utile d'une aide. */
+  b { font-weight: 600; opacity: 1; }
+  kbd {
+    font-family: inherit; font-size: 12px; font-weight: 600;
+    padding: 1px 5px; border-radius: var(--nd-rayon-petit, 4px);
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.14 * var(--popup-fond-alpha, 1)));
+    box-shadow: inset 0 0 0 1px rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.18 * var(--popup-fond-alpha, 1)));
+  }
+  .note {
+    margin: 8px 0; padding: 7px 10px; line-height: 1.45;
+    border-radius: var(--nd-rayon-controle, 6px);
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(.16 * var(--popup-fond-alpha, 1)));
+    font-size: 13px; opacity: calc(.92 * max(1, var(--popup-alpha, 1)));
+  }
+  /* Une adresse à recopier : SÉLECTIONNABLE, et pas un lien — un clic sur un
+     `<a href>` ferait naviguer le panneau lui-même hors de l'aide. ⛔ **PAS
+     D'OPACITÉ ICI** : à .8 elle était la plus petite taille de la page (12,5 px)
+     avec la plus faible encre — mesuré le 2026-10-28 **lumière moyenne 137** sur un
+     fond à 252, soit ~3,3 : 1, sous le 4,5 : 1 exigé pour du texte de cette
+     taille. Et elle n'en ajoute PAS une à sa place : chaque `.adresse` est assise
+     dans un `<li>` ou un `<p>`, dont l'opacité se MULTIPLIE avec la sienne. Poser
+     .88 ici donnait un pixel le plus sombre à **69** contre **47** pour le
+     paragraphe (mesuré le 2026-10-28, `A5_defaut_apres2`) — le .88 est déjà porté
+     par le parent. Sans rien ajouter, l'adresse rend à 47, l'encre commune. */
+  .adresse { user-select: text; font-size: 12.5px; color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1))); }
+  /* La croix, en haut à droite — la punaise commune (`cef_popup::js_epingle`) se
+     pose à sa gauche. */
+  header { display: flex; justify-content: flex-end; align-items: center; gap: 4px; padding: 8px 12px 0; flex: 0 0 auto; }
+  .close-btn {
+    background: none; border: none; color: inherit; cursor: pointer;
+    font-size: 16px; opacity: calc(.8 * max(1, var(--popup-alpha, 1))); padding: 2px 6px; border-radius: var(--nd-rayon-controle, 6px);
+  }
+  .close-btn:hover { opacity: 1; background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1))); }
+</style>
+</head>
+<body>
+  <header><button class="close-btn" onclick="go('close')" title="Close"><span class="ico ico-x"></span></button></header>
+  <div id="corps">
+  <div class="logo"><img src="logo_neuradesk.png" alt="NeuraDesk"></div>
+
+    <h2>Before you start: programs to install</h2>
+    <p>NeuraDesk works on its own. The programs below are <b>optional</b>:
+    each one unlocks an applet, which stays hidden or inactive without it.</p>
+    <ul>
+      <li><b>NAPS2</b> — the Scanner applet, and the "built-in" text
+      recognition.<br><span class="adresse">naps2.com/download — or
+      winget install Cyanfrog.NAPS2</span></li>
+      <li><b>Everything</b> — the File Search applet, which only appears
+      with it.<br><span class="adresse">voidtools.com/downloads — or
+      winget install voidtools.Everything</span></li>
+      <li><b>Voicemeeter</b> — the Voicemeeter panel.<br><span class="adresse">vb-audio.com/Voicemeeter</span></li>
+      <li><b>VLC</b> — "Show" on a video, in the folder dash (see
+      "Playing videos" below).<br><span class="adresse">videolan.org — or
+      winget install VideoLAN.VLC</span></li>
+      <li><b>PowerShell 7</b> — the "PowerShell 7" option in the Terminal (PowerShell 5
+      and the Command Prompt work without installing anything).<br><span
+      class="adresse">winget install Microsoft.PowerShell</span></li>
+      <li><b>PawnIO</b> — CPU temperature and power, in the
+      System Monitor (see "CPU temperature" below).<br><span
+      class="adresse">pawnio.eu — or winget install namazso.PawnIO</span></li>
+    </ul>
+    <div class="note"><b>Your language for NAPS2 OCR</b> — open NAPS2, then
+    <b>OCR</b>, and choose your language (e.g. <b>English</b>): NAPS2 then downloads it. Without
+    it, the built-in recognition refuses to start, and says so. The other engine,
+    the Windows one, needs your language installed with its optical character
+    recognition (Settings → Time &amp; language → Language &amp; region).</div>
+
+    <h2 id="vlc">Playing videos: install VLC</h2>
+    <p>In the folder dash, <b>Show</b> on a video plays it in a NeuraDesk
+    window — play/pause, progress, volume, full screen. VLC does the
+    playback: without it, a video's menu offers <b>View help</b> instead.</p>
+    <ul>
+      <li>Download VLC from <span class="adresse">videolan.org</span> — the
+      <b>Windows 64-bit</b> version — and run the installer, keeping the default
+      choices;</li>
+      <li>or, in a terminal: <span class="adresse">winget install VideoLAN.VLC</span>.</li>
+    </ul>
+    <div class="note"><b>After installing</b> — reopen the folder in the dash:
+    <b>Show</b> is back in the video menu, without restarting NeuraDesk. VLC
+    must be installed in its usual location (<kbd>C:\Program
+    Files\VideoLAN\VLC</kbd>); a 32-bit version won't work.</div>
+
+    <h2 id="pawnio">CPU temperature: install PawnIO</h2>
+    <p>The <b>System Monitor</b> shows the CPU frequency without installing
+    anything. Its <b>temperature</b> and <b>power</b>, however, are only
+    exposed by Windows to a <b>driver</b>: NeuraDesk uses <b>PawnIO</b>,
+    the signed driver also used by LibreHardwareMonitor and Fan Control.</p>
+    <ul>
+      <li>In the System Monitor, <b>Install PawnIO</b> starts the installation
+      (a terminal window, then an administrator prompt);</li>
+      <li>or download it from <span class="adresse">pawnio.eu</span>;</li>
+      <li>or, in a terminal: <span class="adresse">winget install namazso.PawnIO</span>.</li>
+    </ul>
+    <div class="note"><b>Then, one administrator prompt per session</b> — PawnIO
+    only answers an administrator program, and NeuraDesk never is one. The
+    first time you open the System Monitor, Windows therefore asks you to allow
+    <kbd>neuradesk-capteurs.exe</kbd>: this small program reads the temperature and
+    power every second, and stops with NeuraDesk. Nothing stays installed. If you
+    decline, you won't be asked again until the next launch; the <b>Show
+    temperature</b> button asks again. If the PawnIO installation asks you to
+    restart, the temperature only appears afterwards.</div>
+    <div class="note"><b>The values</b> — the temperature is the one the
+    CPU reports to its controller (<i>Tctl</i> on AMD, the package
+    temperature on Intel); the power is that of the whole package, from its
+    energy counter. To remove PawnIO: Settings → Apps →
+    Installed apps.</div>
+
+    <h2 id="polices">Fonts</h2>
+    <p>Each <b>style</b> (Settings → Style) has its own font. If it is missing, Windows
+    replaces it with Segoe UI: nothing breaks, but the style loses its look.</p>
+    <ul>
+      <li><b>Noto Sans</b> — KDE, deepin.<br><span class="adresse">fonts.google.com/noto/specimen/Noto+Sans</span></li>
+      <li><b>Adwaita Sans</b> — GNOME.<br><span class="adresse">gitlab.gnome.org/GNOME/adwaita-fonts (Releases)</span></li>
+      <li><b>Inter</b> — elementary.<br><span class="adresse">rsms.me/inter</span></li>
+      <li><b>Ubuntu</b> — Cinnamon.<br><span class="adresse">fonts.google.com/specimen/Ubuntu</span></li>
+      <li><b>Open Sans</b> — COSMIC.<br><span class="adresse">fonts.google.com/specimen/Open+Sans</span></li>
+      <li><b>Roboto</b> — Android.<br><span class="adresse">fonts.google.com/specimen/Roboto</span></li>
+      <li><b>Segoe UI, Segoe UI Variable, Segoe Fluent Icons, Cambria Math</b> —
+      included with Windows 11, nothing to do.</li>
+    </ul>
+    <div class="note"><b>Installing a font</b> — extract the archive, select
+    the <kbd>.ttf</kbd> or <kbd>.otf</kbd> files, right-click → <b>Install for
+    all users</b>, then reopen Settings: the font list is
+    reloaded every time it opens.</div>
+
+    <h2 id="polices-terminaux">Terminal fonts</h2>
+    <p><b>The terminals need nothing installed.</b> NeuraDesk ships its own
+    terminal font — <b>Nordwand Mono</b>, open-source license — inside the program: four
+    declared weights, loaded on demand by the two pages that draw terminal
+    text: <b>the Terminal</b> and <b>SSH Servers</b>.</p>
+    <ul>
+      <li><b>Nordwand Mono</b> — the one used by the terminals here, if you want it in
+      Windows Terminal or VS Code too.<br><span class="adresse">github.com/tywr/Nordwand-Mono
+      (Releases)</span></li>
+      <li><b>JetBrains Mono</b> — the most complete of the free fonts: boxes, blocks and
+      prompt glyphs.<br><span class="adresse">fonts.google.com/specimen/JetBrains+Mono</span></li>
+      <li><b>Cascadia Code</b> — the Windows Terminal font; "Code" has the prompt
+      glyphs, "Mono" doesn't.<br><span class="adresse">github.com/microsoft/cascadia-code
+      (Releases)</span></li>
+      <li><b>Hack</b> — the only one in this list that <kbd>winget</kbd> knows.<br><span
+      class="adresse">winget install SourceFoundry.HackFonts</span></li>
+      <li><b>DejaVu Sans Mono</b> — near-complete coverage, solid design; it's the one
+      that lends Nordwand what it doesn't draw.<br><span class="adresse">dejavu.org</span></li>
+      <li><b>Fira Mono</b>, <b>Source Code Pro</b>, <b>Roboto Mono</b> — open-source licenses,
+      similar coverage.<br><span class="adresse">fonts.google.com</span></li>
+      <li><b>Consolas</b> and <b>Courier New</b> — included with Windows, nothing to do.</li>
+    </ul>
+    <div class="note"><b>Coverage before looks</b> — a terminal font must
+    draw <b>boxes</b> (<kbd>┏━┛</kbd>), <b>blocks</b> (<kbd>█▓▒░</kbd>) and
+    <b>arrows</b> (<kbd>▲▼</kbd>). Nordwand Mono doesn't cover them: when a full-screen
+    program (htop, lazygit, tmux) or a Powerline prompt outputs them, the page borrows them from
+    the next font in its stack — measured: <b>18% wider than the cell</b>, so the
+    grid stays straight but the stroke changes weight and height. For prompt
+    icons, install a <b>Nerd Font</b>: the same free fonts, patched with the
+    icons.<br><span class="adresse">github.com/ryanoasis/nerd-fonts (Releases)</span></div>
+    <div class="note"><b>It's adjustable</b> — Settings → Style has <b>"Terminal
+    font"</b>: the list of fonts installed on this PC, each written in its own
+    font, a filter field, and a button that restores the default stack. The chosen
+    font is placed <b>in front of</b> the stack — <kbd>Nordwand Mono → DejaVu Sans Mono →
+    Cascadia Mono → Consolas → monospace</kbd> — never in its place: the boxes and blocks
+    of a font that doesn't draw them are still borrowed from the rest. The setting governs
+    <b>both</b> surfaces, and tabs already open follow it without restarting the shell
+    or reconnecting an SSH session.<br><b>Download, then install</b>: a font
+    only enters the list once Windows has registered it (see "Installing a font"
+    above). A font that is set but missing from the PC is no danger — the terminal
+    moves on to the next one in the stack, and Settings says so.<br><b>The bar and
+    panel font</b> is the other setting in the same section: "Font" replaces the style's font
+    across the whole interface — never in the terminals.</div>
+
+    <h2>The four bars</h2>
+    <p>NeuraDesk replaces the taskbar with <b>four bars</b>: top, bottom,
+    left and right. Each one's thickness is set independently in
+    Settings, and each can be hidden.</p>
+    <ul>
+      <li><b>Top</b> — the clock, the reminder bell, the note icon, and the
+      row of widgets.</li>
+      <li><b>Bottom</b> — pinned folders and applications.</li>
+      <li><b>Left and right</b> — the applets: power, sound, network,
+      Voicemeeter, notes, theme, and the others.</li>
+    </ul>
+
+    <h2>Applets: one gesture, two doors</h2>
+    <ul>
+      <li><b>Left-click</b> — opens the applet's panel, or runs its action
+      (shut down, lock, toggle the theme…).</li>
+      <li><b>Right-click</b> — opens a <b>menu</b>: that's where the applet's
+      fine settings and shortcuts live.</li>
+      <li><b>Hover</b> — the icon grows and shows its name.</li>
+    </ul>
+    <div class="note">Panels and menus look different for a reason: a
+    <b>menu</b> anchors below its icon and closes as soon as you click elsewhere;
+    a <b>panel</b> fills the free area between the bars and stays open until
+    you close it.</div>
+
+    <h2>Zones</h2>
+    <p>The icons in the right bar are arranged in <b>zones</b> — named groups,
+    separated by lines. A zone moves as a block, can be renamed, and
+    <b>an icon belongs to its zone</b>: moving the zone moves everything
+    it contains.</p>
+
+    <h2>Menus</h2>
+    <p>A menu opens <b>below its icon</b>, never over a bar: if there isn't
+    enough room, it moves up or shifts sideways rather than covering the interface.</p>
+    <p>If a menu is too big for the screen, it <b>shrinks just enough</b> to
+    fit — rather than being cut off. It's the same principle throughout the
+    app: you never lose content.</p>
+
+    <h2>The Dash</h2>
+    <p>The Dash is the application grid. It is organized in <b>categories</b>, and
+    an application can go in whichever category you like.</p>
+    <ul>
+      <li><b>Pin</b> — drag an icon onto the Dash, or use its menu.</li>
+      <li><b>Unpin</b> — from the icon's menu.</li>
+    </ul>
+
+    <h2>Settings</h2>
+    <p>Almost everything is adjusted from the Settings panel, and much of it
+    <b>per screen</b>: each secondary screen has its own tab, where you set the
+    size of menus, the Dash, the clipboard and each panel.</p>
+    <div class="note"><b>DPI ratio</b> — the app adapts the perceived size to
+    each screen's density, so a menu takes up the same space in your field
+    of view everywhere. This ratio is calculated automatically, but each screen can
+    override it, and a global setting overrides it on all screens at
+    once — handy for checking the effect without changing resolution.</div>
+
+    <h2>Full screen in the central area</h2>
+    <p>With the <b>Place full-screen applications in the central
+    area</b> setting, a game or video that goes full screen is placed between the
+    bars. An application that immediately takes over the whole screen again is left
+    in full screen, and the bars hide.</p>
+    <p>This is the case with <b>browsers</b>: in full-screen video (Twitch,
+    YouTube…), they snap to the whole screen and refuse to be moved. Two
+    solutions:</p>
+    <ul>
+      <li><b>The site's theater mode</b> — on Twitch, <kbd>Alt</kbd>+<kbd>T</kbd>:
+      the video fills the browser window, which stays in the area.</li>
+      <li><b>The Windowed extension</b> — sites' full-screen button fills the
+      window instead of the screen.<br>
+      Chrome, Edge, Brave, Opera, Vivaldi:<br><span
+      class="adresse">chromewebstore.google.com/detail/gibipneadnbflmkebnmcbgjdkngkbklb</span><br>
+      Firefox, LibreWolf, Waterfox, Zen:<br><span
+      class="adresse">addons.mozilla.org/firefox/addon/windowed/</span></li>
+    </ul>
+
+    <h2>Gestures</h2>
+    <ul>
+      <li><b>Drag an icon</b> — moves it within its bar, or from one zone to
+      another. An elastic spacer absorbs the remaining space.</li>
+      <li><b>Right-click an empty space</b> — offers to place a zone or a
+      separator there, or to add an application.</li>
+      <li><b>Right-click a separator</b> — sets its size, columns and
+      lock.</li>
+      <li><b>Right-click a notification area icon</b> — opens the application's
+      <b>real</b> menu, the Windows one.</li>
+    </ul>
+
+  </div>
+
+<script>
+"use strict";
+
+function go(...segments) {
+  location.href = "neuradesk://aide/" + segments.map(encodeURIComponent).join("/");
+}
+
+let derniereDemande = 0;
+function setState(next) {
+  if (!next) return;
+  document.documentElement.style.setProperty("--text-scale", next.contentScale || 1);
+  if (next.demande && next.demande !== derniereDemande) {
+    derniereDemande = next.demande;
+    const cible = next.ancre && document.getElementById(next.ancre);
+    if (cible) cible.scrollIntoView({ block: "start" });
+  }
+}
+
+window.setState = setState;
+
+// ⭐ **« ME VOICI PRÊTE » — ET C'EST CE QUI MANQUAIT POUR L'ANCRE.**
+// `cef_aide::push_state` envoie `if (window.setState) window.setState(…)`, un
+// garde qui rend l'appel INERTE tant que cette ligne-ci n'a pas tourné (le
+// script est la dernière chose de la page, la page met ~20 s à l'atteindre).
+// Le cache `PAYLOAD` de Rust marquait pourtant l'état comme poussé, donc il ne
+// repartait JAMAIS : « Voir l'aide » depuis les Réglages ouvrait la page en
+// haut, et la section demandée restait sous la vue (`derniereDemande` restait
+// à 0, mesuré le 2026-10-28). Le signal ci-dessous vide ce cache côté Rust
+// (bras `["ready"]` de `dispatch_actions`), et le repoussage suit.
+// C'est la convention des quinze autres pages ; l'aide était la seule à ne pas
+// l'envoyer.
+go("ready");
+</script>
+</body>
+</html>

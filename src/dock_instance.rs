@@ -301,7 +301,8 @@ impl DockInstance {
         self.clock.sync(device, clock_text, topbar::clock_font_px(&self.layout, text_size), topbar::CLOCK_FONT_NAME, true)?;
         self.sys_monitor.sync(device, sys_monitor_text, topbar::sys_monitor_font_px(&self.layout, text_size), topbar::SYS_MONITOR_FONT_NAME, false)?;
         self.refresh_rate.sync(device, refresh_rate_text, topbar::refresh_rate_font_px(&self.layout, text_size), topbar::REFRESH_RATE_FONT_NAME, false)?;
-        self.media_title.sync(device, media_title_text, topbar::media_title_font_px(&self.layout, text_size), topbar::MEDIA_TITLE_FONT_NAME, false)?;
+        // Le titre d'une VIDÉO ou d'un morceau : jamais traduit (voir `ui::langue`).
+        crate::ui::langue::sans_traduction(|| self.media_title.sync(device, media_title_text, topbar::media_title_font_px(&self.layout, text_size), topbar::MEDIA_TITLE_FONT_NAME, false))?;
         self.verrous.sync(device, &self.layout, text_size)?;
         self.debit.sync(device, &self.layout, text_size)?;
         // La taille de pastille est celle de CET écran (voir

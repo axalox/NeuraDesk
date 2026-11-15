@@ -329,6 +329,7 @@
     const titre = document.createElement("div");
     titre.className = "titre";
     titre.textContent = f.titre || f.exe;
+    titre.setAttribute("data-no-i18n", ""); // contenu : jamais traduit (assets/i18n/pages.js)
     const exe = document.createElement("div");
     exe.className = "exe";
     exe.textContent = f.exe;

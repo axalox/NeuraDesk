@@ -3320,7 +3320,7 @@ fn create_window(spec: &PopupSpec, gfx: &GfxDevice, rect @ [x, y, w, h]: [i32; 4
             }
         };
 
-        let Some(html_path) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|d| d.join("assets/popups").join(spec.html_file))) else {
+        let Some(html_path) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|d| crate::ui::langue::page_traduite(&d.join("assets/popups").join(spec.html_file)))) else {
             crate::diag!("[cef] le chemin de {} n'a pas pu etre resolu", spec.html_file);
             return None;
         };

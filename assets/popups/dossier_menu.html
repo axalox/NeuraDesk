@@ -280,6 +280,8 @@
       appliedOpen = next.open;
       titre.textContent = next.titre || "";
       cheminAffiche.textContent = next.chemin || "";
+      titre.setAttribute("data-no-i18n", ""); // contenu : jamais traduit (assets/i18n/pages.js)
+      cheminAffiche.setAttribute("data-no-i18n", ""); // contenu : jamais traduit (assets/i18n/pages.js)
       // Le champ reçoit le nom AFFICHÉ — celui que l'utilisateur a donné s'il
       // y en a un, sinon celui du dossier (voir `nom_affiche`, côté Rust).
       nom.value = next.nom || "";

@@ -463,6 +463,9 @@
     JOURS_COURTS.forEach((lettre, i) => {
       conteneur.appendChild(el("button", {
         class: "jour-btn" + (brouillon.jours & (1 << i) ? " actif" : ""),
+        // Une lettre seule est ambiguë (M = mardi ou mercredi) : le RANG la
+        // désigne au traducteur (voir `assets/i18n/pages.js`).
+        "data-i18n-ctx": "jour-" + i,
         title: JOURS_LONGS[i],
         onclick: () => { brouillon.jours ^= 1 << i; rendreJoursBrouillon(); },
       }, [lettre]));

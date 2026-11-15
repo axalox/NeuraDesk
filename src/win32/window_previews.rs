@@ -620,7 +620,8 @@ impl PreviewPanel {
             if self.titles.iter().any(|(t, px, ..)| t == text && *px == font_px) {
                 continue;
             }
-            let (texture, w, h) = text::render_text(&gfx.device, text, font_px, &crate::ui::style::police(), false)?;
+            // Le titre d'une FENÊTRE : jamais traduit (voir `ui::langue`).
+            let (texture, w, h) = crate::ui::langue::sans_traduction(|| text::render_text(&gfx.device, text, font_px, &crate::ui::style::police(), false))?;
             self.titles.push((text.clone(), font_px, texture, w as f32, h as f32));
         }
 
