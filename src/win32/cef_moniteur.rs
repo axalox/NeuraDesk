@@ -152,6 +152,45 @@ fn series_json(series: &[Serie], plage: Plage, points: &[moniteur_systeme::Point
     serde_json::Value::Object(series)
 }
 
+/// La température et la puissance du processeur : `etat` dit au panneau quoi
+/// montrer (`mesure`, `attente`, `aActiver` = le bouton d'invite,
+/// `indisponible` = pas de PawnIO : le bouton qui l'installe).
+fn capteurs_cpu_json(e: crate::win32::capteurs_cpu::Etat) -> serde_json::Value {
+    use crate::win32::capteurs_cpu::Etat;
+    // En f64 : un f32 arrondi au dixième s'écrirait 54.099998 dans le JSON.
+    let un = |v: Option<f32>| v.map(|v| (f64::from(v) * 10.0).round() / 10.0);
+    match e {
+        Etat::Mesure { temperature_c, puissance_w } => {
+            json!({ "etat": "mesure", "temperature": un(temperature_c), "puissance": un(puissance_w) })
+        }
+        Etat::Attente => json!({ "etat": "attente" }),
+        Etat::AActiver => json!({ "etat": "aActiver" }),
+        Etat::Indisponible => json!({
+            "etat": "indisponible",
+            "installationLancee": crate::win32::capteurs_cpu::installation_lancee(),
+        }),
+    }
+}
+
+/// Les capteurs et les tâches d'une carte graphique (voir `moniteur_gpu`) ;
+/// une mesure absente vaut `null`.
+fn gpu_json(c: &crate::win32::moniteur_gpu::Capteurs, taches: &[crate::win32::moniteur_gpu::TacheGpu]) -> serde_json::Value {
+    let un = |v: Option<f32>| v.map(|v| (v * 10.0).round() / 10.0);
+    json!({
+        "temperature": un(c.temperature_c),
+        "frequence": c.frequence_mhz.map(f32::round),
+        "frequenceMax": c.frequence_max_mhz.map(f32::round),
+        "frequenceMemoire": c.frequence_memoire_mhz.map(f32::round),
+        "puissance": un(c.puissance_w),
+        "puissancePct": un(c.puissance_pct),
+        "puissancePuce": c.puissance_puce,
+        "ventilateurTrMin": c.ventilateur_tr_min,
+        "ventilateurPct": c.ventilateur_pct,
+        "sources": c.sources,
+        "taches": taches.iter().map(|t| json!({ "nom": t.nom, "instances": t.instances, "gpu": un(Some(t.gpu)), "memoire": t.memoire })).collect::<Vec<_>>(),
+    })
+}
+
 /// L'état envoyé à la page. `fin_s` est la fin (exclue) de la plage.
 fn etat_json(m: &Moniteur, fin_s: u32) -> serde_json::Value {
     let plage = m.plage();
@@ -167,6 +206,7 @@ fn etat_json(m: &Moniteur, fin_s: u32) -> serde_json::Value {
                 "precision": a.info.precision,
                 "memoireTotale": a.info.memoire_totale,
                 "series": series_json(a.info.sorte.series(), plage, &a.historique.points(plage, fin_s), &a.historique.actuel()),
+                "gpu": m.detail.gpus.iter().find(|(cle, ..)| *cle == a.info.cle).map(|(_, c, taches)| gpu_json(c, taches)),
             })
         })
         .collect();
@@ -177,6 +217,12 @@ fn etat_json(m: &Moniteur, fin_s: u32) -> serde_json::Value {
         "series": series_json(&Serie::TOUTES, plage, &m.points(fin_s), &m.actuel()),
         "appareils": appareils,
         "coeurs": m.detail.coeurs.iter().map(|&c| arrondi(Serie::Cpu, c)).collect::<Vec<_>>(),
+        "capteursCpu": capteurs_cpu_json(m.detail.capteurs_cpu),
+        "frequenceCpu": m.detail.frequence_cpu.map(|f| json!({
+            "moyenne": f.moyenne_mhz.round(),
+            "maxCoeur": f.max_coeur_mhz.round(),
+            "base": f.base_mhz.round(),
+        })),
         "ramUtilisee": m.detail.ram_utilisee,
         "ramTotale": m.detail.ram_totale,
         "taches": m.detail.taches.iter().map(|t| json!({ "nom": t.nom, "instances": t.instances, "cpu": arrondi(Serie::Cpu, t.cpu) })).collect::<Vec<_>>(),
@@ -211,6 +257,15 @@ pub fn dispatch_actions() {
                 None => crate::diag!("[moniteur] plage inconnue : {nom:?}"),
             },
             ["couleur", serie, couleur] => choisir_couleur(serie, couleur),
+            ["capteurs-cpu"] => crate::win32::capteurs_cpu::activer(),
+            // Sans winget, l'aide dit comment l'installer à la main.
+            ["installer-pawnio"] => {
+                if let Err(e) = crate::win32::capteurs_cpu::installer_pawnio() {
+                    crate::diag!("[moniteur] {e}");
+                    crate::win32::cef_aide::demander("pawnio");
+                }
+            }
+            ["aide-pawnio"] => crate::win32::cef_aide::demander("pawnio"),
             _ => crate::diag!("[moniteur] action inconnue : {action:?}"),
         }
     }
@@ -233,6 +288,17 @@ pub fn render_if_visible(rect: [i32; 4], tint_rgba: [f32; 4], accent_rgb: [f32; 
 /// DEUX listes à tenir (`NEURADESK_DEBUG_OPEN=moniteur`).
 pub fn debug_dump_backbuffer(path: &std::path::Path) -> bool {
     cef_popup::debug_dump_backbuffer(&SLOT, path)
+}
+
+/// **LEVIER DE VÉRIFICATION** — `NEURADESK_DEBUG_DEFILER=<y>` (lu dans
+/// `app::run`), comme `cef_calendar_applet::debug_defiler` : sans lui les
+/// cartes graphiques, sous le processeur, la mémoire et les disques, ne
+/// sont jamais dans une capture. Une position ABSOLUE, donc répétable à
+/// chaque frame (`execute_js` ne fait rien tant que la page n'a pas d'état).
+pub fn debug_defiler(y: f64) {
+    if cef_popup::is_visible(&SLOT) {
+        cef_popup::execute_js(&SLOT, &format!("document.body.scrollTop = {y}; window.scrollTo(0, {y})"));
+    }
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -357,6 +423,46 @@ mod tests {
         for champ in ["state.appareils", "a.memoireTotale", "a.precision", "a.series", "gpuMemoire", "memoirePct"] {
             assert!(PAGE.contains(champ), "la page ne lit pas `{champ}`");
         }
+    }
+
+    /// Écrit l'état de la page pour chaque cas des capteurs du processeur
+    /// (`NEURADESK_ETATS_CPU=<dossier>`) — de quoi la photographier sans CEF
+    /// (Edge headless), et SANS déclencher l'invite UAC du vrai panneau.
+    #[test]
+    #[ignore = "outil : écrit des états de page"]
+    fn ecrit_les_etats_des_capteurs_cpu() {
+        use crate::win32::capteurs_cpu::Etat;
+        let dossier = std::env::var("NEURADESK_ETATS_CPU").expect("NEURADESK_ETATS_CPU");
+        for (nom, e) in [
+            ("mesure", Etat::Mesure { temperature_c: Some(54.1), puissance_w: Some(71.4) }),
+            ("attente", Etat::Attente),
+            ("a-activer", Etat::AActiver),
+            ("indisponible", Etat::Indisponible),
+        ] {
+            let mut m = Moniteur::default();
+            m.detail.capteurs_cpu = e;
+            m.detail.coeurs = vec![12.0, 30.0, 5.0, 8.0];
+            m.detail.frequence_cpu =
+                Some(moniteur_systeme::FrequenceCpu { moyenne_mhz: 5410.0, max_coeur_mhz: 5423.0, base_mhz: 4700.0 });
+            std::fs::write(format!("{dossier}/{nom}.json"), etat_json(&m, 100_000).to_string()).unwrap();
+        }
+    }
+
+    #[test]
+    fn sans_pawnio_le_panneau_propose_de_l_installer_et_l_aide_en_parle() {
+        use crate::win32::capteurs_cpu::Etat;
+        let j = capteurs_cpu_json(Etat::Indisponible);
+        assert_eq!(j["etat"], "indisponible");
+        assert!(j["installationLancee"].is_boolean());
+        let j = capteurs_cpu_json(Etat::Mesure { temperature_c: Some(54.13), puissance_w: None });
+        assert_eq!(j["temperature"].as_f64(), Some(54.1));
+        assert!(j["puissance"].is_null());
+        for champ in ["c.installationLancee", "\"installer-pawnio\"", "\"aide-pawnio\"", "\"capteurs-cpu\"", "c.temperature", "c.puissance"] {
+            assert!(PAGE.contains(champ), "la page lit {champ}");
+        }
+        let aide = include_str!("../../assets/popups/aide.html");
+        assert!(aide.contains(r#"<h2 id="pawnio">"#), "la section que le verbe ouvre existe");
+        assert!(aide.contains(crate::win32::capteurs_cpu::ARGUMENTS_WINGET.split("--id ").nth(1).unwrap().split(' ').next().unwrap()));
     }
 
     #[test]

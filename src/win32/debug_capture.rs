@@ -146,7 +146,8 @@
 //! - `NEURADESK_DEBUG_MAINTIEN=1` : **maintient le dash dossier OUVERT** dès le
 //!   départ (la punaise de sa barre du haut, voir `win32::cef_sous_dock`).
 //!   ⛔ **SANS LUI, CE PANNEAU NE SE CAPTURE PAS** : il se referme tout seul dès
-//!   que le curseur réel n'est plus dessus (grâce de `PREVIEW_HIDE_GRACE`), donc
+//!   qu'il perd le premier plan (`hide_if_focus_elsewhere`, depuis qu'il s'ouvre
+//!   au clic — 2026-11-14 ; avant, quand le curseur le quittait), donc
 //!   la capture ne montre que le dernier rendu avant fermeture — et une campagne
 //!   peut contredire la précédente sans que rien ne l'explique. C'est ce levier
 //!   qui rend ce panneau enfin vérifiable, sans simuler la moindre entrée.

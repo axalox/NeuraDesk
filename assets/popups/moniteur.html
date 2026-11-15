@@ -8,9 +8,21 @@
     { plage: "5min"|"1h"|"24h"|"7j", debutS, pasS,
       series: { <nom>: { actuel: n|null, moy: [n|null], max: [n|null] | null } },
       coeurs: [%], ramUtilisee, ramTotale,
+      capteursCpu: { etat: "mesure"|"attente"|"aActiver"|"indisponible",
+                     temperature, puissance, installationLancee } (voir
+                     `win32::capteurs_cpu` ; « indisponible » = pas de PawnIO, le
+                     panneau propose de l'installer),
+      frequenceCpu: null | { moyenne, maxCoeur, base } (MHz, voir
+                    `moniteur_systeme::frequences_du_processeur` — ni température
+                    ni puissance : Windows n'en publie pas sans pilote),
       taches: [{ nom, instances, cpu: % de la machine }],
       appareils: [{ cle, sorte: "disque"|"gpu", nom, precision, memoireTotale,
-                    series: { <nom>: comme ci-dessus } }], contentScale,
+                    series: { <nom>: comme ci-dessus },
+                    gpu: null | { temperature, frequence, frequenceMax, frequenceMemoire,
+                                  puissance, puissancePct, puissancePuce,
+                                  ventilateurTrMin, ventilateurPct, sources: [..],
+                                  taches: [{ nom, instances, gpu: %, memoire: octets }] } }],
+      contentScale,
       couleurs: { <nom de série>: "#rrggbb" } }
 
   `couleurs` : les couleurs CHOISIES des courbes (`go("couleur", nom, hex)`,
@@ -21,6 +33,10 @@
   `win32::moniteur_peripheriques`) — un disque porte disque, lecture et
   ecriture ; une carte gpu et gpuMemoire (en octets, rapportés ici à
   memoireTotale). Ils REMPLACENT les cartes des totaux disque et GPU.
+
+  `gpu` d'une carte graphique (voir `win32::moniteur_gpu`, demande 2026-11-14) :
+  ses capteurs (null = non mesuré par cette carte) et les tâches qui l'utilisent
+  le plus — panneau ouvert seulement, null au premier état.
 
   `taches` : les plus gourmandes en processeur, regroupées par exécutable,
   relevées panneau ouvert seulement (voir `win32::moniteur_taches`) — vide au
@@ -101,6 +117,15 @@
   #taches .piste { height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.2); }
   #taches .piste div { height: 100%; border-radius: 3px; background: var(--courbe); }
   #taches .cpu { text-align: right; font-variant-numeric: tabular-nums; }
+  /* Les tâches d'une carte graphique : une colonne de plus, la mémoire dédiée. */
+  .taches-gpu { margin-top: 6px; display: grid; grid-template-columns: minmax(0, 1fr) 3fr auto auto; gap: 3px 8px; align-items: center; font-size: 12px; }
+  .taches-gpu .nom { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .taches-gpu .nb, .taches-gpu .mem { opacity: calc(.6 * max(1, var(--popup-alpha, 1))); }
+  .taches-gpu .piste { height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.2); }
+  .taches-gpu .piste div { height: 100%; border-radius: 3px; background: var(--courbe); }
+  .taches-gpu .cpu, .taches-gpu .mem { text-align: right; font-variant-numeric: tabular-nums; }
+  .capteurs-gpu { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; margin-top: 2px; }
+  .capteurs-gpu b { font-weight: 600; font-variant-numeric: tabular-nums; }
   /* LA COULEUR D'UNE COURBE : la pastille ouvre la palette sous l'en-tête. */
   .carte { --courbe: rgb(var(--popup-accent-solid-rgb)); }
   button.teinte-courbe {
@@ -224,7 +249,48 @@
       series.push(["memoirePct", "Mémoire"]);
     }
     const detail = memoire.actuel === null ? "" : `Mémoire dédiée : ${octets(memoire.actuel)}${total > 0 ? " sur " + octets(total) : ""}`;
-    return { id: "a:" + a.cle, titre: a.nom, detail, source, series, format: pourcent, pourcent: true };
+    return { id: "a:" + a.cle, titre: a.nom, detail, source, series, format: pourcent, pourcent: true, gpu: a.gpu || null };
+  }
+
+  // --- LES CAPTEURS ET LES TÂCHES D'UNE CARTE GRAPHIQUE (voir `win32::moniteur_gpu`) ---
+  function nombre(v) { return Math.round(v).toLocaleString("fr-FR"); }
+  function capteursGpu(g) {
+    const morceaux = [];
+    const ajouter = (libelle, valeur, titre) => morceaux.push(el("span", titre ? { title: titre } : {}, [libelle + " ", el("b", {}, [valeur])]));
+    if (g.temperature !== null) ajouter("Température", `${g.temperature.toFixed(0)} °C`);
+    if (g.frequence !== null) {
+      ajouter("Fréquence", `${nombre(g.frequence)} MHz`, g.frequenceMax !== null ? `Maximum : ${nombre(g.frequenceMax)} MHz` : "");
+    }
+    if (g.frequenceMemoire !== null) ajouter("Mémoire", `${nombre(g.frequenceMemoire)} MHz`);
+    if (g.puissance !== null) {
+      const pct = g.puissancePct !== null ? ` (${pourcent(g.puissancePct)})` : "";
+      ajouter(g.puissancePuce ? "Puissance de la puce" : "Puissance", `${g.puissance.toFixed(g.puissance >= 100 ? 0 : 1)} W${pct}`,
+        g.puissancePuce ? "La puce graphique seule (ASIC, rapportée par le pilote AMD), pas la carte entière" : "");
+    } else if (g.puissancePct !== null) {
+      ajouter("Puissance", pourcent(g.puissancePct), "Du maximum de la carte");
+    }
+    if (g.ventilateurTrMin !== null || g.ventilateurPct !== null) {
+      const parts = [];
+      if (g.ventilateurTrMin !== null) parts.push(`${nombre(g.ventilateurTrMin)} tr/min`);
+      if (g.ventilateurPct !== null) parts.push(`${g.ventilateurPct} %`);
+      ajouter("Ventilateur", parts.join(" · "));
+    }
+    if (!morceaux.length) return null;
+    return el("div", { class: "capteurs-gpu", title: `Source : ${(g.sources || []).join(", ")}` }, morceaux);
+  }
+  function tachesGpu(g) {
+    if (!g.taches || !g.taches.length) return null;
+    const plus = Math.max(...g.taches.map((t) => t.gpu || 0), 0.1);
+    const liste = el("div", { class: "taches-gpu", title: "Les tâches qui utilisent le plus cette carte, regroupées par programme (activité, mémoire dédiée)" });
+    for (const t of g.taches) {
+      liste.append(
+        el("span", { class: "nom", title: t.nom }, [t.nom, ...(t.instances > 1 ? [el("span", { class: "nb" }, [` ×${t.instances}`])] : [])]),
+        el("div", { class: "piste" }, [el("div", { style: `width: ${(100 * (t.gpu || 0)) / plus}%` })]),
+        el("span", { class: "cpu" }, [pourcent(t.gpu)]),
+        el("span", { class: "mem" }, [t.memoire > 0 ? octets(t.memoire) : ""])
+      );
+    }
+    return liste;
   }
 
   // Le processeur et la mémoire, les disques, le réseau, les cartes graphiques.
@@ -411,6 +477,48 @@
       if (carte.ram && state.ramTotale > 0) {
         enfants.push(el("div", { class: "detail" }, [`${octets(state.ramUtilisee)} sur ${octets(state.ramTotale)}`]));
       }
+      if (carte.coeurs && (state.frequenceCpu || state.capteursCpu)) {
+        const ligne = [];
+        // Température et puissance : lues par `neuradesk-capteurs.exe`
+        // (PawnIO, une invite administrateur par session — voir
+        // `win32::capteurs_cpu`).
+        const c = state.capteursCpu || { etat: "indisponible" };
+        if (c.etat === "mesure") {
+          if (c.temperature !== null) {
+            ligne.push(el("span", { title: "Tctl, lue dans le processeur (PawnIO)" }, ["Température ", el("b", {}, [`${c.temperature.toFixed(0)} °C`])]));
+          }
+          if (c.puissance !== null) {
+            ligne.push(el("span", { title: "Le boîtier entier, d'après son compteur d'énergie (PawnIO)" }, ["Puissance ", el("b", {}, [`${c.puissance.toFixed(c.puissance >= 100 ? 0 : 1)} W`])]));
+          }
+        } else if (c.etat === "attente") {
+          ligne.push(el("span", { title: "En attente de l'invite administrateur" }, ["Température ", el("b", {}, ["…"])]));
+        } else if (c.etat === "aActiver") {
+          ligne.push(el("button", {
+            class: "capteurs-cpu",
+            title: "La température et la puissance demandent une invite administrateur, une fois par session",
+            onclick: () => go("capteurs-cpu"),
+          }, ["Afficher la température"]));
+        } else if (c.etat === "indisponible") {
+          // Pas de PawnIO : le proposer (voir l'aide, section « pawnio »).
+          ligne.push(c.installationLancee
+            ? el("span", { title: "Une fois PawnIO installé, la température apparaît ici" }, ["Installation de PawnIO en cours…"])
+            : el("button", {
+                class: "capteurs-cpu",
+                title: "La température et la puissance du processeur demandent le pilote PawnIO (gratuit)",
+                onclick: () => go("installer-pawnio"),
+              }, ["Installer PawnIO pour la température"]));
+          ligne.push(el("button", { class: "capteurs-cpu", title: "Ce que fait PawnIO, et comment l'installer à la main", onclick: () => go("aide-pawnio") }, ["?"]));
+        }
+        const f = state.frequenceCpu;
+        if (f) {
+          ligne.push(
+            el("span", { title: "Fréquence réelle, d'après Windows" }, ["Fréquence ", el("b", {}, [`${nombre(f.moyenne)} MHz`])]),
+            el("span", { title: "Le cœur le plus rapide à l'instant" }, ["Cœur le plus rapide ", el("b", {}, [`${nombre(f.maxCoeur)} MHz`])]),
+            el("span", {}, ["Base ", el("b", {}, [`${nombre(f.base)} MHz`])]),
+          );
+        }
+        if (ligne.length) enfants.push(el("div", { class: "capteurs-gpu" }, ligne));
+      }
       if (carte.coeurs && state.coeurs.length) {
         const barres = el("div", { id: "coeurs", title: `${state.coeurs.length} processeurs logiques` });
         state.coeurs.forEach((c, i) => {
@@ -418,7 +526,15 @@
         });
         enfants.push(barres);
       }
+      if (carte.gpu) {
+        const capteurs = capteursGpu(carte.gpu);
+        if (capteurs) enfants.push(capteurs);
+      }
       enfants.push(graphe(carte, lecture), lecture);
+      if (carte.gpu) {
+        const liste = tachesGpu(carte.gpu);
+        if (liste) enfants.push(liste);
+      }
       if (carte.coeurs && state.taches && state.taches.length) {
         const plus = Math.max(...state.taches.map((t) => t.cpu || 0), 0.1);
         const liste = el("div", { id: "taches", title: "Les tâches qui consomment le plus de processeur, regroupées par programme" });

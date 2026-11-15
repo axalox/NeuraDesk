@@ -224,6 +224,27 @@
     font-size: calc(13px * var(--text-scale));
     opacity: calc(0.85 * max(1, var(--popup-alpha)));
   }
+  /* ⭐ LA RECHERCHE (demande 2026-11-14) : un champ dans la barre du haut, qui
+     filtre l'historique sur le TEXTE des entrées (casse et accents ignorés). */
+  .topbar input[type="search"] {
+    flex: 1;
+    max-width: 320px;
+    margin: 0 16px;
+    background: rgba(var(--popup-accent-rgb), calc(0.22 * var(--popup-fond-alpha, 1)));
+    color: rgba(var(--popup-fg-rgb), min(1, var(--popup-alpha)));
+    border: none;
+    border-radius: var(--nd-rayon-controle);
+    padding: 7px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    box-sizing: border-box;
+  }
+  .row mark {
+    background: rgba(var(--popup-accent-rgb), calc(0.65 * var(--popup-fond-alpha, 1)));
+    color: inherit;
+    border-radius: 3px;
+  }
   .empty {
     padding: 16px;
     opacity: calc(0.7 * max(1, var(--popup-alpha)));
@@ -333,6 +354,7 @@
   <div class="root">
     <div class="topbar">
       <h1>Presse-papiers</h1>
+      <input type="search" id="recherche" placeholder="Rechercher dans l'historique" autocomplete="off" spellcheck="false">
       <span style="flex: 1"></span>
       <button class="close-btn" id="bouton-mdp" onclick="basculerMotDePasse()" title="Générer un mot de passe">Mot de passe</button>
       <button class="close-btn" onclick="go('close')" title="Fermer"><span class="ico ico-x"></span></button>
@@ -431,6 +453,62 @@
       renderPreview();
     }
 
+    // ---- LA RECHERCHE (demande 2026-11-14) ----
+    // Casse et accents ignorés : « ete » trouve « Été ». `normaliser` rend aussi,
+    // pour chaque caractère normalisé, sa position dans le texte d'ORIGINE —
+    // c'est elle qui place le surlignage, la décomposition NFD changeant les
+    // longueurs. Les images n'ont pas de texte : elles sortent de la liste
+    // tant qu'une recherche est tapée.
+    let recherche = "";
+    const EXTRAIT_AVANT = 40;
+
+    function normaliser(texte) {
+      let plat = "";
+      const origine = [];
+      let i = 0;
+      for (const car of texte) {
+        const n = car.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+        for (let k = 0; k < n.length; k++) { plat += n[k]; origine.push(i); }
+        i += car.length;
+      }
+      origine.push(i);
+      return { plat, origine };
+    }
+
+    function rechercheActive() {
+      return normaliser(recherche.trim()).plat;
+    }
+
+    // Position [début, fin) de la première occurrence dans `texte`, ou null.
+    function trouver(texte, cherche) {
+      const { plat, origine } = normaliser(texte);
+      const at = plat.indexOf(cherche);
+      if (at < 0) return null;
+      return [origine[at], origine[at + cherche.length]];
+    }
+
+    function entreesVisibles() {
+      const cherche = rechercheActive();
+      if (!cherche) return entries;
+      return entries.filter((e) => e.kind === "text" && trouver(e.text, cherche));
+    }
+
+    // La rangée d'un texte trouvé : un EXTRAIT qui commence peu avant
+    // l'occurrence (la rangée ne montre que quelques lignes ; une occurrence
+    // au milieu d'un long texte serait sinon invisible), occurrence surlignée.
+    function texteDeRangee(entry, cherche) {
+      const div = el("div", { class: "preview-text" });
+      const pos = cherche ? trouver(entry.text, cherche) : null;
+      if (!pos) { div.textContent = entry.text; return div; }
+      const [debut, fin] = pos;
+      const depart = Math.max(0, debut - EXTRAIT_AVANT);
+      if (depart > 0) div.appendChild(document.createTextNode("…"));
+      div.appendChild(document.createTextNode(entry.text.slice(depart, debut)));
+      div.appendChild(el("mark", {}, [entry.text.slice(debut, fin)]));
+      div.appendChild(document.createTextNode(entry.text.slice(fin)));
+      return div;
+    }
+
     function renderList() {
       const list = document.getElementById("list");
       list.replaceChildren();
@@ -439,17 +517,57 @@
         list.appendChild(el("div", { class: "empty" }, ["Presse-papiers vide"]));
         return;
       }
-      for (const entry of entries) {
+      const cherche = rechercheActive();
+      const visibles = entreesVisibles();
+      if (visibles.length === 0) {
+        list.appendChild(el("div", { class: "empty" }, ["Aucune entrée ne contient ce texte"]));
+        return;
+      }
+      for (const entry of visibles) {
         const row = el("div", { class: "row" + (entry.index === selected ? " selected" : ""), onclick: () => select(entry.index) });
         if (entry.kind === "image") {
           row.appendChild(el("img", { src: entry.thumbDataUri || "" }));
           row.appendChild(el("div", { class: "img-label" }, [`Image ${entry.width}×${entry.height}`]));
         } else {
-          row.appendChild(el("div", { class: "preview-text" }, [entry.text]));
+          row.appendChild(texteDeRangee(entry, cherche));
         }
         list.appendChild(row);
       }
     }
+
+    // La sélection suit le filtre : si l'entrée choisie n'est plus dans la
+    // liste, la première trouvée la remplace (l'aperçu montre ce que la liste
+    // désigne, jamais une entrée cachée).
+    function appliquerRecherche() {
+      const visibles = entreesVisibles();
+      if (visibles.length > 0 && !visibles.some((e) => e.index === selected)) {
+        select(visibles[0].index);
+        return;
+      }
+      renderList();
+      renderPreview();
+    }
+
+    (function brancherRecherche() {
+      const champ = document.getElementById("recherche");
+      champ.addEventListener("input", () => {
+        recherche = champ.value;
+        appliquerRecherche();
+      });
+      // Échap vide le champ d'abord ; un second Échap suit son chemin habituel.
+      champ.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && champ.value) {
+          e.preventDefault();
+          e.stopPropagation();
+          champ.value = "";
+          recherche = "";
+          appliquerRecherche();
+        } else if (e.key === "Enter") {
+          const premiere = entreesVisibles()[0];
+          if (premiere) select(premiere.index);
+        }
+      });
+    })();
 
     // ---- LE ZOOM DE L'IMAGE (molette) ----
     // DEMANDE (2026-10-24) : « zoomer sur les images de la zone de visualisation
@@ -611,7 +729,7 @@
         renderMotDePasse(preview);
         return;
       }
-      const entry = entries.find((e) => e.index === selected);
+      const entry = entreesVisibles().find((e) => e.index === selected);
       if (!entry) {
         preview.appendChild(el("div", { class: "no-selection" }, ["Aucune entrée sélectionnée"]));
         return;

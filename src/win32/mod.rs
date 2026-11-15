@@ -165,6 +165,11 @@ pub mod surveillance;
 pub mod moniteur_systeme;
 /// Les tâches qui consomment le plus de processeur (voir `cef_moniteur`).
 pub mod moniteur_taches;
+pub mod moniteur_gpu;
+// Le décodage des registres y sert au SEUL `neuradesk-capteurs.exe`, qui
+// inclut le même fichier : inutilisé ici, testé ici.
+#[allow(dead_code)]
+pub mod capteurs_cpu;
 /// Un graphique par disque et par carte graphique (voir `cef_moniteur`).
 pub mod moniteur_peripheriques;
 /// Le DASH du moniteur système.

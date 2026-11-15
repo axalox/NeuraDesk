@@ -87,12 +87,18 @@ dépôt, ni dans l'exe, ni dans l'archive : si la police est absente, le thème 
 
 ### Personnages de la mascotte — page-mascot
 
-Les 57 planches de `assets/popups/mascottes/` (52 personnages et 5 styles du renard),
+Les 64 personnages de `assets/popups/mascottes/` (52 du site, 5 styles du renard et 7 autres du dossier `characters/`),
 leurs vignettes et l'icône `mascotte.png` (dans les quatre jeux d'icônes) sont tirées
 de **page-mascot**, © 2026 Kamran Ahmed (`github.com/nilbuild/page-mascot`), sous
 licence **MIT** — texte intégral joint sous `assets/popups/mascottes/LICENSE-page-mascot.txt`.
 Les planches ont été réduites de 1080 à 768 px ; le comportement (regard en huit
 secteurs, réactions au clic) est porté depuis son `src/mascot.tsx`.
+
+
+Les sept personnages `nd-*` du même dossier (mouche, grenouille, girafe, dragon,
+papillon, femme rousse, jeune femme aux cheveux roses) ne viennent pas de page-mascot :
+ils sont dessinés en vecteurs par `tools/mascottes_dessinees.py`, et couverts par la
+GPLv3 comme le reste du programme.
 
 ---
 
@@ -162,6 +168,19 @@ remplacer par une autre version compatible.
 <https://gstreamer.freedesktop.org/src/> et
 <https://gitlab.freedesktop.org/gstreamer/cerbero> (recette de la distribution),
 pour la version livrée (`gst-launch-1.0 --version`).
+
+### Modules PawnIO
+
+`neuradesk-capteurs.exe` (température et puissance du processeur, moniteur
+système) embarque deux modules **non modifiés** de **PawnIO.Modules 0.2.11**
+(<https://github.com/namazso/PawnIO.Modules>) : `AMDFamily17.bin` et
+`IntelMSR.bin`, sous **LGPL-2.1** ; texte joint : `vendor/pawnio/COPYING`.
+Le pilote **PawnIO** lui-même (GPL-2, <https://pawnio.eu>) n'est pas livré :
+il s'installe à part, et sans lui la température du processeur n'est
+simplement pas affichée.
+
+**Offre de source :** le code source des modules est celui de la version
+0.2.11 du dépôt ci-dessus (`AMDFamily17.p`, `IntelMSR.p`).
 
 ### Runtime Visual C++
 

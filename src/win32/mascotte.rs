@@ -62,7 +62,9 @@ const fn p(nom: &'static str, libelle: &'static str, famille: &'static str) -> P
 
 /// **LES 52 PERSONNAGES** de page-mascot (sa liste `reference/characters.md`
 /// plus la souris de `site/mascots.ts` ; le portrait de l'auteur n'en fait pas
-/// partie), puis le renard dans ses cinq autres styles de dessin.
+/// partie), puis le renard dans ses cinq autres styles de dessin — et les SEPT
+/// du dossier `characters/` que le site ne montre pas (2026-11-14) : 64 en
+/// tout, toujours sans le portrait.
 pub const PERSONNAGES: &[Personnage] = &[
     p("bear", "Ours", "Animaux"),
     p("bunny", "Lapin", "Animaux"),
@@ -111,6 +113,8 @@ pub const PERSONNAGES: &[Personnage] = &[
     p("knight", "Chevalier", "Robots et objets"),
     p("lantern", "Lanterne", "Robots et objets"),
     p("postbot", "Robot postier", "Robots et objets"),
+    p("robot", "Robot", "Robots et objets"),
+    p("droid", "Droïde", "Robots et objets"),
     p("radio", "Radio", "Robots et objets"),
     p("rocket", "Fusée", "Robots et objets"),
     p("scout", "Éclaireur", "Robots et objets"),
@@ -121,6 +125,22 @@ pub const PERSONNAGES: &[Personnage] = &[
     p("fox-riso", "Renard en risographie", "Styles du renard"),
     p("fox-paper", "Renard en papier découpé", "Styles du renard"),
     p("fox-pixel", "Renard en pixels", "Styles du renard"),
+    // Les sept du dépôt absents du site (ajoutés le 2026-11-14) : `robot` et
+    // `droid` ci-dessus, et cinq personnages en papier découpé.
+    p("granny-paper", "Grand-mère", "En papier découpé"),
+    p("hijabi-paper", "Hijab", "En papier découpé"),
+    p("knight-paper", "Chevalier", "En papier découpé"),
+    p("panda-paper", "Panda", "En papier découpé"),
+    p("postbot-paper", "Robot postier", "En papier découpé"),
+    // ⭐ DESSINÉES POUR NEURADESK (demande 2026-11-14) : en vecteurs, par
+    // `tools/mascottes_dessinees.py` — couvertes par la GPLv3 du programme.
+    p("nd-mouche", "Mouche", "Créées pour NeuraDesk"),
+    p("nd-grenouille", "Grenouille", "Créées pour NeuraDesk"),
+    p("nd-girafe", "Girafe", "Créées pour NeuraDesk"),
+    p("nd-dragon", "Dragon", "Créées pour NeuraDesk"),
+    p("nd-papillon", "Papillon", "Créées pour NeuraDesk"),
+    p("nd-rousse", "Femme rousse", "Créées pour NeuraDesk"),
+    p("nd-cheveux-roses", "Cheveux roses", "Créées pour NeuraDesk"),
 ];
 
 pub const PAR_DEFAUT: &str = "fox";
@@ -965,7 +985,9 @@ mod tests {
     fn cinquante_deux_personnages_et_cinq_styles_tous_distincts() {
         let styles = PERSONNAGES.iter().filter(|p| p.famille == "Styles du renard").count();
         assert_eq!(styles, 5);
-        assert_eq!(PERSONNAGES.len() - styles, 52);
+        let creees = PERSONNAGES.iter().filter(|p| p.famille == "Créées pour NeuraDesk").count();
+        assert_eq!(creees, 7);
+        assert_eq!(PERSONNAGES.len() - styles - creees, 59);
         let mut noms: Vec<_> = PERSONNAGES.iter().map(|p| p.nom).collect();
         noms.sort_unstable();
         noms.dedup();

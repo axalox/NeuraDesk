@@ -3554,18 +3554,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let mut previews_hide_at: Option<Instant> = None;
     // ---- LE SOUS-DOCK (lot 1 de `docs/plans/barre-du-bas.md`) ----------------
     //
-    // **LE MÊME PATRON QUE LES APERÇUS, ET POUR LA MÊME RAISON** : le panneau
-    // s'ouvre au survol d'une vignette de dossier et doit SURVIVRE au trajet du
-    // pointeur de la vignette jusqu'à lui. C'est le piège du menu au survol, et
-    // il est déjà résolu ici (`previews_hide_at`) — on ne l'invente pas une
-    // seconde fois.
-    //
-    // ⚠️ **PAS `hide_if_focus_elsewhere`** : elle masque la fenêtre 150 ms après
-    // la perte du premier plan (défaut mesuré sur les deux curseurs), donc elle
-    // refermerait le panneau à l'instant où l'on tend la main vers lui. Voir
-    // `cef_sous_dock::contient_le_point`, qui porte le détail.
+    // Le dossier que le panneau montre, par index de vignette : un second clic
+    // sur la MÊME vignette le referme (voir `cef_sous_dock::geste_du_clic`).
+    // Ouvert au CLIC depuis le 2026-11-14 (il l'était au survol), il se referme
+    // à la perte du premier plan, comme les autres dashs.
     let mut sous_dock_open_for: Option<usize> = None;
-    let mut sous_dock_hide_at: Option<Instant> = None;
     // APERÇU D'UN BUREAU VIRTUEL (voir `win32::desktop_previews`) — suivi de
     // survol SÉPARÉ de celui du panneau ci-dessus, parce que ce sont deux
     // fenêtres distinctes : `previews_open_for` décrit ce que le PANNEAU
@@ -8300,6 +8293,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 crate::win32::cef_calendar_applet::debug_defiler(y);
             }
         }
+        // Le MONITEUR défilé : ses cartes graphiques sont sous la ligne de
+        // flottaison (voir `cef_moniteur::debug_defiler`).
+        if debug_capture.active() && debug_capture.open.as_deref() == Some("moniteur") && debug_frame >= 60 {
+            if let Some(y) = std::env::var("NEURADESK_DEBUG_DEFILER").ok().and_then(|v| v.parse::<f64>().ok()) {
+                crate::win32::cef_moniteur::debug_defiler(y);
+            }
+        }
         // Les RÉGLAGES amenés sur une section nommée — `NEURADESK_DEBUG_SCROLL` n'y a
         // jamais fonctionné, et tout ce qui est sous la ligne de flottaison restait
         // invérifiable (voir `cef_settings::debug_section`).
@@ -9824,24 +9824,49 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             _ if primary_dock_clicked && dock.is_plus_dossier(index) => {
                                 ajouter_un_dossier(&mut elements, &mut vivants_dossiers(&mut dock, &mut emplacements_dossiers, &gfx, bottom_thickness), hwnd);
                             }
-                            // UN RACCOURCI DE DOSSIER : ouvre le dossier.
+                            // UN RACCOURCI DE DOSSIER : OUVRE LE DASH DOSSIER.
+                            //
+                            // DEMANDE (2026-11-14) : « je voudrais que les dossiers
+                            // de la barre du bas ouvrent le dash depuis le clic
+                            // gauche et non pas en survolant les icones ». Le clic
+                            // ouvrait l'Explorateur ; le panneau a son bouton pour
+                            // ça. La décision est dans `cef_sous_dock::geste_du_clic`.
                             _ if primary_dock_clicked && dock.dossier_slot(index).is_some() => {
-                                if let Some(rang) = dock.dossier_slot(index) {
-                                    if let Some(dossier) = dossier_au_rang(&elements, rang) {
-                                        // ⚠️ **`appicon::launch` OUVRE UN DOSSIER
-                                        // PAR LE SHELL**, sans rien de neuf à
-                                        // écrire : `create_process_detached`
-                                        // échoue sur un répertoire (ce n'est pas
-                                        // un exécutable) et `launch` retombe
-                                        // alors sur `ShellExecuteW(open)`, qui
-                                        // ouvre l'Explorateur. C'est déjà ce que
-                                        // fait l'épingle « File Explorer » de la
-                                        // barre des tâches (voir
-                                        // `win32::taskbar_pins`).
-                                        appicon::launch(&dossier.chemin);
+                                hide_overlay_windows();
+                                let visible = crate::win32::cef_sous_dock::is_visible();
+                                match crate::win32::cef_sous_dock::geste_du_clic(visible, sous_dock_open_for == Some(index)) {
+                                    crate::win32::cef_sous_dock::GesteDuClic::Fermer => {
+                                        crate::win32::cef_sous_dock::hide_if_visible();
+                                        sous_dock_open_for = None;
+                                    }
+                                    crate::win32::cef_sous_dock::GesteDuClic::Ouvrir => {
+                                        if let Some(dossier) = dock.dossier_slot(index).and_then(|rang| dossier_au_rang(&elements, rang)) {
+                                            // ⚠️ **UN PANNEAU DÉJÀ OUVERT EST REFERMÉ PUIS
+                                            // ROUVERT** plutôt que rempli sur place : le
+                                            // clic a donné le premier plan à la barre, et
+                                            // un panneau resté visible sans l'avoir
+                                            // repris serait refermé 150 ms plus tard par
+                                            // `hide_if_focus_elsewhere`. La réouverture
+                                            // (`toggle`) le lui rend.
+                                            if visible {
+                                                crate::win32::cef_sous_dock::hide_if_visible();
+                                            }
+                                            // ⚠️ **LA MOITIÉ DROITE REÇOIT SON DÉFAUT, PAS
+                                            // SA DESTINATION** — voir
+                                            // `cef_sous_dock::dossier_de_droite` ; et
+                                            // `dossier_personnel` le résout UNE fois (un
+                                            // `is_dir()` sur un partage réseau attendrait
+                                            // le délai SMB).
+                                            crate::win32::cef_sous_dock::ouvrir(
+                                                dash_rect_for_hwnd(hwnd_screen_origin(active_hwnd), active_layout, active_hwnd),
+                                                &gfx,
+                                                Some(&dossier.chemin),
+                                                &crate::win32::cef_sous_dock::dossier_personnel().actif,
+                                            );
+                                            sous_dock_open_for = Some(index);
+                                        }
                                     }
                                 }
-                                hide_overlay_windows();
                             }
                             // **CLIC GAUCHE SUR UNE ICÔNE DE NOTIFICATION → LA
                             // VRAIE ICÔNE DE LA BARRE DES TÂCHES EST DÉCLENCHÉE** —
@@ -13806,92 +13831,20 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
         // ---- LE SOUS-DOCK : les enfants d'un dossier de la barre du bas ------
         //
-        // **DÉCLENCHÉ AU SURVOL, comme Cairo-Dock** : c'est ce qui fait qu'on
-        // explore un dossier sans cliquer. Le popup est PRÉCHARGÉ (voir
-        // `preload_queue`), donc la première ouverture ne paie pas le chargement
-        // de la page.
-        //
-        // **LA FERMETURE SUIT LE MODÈLE DES APERÇUS** (voir plus bas) : on reste
-        // ouvert tant que le pointeur est sur la VIGNETTE ou sur le PANNEAU, et
-        // on ne referme qu'après `PREVIEW_HIDE_GRACE` — sans ce délai, le
-        // panneau se refermerait pendant qu'on le vise.
-        if let Some(index) = hovered_icon {
-            if let Some(rang) = dock.dossier_slot(index) {
-                if sous_dock_open_for != Some(index) {
-                    if let Some(dossier) = dossier_au_rang(&elements, rang) {
-                        // ⛔ **LE PANNEAU REÇOIT LA ZONE LIBRE DU DOCK**, comme
-                        // l'Éditeur d'image, le Calendrier et les Notes — et NON
-                        // la case de la vignette (64 px). C'est LA différence qui
-                        // a fait échouer la première version : une fenêtre de la
-                        // taille d'une vignette doit NÉGOCIER sa taille, et c'est
-                        // là que tout se perdait.
-                        //
-                        // ⛔ **ON A SUPPRIMÉ ICI UN CALCUL MORT.** Le code y
-                        // calculait l'ancre de la vignette en coordonnées écran
-                        // (`presented_rect` + `screen_origin`) et **ne s'en
-                        // servait jamais** : c'est ce `dash_rect` qui partait. Le
-                        // garde `if let (Some(rect), Ok((ox, oy)))` qui
-                        // l'accompagnait ne conditionnait donc plus rien — il
-                        // pouvait seulement empêcher l'ouverture pour une raison
-                        // qui n'existait pas. Supprimé : un calcul qu'on croit
-                        // actif fait perdre une heure à qui le lit.
-                        //
-                        // ⚠️ **LES ENFANTS SONT LUS ICI, À L'OUVERTURE, ET PAS
-                        // PAR FRAME** : `SHGetFileInfoW` par enfant est coûteux
-                        // (voir `sous_dock`, doc de module, et le cache de
-                        // `cef_sous_dock::contenu`).
-                        //
-                        // ⚠️ **LA MOITIÉ DROITE REÇOIT ICI SON DÉFAUT, PAS SA
-                        // DESTINATION** : elle ne le prend qu'à sa toute première
-                        // ouverture, puis elle GARDE le dossier où l'utilisateur
-                        // l'a laissée (décision de l'utilisateur, voir
-                        // `cef_sous_dock::dossier_de_droite`, qui porte le
-                        // pourquoi). Le lui passer à chaque ouverture est sans
-                        // danger — le module tranche —, et c'est ce qui fait qu'un
-                        // changement du réglage s'applique au lancement suivant
-                        // sans redémarrage du panneau.
-                        // ⛔ **MAIS ON PASSE PAR `cef_sous_dock::dossier_personnel`,
-                        // QUI LE RÉSOUT UNE FOIS** : le résoudre ici demanderait un
-                        // `is_dir()` sur un chemin choisi par l'utilisateur — donc
-                        // possiblement un partage réseau — à chaque survol de
-                        // vignette.
-                        crate::win32::cef_sous_dock::ouvrir(
-                            dash_rect(window.screen_origin().unwrap_or((0, 0)), &layout),
-                            &gfx,
-                            Some(&dossier.chemin),
-                            &crate::win32::cef_sous_dock::dossier_personnel().actif,
-                        );
-                        sous_dock_open_for = Some(index);
-                    }
-                }
-            }
-        }
+        // ⛔ **IL NE S'OUVRE PLUS AU SURVOL** (demande 2026-11-14) : c'est le clic
+        // gauche sur la vignette qui l'ouvre (voir le bras « UN RACCOURCI DE
+        // DOSSIER » du clic, et `cef_sous_dock::geste_du_clic`), et il se referme
+        // comme les autres dashs, à la perte du premier plan
+        // (`poll_overlay_windows`). Restent ici la poussée d'état par frame et
+        // l'oubli du dossier montré quand le panneau est fermé.
         if crate::win32::cef_sous_dock::is_visible() {
             // ⚠️ **`poll` ET NON UN DESSIN** : la page se dessine elle-même dans
             // sa fenêtre ; `poll` ne fait que lui repousser l'état à chaque frame,
             // parce que la première poussée se perd si la page n'a pas fini de
             // charger (défaut mesuré trois fois dans ce dépôt).
             crate::win32::cef_sous_dock::poll();
-            let sur_la_vignette = sous_dock_open_for.is_some() && sous_dock_open_for == hovered_icon;
-            let sur_le_panneau = cursor_screen_pos()
-                .is_some_and(|(x, y)| crate::win32::cef_sous_dock::contient_le_point(x, y));
-            // ⛔ **LA DÉCISION EST AILLEURS, ET ELLE EST TESTÉE** — voir
-            // `cef_sous_dock::doit_fermer`. Ici on ne fait que l'appliquer : la
-            // punaise (`est_maintenu`) désarme la grâce, le curseur sur la cible
-            // aussi.
-            let doit_fermer = crate::win32::cef_sous_dock::doit_fermer(
-                crate::win32::cef_sous_dock::est_maintenu(),
-                sur_la_vignette,
-                sur_le_panneau,
-            );
-            if !doit_fermer {
-                sous_dock_hide_at = None;
-            } else {
-                let depuis = *sous_dock_hide_at.get_or_insert_with(Instant::now);
-                if depuis.elapsed() >= PREVIEW_HIDE_GRACE {
-                    crate::win32::cef_sous_dock::hide_if_visible();
-                }
-            }
+        } else {
+            sous_dock_open_for = None;
         }
 
         // ---- CE QUE LA PAGE DEMANDE : TRAITÉ PLUS HAUT, ET À UN SEUL ENDROIT --
@@ -13910,24 +13863,6 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         //
         // **La règle qui en sort** : un geste se traite à UN endroit, sans quoi
         // son comportement dépend d'un ordre d'exécution que personne ne relit.
-
-        // ⛔ **LE VERROU TOMBE QUAND LE PANNEAU EST FERMÉ *ET* QUE LE POINTEUR A
-        // QUITTÉ SA VIGNETTE** — pas avant, pas à un seul des deux.**
-        //
-        // Je le relâchais dès que le panneau n'était plus visible, et un seul
-        // survol a produit DIX ouvertures (mesuré : `envoi n°1` … `n°10` sur le
-        // même dossier) : le panneau se refermait, le verrou retombait à `None`,
-        // et comme le pointeur était TOUJOURS sur la vignette, la frame suivante
-        // rouvrait — en boucle.
-        //
-        // Mais le relâcher JAMAIS ne marche pas non plus : revenir sur la même
-        // vignette après l'avoir quittée ne rouvrirait rien. C'est la condition
-        // ci-dessous qui distingue les deux cas — le trajet vers le panneau
-        // laisse le pointeur hors de la vignette SANS que le verrou tombe, parce
-        // que le panneau est encore visible.
-        if !crate::win32::cef_sous_dock::is_visible() && sous_dock_open_for != hovered_icon {
-            sous_dock_open_for = None;
-        }
 
         // MÊME SUIVI POUR LES ÉLÉMENTS DE LA BARRE DU HAUT (voir
         // `topbar_widget_under`) : horloge, contrôles média, pastilles de
@@ -23455,6 +23390,9 @@ fn poll_overlay_windows() {
     crate::win32::cef_context::hide_if_focus_elsewhere();
     crate::win32::cef_network::hide_if_focus_elsewhere();
     crate::win32::cef_sound::hide_if_focus_elsewhere();
+    // Le dash dossier, ouvert au CLIC depuis le 2026-11-14 (voir
+    // `cef_sous_dock::geste_du_clic`).
+    crate::win32::cef_sous_dock::hide_if_focus_elsewhere();
     // PAS `cef_spacer_size::hide_if_focus_elsewhere()` — DÉFAUT RÉEL SIGNALÉ :
     // « le clic droit sur un séparateur, le slider s'affiche un bref instant puis
     // disparaît ». Ce popup est le SEUL dont l'utilisateur a besoin de garder les

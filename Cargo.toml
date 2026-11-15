@@ -21,6 +21,13 @@ path = "src/main.rs"
 name = "neuradesk-admin"
 path = "src/relais_admin.rs"
 
+# La température et la puissance du PROCESSEUR, lues par PawnIO — seul élevé,
+# par une invite UAC par session (voir `src/win32/capteurs_cpu.rs`). ⚠️ À livrer
+# À CÔTÉ de `neuradesk.exe`.
+[[bin]]
+name = "neuradesk-capteurs"
+path = "src/capteurs_cpu_service.rs"
+
 [dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
@@ -32,6 +39,8 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Direct3D_Fxc",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    # Capteurs des cartes graphiques (`win32::moniteur_gpu`) : `D3DKMTQueryAdapterInfo`.
+    "Wdk_Graphics_Direct3D",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dwm",
     "Win32_UI_WindowsAndMessaging",
@@ -63,6 +72,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Com",
     "Win32_Globalization",
     "Win32_Security",
+    # SID et descripteur de la section des capteurs du processeur (`src/capteurs_cpu_service.rs`).
+    "Win32_Security_Authorization",
     # DPAPI (`CryptProtectData`) : les mots de passe de l'applet SSH, chiffrés
     # pour la session Windows (voir `win32::ssh_serveurs`).
     "Win32_Security_Cryptography",

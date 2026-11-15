@@ -75,6 +75,26 @@ pub fn classer(mesures: impl IntoIterator<Item = (String, f32)>, n: usize) -> Ve
     taches
 }
 
+/// pid → nom de l'exécutable, d'un seul instantané `ToolHelp` (sans ouvrir les
+/// processus) — pour nommer les tâches des cartes graphiques
+/// (`moniteur_gpu`).
+pub fn noms_des_processus() -> HashMap<u32, String> {
+    let mut noms = HashMap::new();
+    // SAFETY : instantané fermé ci-dessous ; `dwSize` est posé.
+    unsafe {
+        let Ok(instantane) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return noms };
+        let mut entree = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut suite = Process32FirstW(instantane, &mut entree).is_ok();
+        while suite {
+            let long = entree.szExeFile.iter().position(|&c| c == 0).unwrap_or(entree.szExeFile.len());
+            noms.insert(entree.th32ProcessID, String::from_utf16_lossy(&entree.szExeFile[..long]));
+            suite = Process32NextW(instantane, &mut entree).is_ok();
+        }
+        let _ = CloseHandle(instantane);
+    }
+    noms
+}
+
 fn en_u64(f: FILETIME) -> u64 {
     (u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime)
 }

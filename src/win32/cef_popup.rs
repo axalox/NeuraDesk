@@ -2598,7 +2598,7 @@ mod content_height_tests {
 /// **LA PERTE DE FOCUS FERME-T-ELLE CE POPUP ?** — la RÈGLE, pure et testable.
 ///
 /// ⚠️ **ELLE VIT HORS DU CORPS DE `hide_if_focus_elsewhere`**, pour la même raison
-/// que `cef_sous_dock::doit_fermer` : une décision enfermée dans une fonction qui
+/// que `cef_sous_dock::geste_du_clic` : une décision enfermée dans une fonction qui
 /// interroge `GetForegroundWindow` ne s'éprouve qu'en volant le focus d'une vraie
 /// fenêtre — ce qu'aucun test de ce dépôt ne fait, et ne doit faire.
 ///
@@ -2609,11 +2609,6 @@ mod content_height_tests {
 ///   autre chose ne doit pas fermer un dash épinglé ».
 pub fn la_perte_de_focus_ferme(epingle: bool, dragging: bool) -> bool {
     !epingle && !dragging
-}
-
-/// **LE PANNEAU EST-IL MAINTENU OUVERT ?** — voir `PopupSlot::epingle`.
-pub fn est_epingle(slot: &'static LocalKey<PopupSlot>) -> bool {
-    slot.with(|s| s.epingle.get())
 }
 
 /// **BASCULE LA PUNAISE.** Elle ne repousse rien elle-même : le bouton lit son état

@@ -149,6 +149,9 @@
       <li><b>PowerShell 7</b> — le choix « PowerShell 7 » du Terminal (PowerShell 5
       et l'invite de commandes marchent sans rien installer).<br><span
       class="adresse">winget install Microsoft.PowerShell</span></li>
+      <li><b>PawnIO</b> — la température et la puissance du processeur, dans le
+      Moniteur système (voir « La température du processeur » plus bas).<br><span
+      class="adresse">pawnio.eu — ou winget install namazso.PawnIO</span></li>
     </ul>
     <div class="note"><b>Le français pour l'OCR de NAPS2</b> — ouvrir NAPS2, puis
     <b>OCR</b>, et choisir <b>Français</b> : NAPS2 télécharge alors la langue. Sans
@@ -170,6 +173,31 @@
     <b>Afficher</b> revient dans le menu des vidéos, sans relancer NeuraDesk. VLC
     doit être installé à son emplacement habituel (<kbd>C:\Program
     Files\VideoLAN\VLC</kbd>) ; une version 32 bits ne convient pas.</div>
+
+    <h2 id="pawnio">La température du processeur : installer PawnIO</h2>
+    <p>Le <b>Moniteur système</b> montre la fréquence du processeur sans rien
+    installer. Sa <b>température</b> et sa <b>puissance</b>, en revanche, ne sont
+    publiées par Windows qu'à un <b>pilote</b> : NeuraDesk passe par <b>PawnIO</b>,
+    le pilote signé qu'utilisent aussi LibreHardwareMonitor et Fan Control.</p>
+    <ul>
+      <li>Dans le Moniteur système, <b>Installer PawnIO</b> lance l'installation
+      (une fenêtre de terminal, puis une invite administrateur) ;</li>
+      <li>ou le télécharger sur <span class="adresse">pawnio.eu</span> ;</li>
+      <li>ou, dans un terminal : <span class="adresse">winget install namazso.PawnIO</span>.</li>
+    </ul>
+    <div class="note"><b>Ensuite, une invite administrateur par session</b> — PawnIO
+    ne répond qu'à un programme administrateur, et NeuraDesk ne l'est jamais. À la
+    première ouverture du Moniteur système, Windows demande donc d'autoriser
+    <kbd>neuradesk-capteurs.exe</kbd> : ce petit programme lit la température et la
+    puissance chaque seconde, et s'arrête avec NeuraDesk. Rien ne reste installé. Un
+    refus n'est pas redemandé avant le prochain lancement ; le bouton <b>Afficher la
+    température</b> repose la question. Si l'installation de PawnIO demande de
+    redémarrer, la température n'apparaît qu'après.</div>
+    <div class="note"><b>Les valeurs</b> — la température est celle que le
+    processeur annonce à son régulateur (<i>Tctl</i> chez AMD, la température du
+    boîtier chez Intel) ; la puissance est celle du boîtier entier, d'après son
+    compteur d'énergie. Pour retirer PawnIO : Paramètres → Applications →
+    Applications installées.</div>
 
     <h2 id="polices">Les polices de caractères</h2>
     <p>Chaque <b>style</b> (Réglages → Style) a sa police. Si elle manque, Windows la

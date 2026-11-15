@@ -134,41 +134,42 @@ static MESSAGE: RefCell<[Option<String>; 2]> = const { RefCell::new([None, None]
     static SONDE_JS: RefCell<u64> = const { RefCell::new(u64::MAX) };
 }
 
-/// **LE PANNEAU EST-IL MAINTENU OUVERT ?** — la grâce et le `toggle` d'`ouvrir`
-/// s'en servent pour NE PAS refermer.
+/// **QUE FAIT UN CLIC GAUCHE SUR UN DOSSIER DE LA BARRE DU BAS ?** — la DÉCISION,
+/// pure pour être vérifiable sans fenêtre, sans souris et sans CEF.
 ///
-/// ⛔ **LE DRAPEAU VIT DANS `cef_popup`, PAS ICI** (voir `PopupSlot::epingle`), et
-/// ce module n'en est qu'un LECTEUR. Il a d'abord eu le sien — `MAINTENU` — avant
-/// que la punaise soit étendue aux quinze panneaux : deux drapeaux pour la même
-/// idée auraient fini par diverger, et le bouton — dont l'état est posé par
-/// `cef_popup` à chaque frame — aurait clignoté entre les deux.
-pub fn est_maintenu() -> bool {
-    cef_popup::est_epingle(&SLOT)
+/// DEMANDE (2026-11-14) : « je voudrais que les dossiers de la barre du bas
+/// ouvrent le dash depuis le clic gauche et non pas en survolant les icones ».
+/// Le panneau s'ouvrait au survol (modèle Cairo-Dock) et se refermait quand le
+/// pointeur quittait la vignette et le panneau ; le clic ouvrait l'Explorateur.
+/// Désormais : le clic OUVRE le panneau sur ce dossier, un second clic sur le
+/// MÊME dossier le referme, un clic sur un AUTRE dossier y passe. Il se referme
+/// aussi comme les autres dashs, quand il perd le premier plan
+/// (`hide_if_focus_elsewhere`). L'Explorateur reste à un clic, dans le panneau.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GesteDuClic {
+    Fermer,
+    Ouvrir,
 }
 
-/// **FAUT-IL REFERMER LE PANNEAU ?** — la DÉCISION, séparée de l'effet pour être
-/// vérifiable sans fenêtre, sans souris et sans CEF (voir le test qui
-/// l'accompagne).
-///
-/// ⚠️ **ELLE VIT ICI, PAS DANS `app.rs`** : c'est la RÈGLE du panneau, à côté du
-/// drapeau qu'elle consulte. Enfouie dans la boucle de rendu, elle ne se
-/// vérifierait qu'en lançant l'application et en bougeant la souris — c'est-à-dire
-/// jamais, dans ce dépôt où aucune entrée n'est simulée.
-///
-/// ⚠️ **`maintenu` EST UN PARAMÈTRE, PAS LU ICI** : c'est ce qui rend les huit cas
-/// énumérables d'un coup dans un test, au lieu de dépendre d'un état global.
-pub fn doit_fermer(maintenu: bool, sur_la_vignette: bool, sur_le_panneau: bool) -> bool {
-    // Le curseur est sur la cible : rien à refermer, punaise ou pas.
-    if sur_la_vignette || sur_le_panneau {
-        return false;
+pub fn geste_du_clic(visible: bool, montre_ce_dossier: bool) -> GesteDuClic {
+    if visible && montre_ce_dossier {
+        GesteDuClic::Fermer
+    } else {
+        GesteDuClic::Ouvrir
     }
-    // ⛔ **LA PUNAISE PASSE APRÈS** — et c'est tout son sens : le curseur est
-    // ailleurs, et le panneau reste quand même.
-    !maintenu
+}
+
+/// Se referme quand le premier plan part ailleurs, comme les dashs ouverts au
+/// clic — possible depuis que le panneau ne s'ouvre plus au survol (voir
+/// `geste_du_clic`) : la raison de l'en exclure (« elle refermerait le panneau à
+/// l'instant où l'on tend la main vers lui ») tenait au survol. La punaise y
+/// garde son sens (`cef_popup::la_perte_de_focus_ferme`).
+pub fn hide_if_focus_elsewhere() {
+    cef_popup::hide_if_focus_elsewhere(&SLOT);
 }
 
 /// **FAUT-IL BASCULER LA FENÊTRE, OU SEULEMENT LA REMPLIR ?** — la seconde décision
-/// d'`ouvrir`, extraite pour la même raison que `doit_fermer` : elle se vérifie sans
+/// d'`ouvrir`, extraite pour la même raison que `geste_du_clic` : elle se vérifie sans
 /// fenêtre, sans souris et sans CEF.
 ///
 /// ⛔ **`cef_popup::toggle` EST UNE VRAIE BASCULE** : appelé sur un panneau DÉJÀ
@@ -1619,37 +1620,6 @@ pub fn is_visible() -> bool {
     cef_popup::is_visible(&SLOT)
 }
 
-/// **LE CURSEUR EST-IL SUR LE PANNEAU ?** — l'équivalent, pour un popup CEF, de
-/// `window_previews::PreviewPanel::contains_screen_point`.
-///
-/// ⛔ **C'EST LA PIÈCE QUI FAIT QUE LE GESTE DE RETOUR MARCHE**, et ce n'est PAS
-/// `cef_popup::hide_if_focus_elsewhere` : cette dernière est **délibérément
-/// absente** des popups dont l'utilisateur doit garder la main dessus (les deux
-/// curseurs, voicemeeter), parce qu'elle masque la fenêtre **150 ms** après que
-/// le premier plan lui a été repris — défaut mesuré, « le slider s'affiche un
-/// bref instant puis disparaît ». Pour un panneau ouvert AU SURVOL, elle
-/// refermerait le panneau à l'instant où l'on tend la main vers lui.
-///
-/// ⚠️ **DEPUIS LE LOT 1, CE TEST COUVRE PRESQUE TOUTE LA ZONE LIBRE** — la page
-/// remplit désormais sa fenêtre au lieu d'y flotter en `fit-content`. La
-/// conséquence à surveiller est à l'autre bout : `app::run` ne referme plus par
-/// contenance dès qu'on est dans la zone, donc **la grâce de
-/// `PREVIEW_HIDE_GRACE` et le verrou `sous_dock_open_for` sont les seuls
-/// garde-fous**.
-///
-/// ⚠️ **`GetWindowRect` ET NON LE RECTANGLE PASSÉ À `ouvrir`** : `cef_popup`
-/// redimensionne la fenêtre quand la page annonce sa taille
-/// (`resize_to_content`), donc le rectangle d'ouverture est PÉRIMÉ dès la
-/// première frame. La fenêtre sait où elle est ; on le lui demande.
-pub fn contient_le_point(x: i32, y: i32) -> bool {
-    let Some(hwnd) = cef_popup::hwnd(&SLOT) else { return false };
-    let mut rect = windows::Win32::Foundation::RECT::default();
-    if unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect) }.is_err() {
-        return false;
-    }
-    x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
-}
-
 /// Le dossier montré par une moitié (`None` si elle n'a jamais été ouverte).
 pub fn dossier_affiche(cote: Cote) -> Option<PathBuf> {
     avec(cote, |m| (!m.dossier.as_os_str().is_empty()).then(|| m.dossier.clone()))
@@ -1992,27 +1962,13 @@ mod tests {
         assert!(js.contains(r#""open":12"#), "le numero d'ouverture voyage dans l'objet : {js}");
     }
 
-    /// **FAUT-IL REFERMER LE PANNEAU ?** — les QUATRE cas, et pas seulement celui
-    /// qui a motivé la punaise.
-    ///
-    /// ⚠️ **C'EST LE SEUL TEST DE CE LOT QUI PORTE SUR LA RÈGLE ELLE-MÊME** : la
-    /// fermeture vit dans `app.rs`, dans la boucle de rendu, et aucune entrée n'est
-    /// simulée dans ce dépôt — donc elle ne s'éprouve QUE par cette fonction pure.
-    /// C'est exactement pourquoi elle a été extraite.
+    /// Le clic sur un dossier : il ouvre, il referme le MÊME, il passe à un autre.
     #[test]
-    fn la_punaise_empeche_de_refermer_le_panneau() {
-        // Le curseur sur la cible : on ne referme jamais, punaise ou pas.
-        assert!(!doit_fermer(false, true, false));
-        assert!(!doit_fermer(false, false, true));
-        assert!(!doit_fermer(true, true, false));
-        assert!(!doit_fermer(true, false, true));
-
-        // Le cas qui compte : le curseur est AILLEURS…
-        assert!(doit_fermer(false, false, false), "sans punaise, on referme");
-        assert!(
-            !doit_fermer(true, false, false),
-            "AVEC la punaise, le panneau reste ouvert — c'est tout son sens"
-        );
+    fn le_clic_sur_un_dossier_ouvre_referme_ou_change_de_dossier() {
+        assert_eq!(geste_du_clic(false, false), GesteDuClic::Ouvrir, "panneau fermé : on ouvre");
+        assert_eq!(geste_du_clic(false, true), GesteDuClic::Ouvrir, "fermé, même s'il montrait ce dossier avant");
+        assert_eq!(geste_du_clic(true, true), GesteDuClic::Fermer, "second clic sur le même dossier : on referme");
+        assert_eq!(geste_du_clic(true, false), GesteDuClic::Ouvrir, "ouvert sur un autre dossier : on y passe");
     }
 
     /// ⛔ **UN PANNEAU DÉJÀ OUVERT NE SE BASCULE PAS — IL SE REMPLIT.**

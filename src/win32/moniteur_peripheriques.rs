@@ -308,6 +308,11 @@ impl Suivi {
         releve
     }
 
+    /// Les cartes connues : `(luid, appareil)`.
+    pub fn cartes(&self) -> impl Iterator<Item = (&String, &Peripherique)> {
+        self.cartes.iter()
+    }
+
     /// Réserve la clé de `p` (rendue unique) et le rend.
     fn nouveau(&mut self, mut p: Peripherique) -> Peripherique {
         p.cle = cle_libre(std::mem::take(&mut p.cle), &self.cles);

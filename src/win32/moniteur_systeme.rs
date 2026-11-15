@@ -53,6 +53,8 @@ use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTAT
 use crate::config;
 use crate::win32::debit_reseau;
 use crate::win32::moniteur_peripheriques::{self, Peripherique};
+use crate::win32::capteurs_cpu;
+use crate::win32::moniteur_gpu;
 use crate::win32::moniteur_taches;
 use crate::win32::sysinfo::CpuSampler;
 
@@ -151,11 +153,18 @@ pub struct Minute {
 pub struct Detail {
     /// L'utilisation de chaque cœur, dans l'ordre des processeurs logiques.
     pub coeurs: Vec<f32>,
+    /// La fréquence réelle du processeur (voir `frequences_du_processeur`).
+    pub frequence_cpu: Option<FrequenceCpu>,
+    /// Température et puissance du processeur (voir `capteurs_cpu`).
+    pub capteurs_cpu: capteurs_cpu::Etat,
     pub ram_utilisee: u64,
     pub ram_totale: u64,
     /// Les plus gourmandes en processeur — relevées panneau ouvert seulement
     /// (voir `moniteur_taches`).
     pub taches: Vec<moniteur_taches::Tache>,
+    /// Par carte graphique (sa `cle` d'appareil) : ses capteurs et ses tâches —
+    /// panneau ouvert seulement (voir `moniteur_gpu`).
+    pub gpus: Vec<(String, moniteur_gpu::Capteurs, Vec<moniteur_gpu::TacheGpu>)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +391,44 @@ pub fn utilisation_des_coeurs(instances: &[(String, f64)]) -> Vec<f32> {
     coeurs.into_iter().map(|(_, v)| v).collect()
 }
 
+/// La fréquence RÉELLE du processeur, en MHz (celle du Gestionnaire des
+/// tâches, « Vitesse »).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrequenceCpu {
+    /// Tous les cœurs (l'instance `_Total`).
+    pub moyenne_mhz: f32,
+    /// Le cœur le plus rapide à l'instant.
+    pub max_coeur_mhz: f32,
+    /// La fréquence de base annoncée.
+    pub base_mhz: f32,
+}
+
+/// PURE : `\Processor Information(*)\Processor Frequency` est la fréquence de
+/// BASE, et `% Processor Performance` ce qu'en fait le cœur (au-delà de 100 %
+/// en turbo) : la fréquence réelle est leur produit.
+///
+/// ⚠️ **NI TEMPÉRATURE, NI PUISSANCE, NI VENTILATEUR** : Windows n'en publie
+/// aucune pour le processeur sans pilote noyau (mesuré le 2026-11-14 sur un
+/// Ryzen 7 9800X3D : la seule zone thermique ACPI lit 290 K, et la puissance
+/// « ASIC » de la Radeon intégrée ne bouge que de 68 à 72 W tous cœurs
+/// chargés — ce n'est PAS celle du processeur).
+pub fn frequences_du_processeur(perf: &[(String, f64)], base: &[(String, f64)]) -> Option<FrequenceCpu> {
+    let base_de = |nom: &str| base.iter().find(|(n, _)| n == nom).map(|(_, v)| *v);
+    let total = perf.iter().find(|(n, _)| n == "_Total")?;
+    let base_totale = base_de("_Total").filter(|&b| b > 0.0)?;
+    let max_coeur = perf
+        .iter()
+        .filter(|(n, _)| !n.contains("_Total"))
+        .filter_map(|(n, p)| base_de(n).map(|b| b * p / 100.0))
+        .reduce(f64::max)
+        .unwrap_or(base_totale * total.1 / 100.0);
+    Some(FrequenceCpu {
+        moyenne_mhz: (base_totale * total.1 / 100.0) as f32,
+        max_coeur_mhz: max_coeur as f32,
+        base_mhz: base_totale as f32,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // LES CAPTEURS — sur le fil de mesure seulement
 // ---------------------------------------------------------------------------
@@ -395,7 +442,12 @@ struct Pdh {
     disques_ecriture: Option<PDH_HCOUNTER>,
     gpu_moteurs: Option<PDH_HCOUNTER>,
     gpu_memoire: Option<PDH_HCOUNTER>,
+    /// Par processus (`pid_…_luid_…_phys_0`) — les tâches des cartes.
+    gpu_memoire_processus: Option<PDH_HCOUNTER>,
     coeurs: Option<PDH_HCOUNTER>,
+    /// `\Processor Information(*)` : performance (%) et fréquence de base.
+    performance: Option<PDH_HCOUNTER>,
+    frequence_base: Option<PDH_HCOUNTER>,
 }
 
 impl Pdh {
@@ -424,7 +476,10 @@ impl Pdh {
             disques_ecriture: ajouter(w!("\\PhysicalDisk(*)\\Disk Write Bytes/sec")),
             gpu_moteurs: ajouter(w!("\\GPU Engine(*)\\Utilization Percentage")),
             gpu_memoire: ajouter(w!("\\GPU Adapter Memory(*)\\Dedicated Usage")),
+            gpu_memoire_processus: ajouter(w!("\\GPU Process Memory(*)\\Dedicated Usage")),
             coeurs: ajouter(w!("\\Processor(*)\\% Processor Time")),
+            performance: ajouter(w!("\\Processor Information(*)\\% Processor Performance")),
+            frequence_base: ajouter(w!("\\Processor Information(*)\\Processor Frequency")),
         };
         // Les compteurs de TAUX ont besoin de deux relevés : le premier sert de référence.
         // SAFETY : requête ouverte.
@@ -488,11 +543,13 @@ struct Capteurs {
     pdh: Option<Pdh>,
     taches: moniteur_taches::Releveur,
     peripheriques: moniteur_peripheriques::Suivi,
+    sondes_gpu: moniteur_gpu::Sondes,
+    capteurs_cpu: capteurs_cpu::Lecteur,
 }
 
 impl Capteurs {
     fn new() -> Self {
-        let mut capteurs = Capteurs { cpu: CpuSampler::new(), reseau: debit_reseau::Echantillonneur::new(), pdh: Pdh::ouvrir(), taches: Default::default(), peripheriques: Default::default() };
+        let mut capteurs = Capteurs { cpu: CpuSampler::new(), reseau: debit_reseau::Echantillonneur::new(), pdh: Pdh::ouvrir(), taches: Default::default(), peripheriques: Default::default(), sondes_gpu: Default::default(), capteurs_cpu: Default::default() };
         // Les références des taux (processeur, réseau).
         capteurs.cpu.sample();
         capteurs.reseau.echantillonner();
@@ -532,6 +589,8 @@ impl Capteurs {
             poser(Serie::Gpu, utilisation_gpu(&gpu_moteurs).map(f64::from));
             poser(Serie::GpuMemoire, (!gpu_memoire.is_empty()).then(|| gpu_memoire.iter().map(|(_, v)| v).sum()));
             detail.coeurs = utilisation_des_coeurs(&Pdh::tableau(pdh.coeurs));
+            detail.frequence_cpu =
+                frequences_du_processeur(&Pdh::tableau(pdh.performance), &Pdh::tableau(pdh.frequence_base));
             releve = self.peripheriques.relever(
                 instant_s,
                 &moniteur_peripheriques::Instances {
@@ -542,9 +601,31 @@ impl Capteurs {
                     gpu_memoire: &gpu_memoire,
                 },
             );
+            if moniteur_taches::est_demande(instant_s) {
+                let memoire_processus = Pdh::tableau(pdh.gpu_memoire_processus);
+                let noms = moniteur_taches::noms_des_processus();
+                let plafonds: HashMap<String, u64> =
+                    self.peripheriques.cartes().map(|(luid, p)| (luid.clone(), p.memoire_totale)).collect();
+                let mut taches = moniteur_gpu::taches_par_carte(
+                    &gpu_moteurs,
+                    &memoire_processus,
+                    &noms,
+                    &plafonds,
+                    moniteur_gpu::NB_TACHES_GPU,
+                );
+                let cartes: Vec<(String, String)> =
+                    self.peripheriques.cartes().map(|(luid, p)| (luid.clone(), p.cle.clone())).collect();
+                for (luid, cle) in cartes {
+                    let capteurs = self.sondes_gpu.lire(&luid);
+                    detail.gpus.push((cle, capteurs, taches.remove(&luid).unwrap_or_default()));
+                }
+            }
         }
         if moniteur_taches::est_demande(instant_s) {
             detail.taches = self.taches.relever();
+            // Panneau ouvert seulement : la première lecture de la session
+            // pose l'invite UAC (voir `capteurs_cpu`).
+            detail.capteurs_cpu = self.capteurs_cpu.lire();
         }
         (Seconde { instant_s, valeurs }, detail, releve)
     }
@@ -943,6 +1024,17 @@ mod tests {
     }
 
     #[test]
+    fn la_frequence_reelle_est_la_base_fois_la_performance() {
+        let i = |l: &[(&str, f64)]| l.iter().map(|(n, v)| (n.to_string(), *v)).collect::<Vec<_>>();
+        let perf = i(&[("_Total", 110.0), ("0,_Total", 110.0), ("0,0", 100.0), ("0,1", 120.0)]);
+        let base = i(&[("_Total", 4700.0), ("0,_Total", 4700.0), ("0,0", 4700.0), ("0,1", 4700.0)]);
+        let f = frequences_du_processeur(&perf, &base).unwrap();
+        assert_eq!(f, FrequenceCpu { moyenne_mhz: 5170.0, max_coeur_mhz: 5640.0, base_mhz: 4700.0 });
+        assert_eq!(frequences_du_processeur(&[], &base), None, "pas de performance : pas de mesure");
+        assert_eq!(frequences_du_processeur(&perf, &[]), None, "pas de base : pas de mesure");
+    }
+
+    #[test]
     fn les_coeurs_sont_dans_l_ordre_numerique_sans_le_total() {
         let instances: Vec<(String, f64)> =
             [("10", 5.0), ("_Total", 50.0), ("2", 2.0), ("0", 0.0), ("0,_Total", 1.0)].iter().map(|(n, v)| (n.to_string(), *v)).collect();
@@ -962,6 +1054,7 @@ mod tests {
             println!("{:>10} : {}", serie.nom(), seconde.valeurs[serie as usize]);
         }
         println!("cœurs : {:?}", detail.coeurs);
+        println!("fréquence : {:?}", detail.frequence_cpu);
         for p in &releve.nouveaux {
             println!("appareil : {p:?}");
         }
