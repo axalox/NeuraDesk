@@ -71,7 +71,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
+use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_MENU};
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -572,6 +572,8 @@ static FIL: Mutex<Option<(u32, std::thread::JoinHandle<()>)>> = Mutex::new(None)
 /// Les identifiants des deux fils, pour se parler (`PostThreadMessageW`).
 static FIL_CROCHET: AtomicU32 = AtomicU32::new(0);
 static FIL_RENDU: AtomicU32 = AtomicU32::new(0);
+/// L'interrupteur général des Réglages (voir `activer_crochet`).
+static CROCHET_ACTIF: AtomicBool = AtomicBool::new(true);
 /// Au fil du crochet : rends la fenêtre `wParam`, de style d'origine `lParam`.
 const WM_RENDRE: u32 = WM_APP + 1;
 /// Au fil de l'animation : la file a reçu un évènement.
@@ -614,8 +616,13 @@ fn icone_de(hwnd: HWND) -> Option<[f32; 4]> {
 /// Il ne cache qu'une fenêtre qui répond (`cacher`), et rend sur un fil à part
 /// (`rendre_sans_attendre`).
 pub fn installer() {
+    // Déjà posé : un second crochet doublerait chaque effet.
+    if FIL.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        return;
+    }
     let crochet = std::thread::Builder::new().name("ouverture-crochet".into()).spawn(|| unsafe {
-        FIL_CROCHET.store(GetCurrentThreadId(), Ordering::SeqCst);
+        let moi = GetCurrentThreadId();
+        FIL_CROCHET.store(moi, Ordering::SeqCst);
         let crochet = SetWinEventHook(
             EVENT_OBJECT_CREATE,
             EVENT_OBJECT_SHOW,
@@ -658,13 +665,25 @@ pub fn installer() {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        // `WM_QUIT` (voir `arreter`) : on retire les trois crochets nous-mêmes
+        // plutôt que de s'en remettre à la fin du fil.
+        for h in [crochet, masquage, bascule] {
+            if !h.is_invalid() {
+                let _ = UnhookWinEvent(h);
+            }
+        }
+        // ⛔ `compare_exchange` : un crochet REPOSÉ entre-temps a déjà écrit son
+        // propre identifiant, qu'il ne faut pas effacer.
+        let _ = FIL_CROCHET.compare_exchange(moi, 0, Ordering::SeqCst, Ordering::SeqCst);
+        crate::diag!("[ouverture] crochet retiré");
     });
     if let Err(erreur) = crochet {
         crate::diag!("[ouverture] fil du crochet impossible : {erreur}");
         return;
     }
     let lance = std::thread::Builder::new().name("ouverture-rendu".into()).spawn(|| unsafe {
-        FIL_RENDU.store(GetCurrentThreadId(), Ordering::SeqCst);
+        let moi = GetCurrentThreadId();
+        FIL_RENDU.store(moi, Ordering::SeqCst);
         // MTA : un appel COM n'y pompe pas de messages.
         let _ = windows::Win32::System::WinRT::RoInitialize(windows::Win32::System::WinRT::RO_INIT_MULTITHREADED);
         let gfx = match GfxDevice::new() {
@@ -704,6 +723,8 @@ pub fn installer() {
             }
         }
         effet.rendre_tout();
+        // Plus de fil : `oublier`, `animer_interne`… ne posteront plus rien.
+        let _ = FIL_RENDU.compare_exchange(moi, 0, Ordering::SeqCst, Ordering::SeqCst);
     });
     match lance {
         Ok(fil) => {
@@ -958,6 +979,34 @@ pub fn arreter() {
     while !fil.is_finished() && Instant::now() < limite {
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// **L'INTERRUPTEUR GÉNÉRAL DES EFFETS DE FENÊTRES** — DEMANDE EXPLICITE
+/// (2026-11-16) : « donner la possibilité de désactiver le hook pour les effets
+/// d'animations des fenêtres ».
+///
+/// Éteint : les trois crochets `SetWinEventHook` sont retirés et les deux fils
+/// s'arrêtent (la surcouche et son périphérique D3D partent avec) ; les
+/// fenêtres encore cachées sont rendues (`rendre_tout`). Plus aucun évènement de
+/// fenêtre n'arrive à NeuraDesk, donc plus d'ouverture, de fermeture, d'Alt+Tab
+/// ni de fondu de ses panneaux. Rallumé : tout est reposé, sans redémarrer.
+///
+/// ⛔ Les cases de chaque effet gardent leur valeur : elles reprennent effet au
+/// rallumage. L'injection, elle, est coupée par l'appelant (voir
+/// `win32::injection::activer`) — un module resté chargé retiendrait sinon
+/// chaque fermeture pour une animation que personne ne jouera.
+pub fn activer_crochet(actif: bool) {
+    CROCHET_ACTIF.store(actif, Ordering::Relaxed);
+    if actif {
+        installer();
+    } else {
+        arreter();
+        crate::diag!("[ouverture] crochet des effets désactivé");
+    }
+}
+
+pub fn crochet_actif() -> bool {
+    CROCHET_ACTIF.load(Ordering::Relaxed)
 }
 
 /// **LE CROCHET DU PREMIER PLAN** — le seul signal qui dise « on vient de

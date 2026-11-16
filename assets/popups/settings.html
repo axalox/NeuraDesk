@@ -5996,6 +5996,12 @@
       // de l'appli, un peu comme faisait Compiz ».
       section(scroll, (box) => {
         box.appendChild(el("h2", {}, ["Ouverture des fenêtres"]));
+        // ⭐ DEMANDE EXPLICITE (2026-11-16) : « désactiver le hook pour les
+        // effets d'animations des fenêtres » — l'interrupteur général (voir
+        // `ouverture_fenetres::activer_crochet`).
+        checkboxRow(box, state.effetCrochet !== false, "Surveiller les fenêtres pour les animer (crochet système)",
+          (checked) => go("effet-crochet", checked ? "1" : "0"), "effet-crochet");
+        box.appendChild(el("p", { class: "hint" }, ["Décochée, NeuraDesk retire son crochet sur les fenêtres de Windows : plus aucune animation d'ouverture, de fermeture, de réduction ni d'Alt+Tab, plus de fondu de ses propres panneaux, et aucun module n'est chargé dans les applications. Les réglages ci-dessous sont conservés et reprennent effet quand la case est recochée."]));
         checkboxRow(box, state.effetOuverture, "Animer les fenêtres qui s'ouvrent",
           (checked) => go("effet-ouverture", checked ? "1" : "0"), "effet-ouverture");
         slider(box, { label: "Durée de l'effet", min: state.effetOuvertureDureeMin, max: state.effetOuvertureDureeMax, step: 10, value: state.effetOuvertureDuree, valueLabel: (v) => v + " ms", dataKey: "effet-ouverture-duree", onInput: (v) => go("effet-ouverture-duree", v) });

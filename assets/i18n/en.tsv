@@ -3809,3 +3809,5 @@ Zoom arrière	Zoom out
 Étoile à six branches	Six-pointed star
 Œil	Eye
 Œuf	Egg
+Surveiller les fenêtres pour les animer (crochet système)	Watch windows to animate them (system hook)
+Décochée, NeuraDesk retire son crochet sur les fenêtres de Windows : plus aucune animation d'ouverture, de fermeture, de réduction ni d'Alt+Tab, plus de fondu de ses propres panneaux, et aucun module n'est chargé dans les applications. Les réglages ci-dessous sont conservés et reprennent effet quand la case est recochée.	Unchecked, NeuraDesk removes its hook on Windows' windows: no more open, close, minimize or Alt+Tab animations, no fade on its own panels, and no module is loaded into apps. The settings below are kept and take effect again when the box is re-checked.

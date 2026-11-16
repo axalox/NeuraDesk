@@ -3082,8 +3082,18 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
             // `win32::injection` (désactivé par défaut).
             ["effet-injection", flag] => {
                 let actif = *flag == "1";
-                crate::win32::injection::activer(actif);
+                // Le choix est gardé ; il n'agit que si le crochet des effets
+                // est posé (voir `effet-crochet`).
+                crate::win32::injection::activer(actif && crate::win32::ouverture_fenetres::crochet_actif());
                 config::save_bool_setting(config::EFFET_INJECTION, actif);
+            }
+            // ⭐ DEMANDE EXPLICITE (2026-11-16) : « donner la possibilité de
+            // désactiver le hook pour les effets d'animations des fenêtres ».
+            ["effet-crochet", flag] => {
+                let actif = *flag == "1";
+                crate::win32::ouverture_fenetres::activer_crochet(actif);
+                crate::win32::injection::activer(actif && config::load_bool_setting_or(config::EFFET_INJECTION, false));
+                config::save_bool_setting(config::EFFET_CROCHET, actif);
             }
             // ⭐ DEMANDE EXPLICITE (2026-11-04) : « proposer ces effets » —
             // la forme du retour, choisie dans la page des réglages.
@@ -6071,7 +6081,10 @@ fn etat_ajoute() -> serde_json::Value {
         "effetReductionStyle": crate::win32::ouverture_fenetres::effet_code(crate::win32::ouverture_fenetres::Moment::Reduction),
         "effetAgrandissementStyle": crate::win32::ouverture_fenetres::effet_code(crate::win32::ouverture_fenetres::Moment::Agrandissement),
         // Charger `window_hook.dll` dans les applications (voir `win32::injection`).
-        "effetInjection": crate::win32::injection::actif(),
+        // ⛔ Le CHOIX enregistré, pas `injection::actif()` : crochet éteint,
+        // l'injection est coupée mais la case doit garder la valeur choisie.
+        "effetInjection": config::load_bool_setting_or(config::EFFET_INJECTION, false),
+        "effetCrochet": crate::win32::ouverture_fenetres::crochet_actif(),
         // L'ombre sous la barre du haut (voir `ui::dock::ombre_barre_haut`).
         "ombreBarreHaut": crate::ui::dock::ombre_barre_haut().round() as i32,
         "ombreBarreHautMax": crate::ui::dock::MAX_OMBRE_BARRE_HAUT as i32,

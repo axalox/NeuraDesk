@@ -4356,7 +4356,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     } else {
         0
     });
-    crate::win32::injection::activer(config::load_bool_setting_or(config::EFFET_INJECTION, false));
+    // ⛔ Crochet des effets éteint ⇒ pas d'injection : sans crochet, aucune
+    // animation ne jouerait, et la DLL retiendrait chaque fermeture pour rien.
+    crate::win32::injection::activer(
+        config::load_bool_setting_or(config::EFFET_INJECTION, false) && config::load_bool_setting_or(config::EFFET_CROCHET, true),
+    );
     // ⭐ APRÈS `injection::activer` (le fichier n'est écrit non nul que si
     // l'injection est active) : la durée du vol que la DLL lira pour voiler la
     // fenêtre d'une application AVANT son affichage (point 1/2 — plus de flash).
@@ -7056,7 +7060,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     // L'effet d'ouverture des fenêtres (voir `win32::ouverture_fenetres`) vit sur
     // un fil à lui ; la boucle ne lui publie que les icônes d'où partent les
     // fenêtres, quatre fois par seconde.
-    crate::win32::ouverture_fenetres::installer();
+    // ⭐ Sauf si l'interrupteur général des Réglages l'a éteint (voir
+    // `ouverture_fenetres::activer_crochet`).
+    crate::win32::ouverture_fenetres::activer_crochet(config::load_bool_setting_or(config::EFFET_CROCHET, true));
     // Le clic molette sur le bureau ouvre la sphère des fenêtres (voir
     // `win32::clic_molette_bureau`). ⛔ PAS sous le harnais : il tourne à côté de
     // la session vivante, et ouvrirait SA sphère aux clics de l'utilisateur.

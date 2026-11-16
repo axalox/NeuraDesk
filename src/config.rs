@@ -3843,6 +3843,13 @@ pub fn save_effet_agrandissement_style(code: u32) {
 /// l'utilisateur, la case des Réglages doit être cochée.
 pub const EFFET_INJECTION: &str = "effet_injection";
 
+/// **LE CROCHET DES EFFETS DE FENÊTRES** — `SetWinEventHook` sur la création,
+/// l'affichage, le masquage et le premier plan de TOUTES les fenêtres, plus le
+/// fil de rendu de la surcouche (voir `win32::ouverture_fenetres::activer_crochet`).
+/// Actif par défaut ; décoché, aucun effet de fenêtre ne joue et rien n'est
+/// injecté.
+pub const EFFET_CROCHET: &str = "effet_crochet";
+
 /// Les lueurs (voir `gfx::lueur`, qui porte le format). `None` : jamais réglées.
 pub fn load_lueurs() -> Option<String> {
     fs::read_to_string(config_path("lueurs.txt")?).ok()
