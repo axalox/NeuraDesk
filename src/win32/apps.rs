@@ -126,7 +126,11 @@ impl AppLaunch {
     /// `AppEntry::launch` qui prêterait à confusion avec ce champ).
     pub fn launch(&self) {
         match self {
-            AppLaunch::Shortcut { target, .. } => appicon::launch(target),
+            AppLaunch::Shortcut { .. } => {
+                if let Some(chemin) = self.chemin_a_lancer() {
+                    appicon::launch(chemin);
+                }
+            }
             // Même syntaxe que la barre d'adresse de l'Explorateur pour
             // ouvrir une appli UWP par son identifiant (voir doc de
             // `win32::uwp_apps`) — PAS `appicon::launch` : une appli UWP n'a
@@ -153,6 +157,17 @@ impl AppLaunch {
     /// à l'avance quelles apps UWP le permettent. Seul un jeu lancé par
     /// protocole (`UriProtocol` — Steam) ne le permet pas : aucun moyen de
     /// faire transiter un verbe `"runas"` à travers une URI `steam://...`.
+    /// Ce qu'il faut LANCER pour un raccourci : le `.lnk` lui-même tant qu'il
+    /// existe, sinon sa cible. **Pas la cible d'office** : un raccourci peut
+    /// porter des arguments (`powershell.exe -File lancer.ps1`), que
+    /// `appicon::launch` relit dans le `.lnk` — lancer la cible seule ouvrait un
+    /// PowerShell nu au lieu du script. `None` pour les autres variantes.
+    pub fn chemin_a_lancer(&self) -> Option<&Path> {
+        let AppLaunch::Shortcut { target, shortcut_path } = self else { return None };
+        let est_un_lnk = shortcut_path.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk"));
+        Some(if est_un_lnk && shortcut_path.is_file() { shortcut_path } else { target })
+    }
+
     pub fn can_run_as_admin(&self) -> bool {
         matches!(self, AppLaunch::Shortcut { .. } | AppLaunch::Uwp { .. })
     }
@@ -162,7 +177,11 @@ impl AppLaunch {
     /// tenter une action qui échouerait de toute façon silencieusement.
     pub fn launch_as_admin(&self) {
         match self {
-            AppLaunch::Shortcut { target, .. } => appicon::launch_as_admin(target),
+            AppLaunch::Shortcut { .. } => {
+                if let Some(chemin) = self.chemin_a_lancer() {
+                    appicon::launch_as_admin(chemin);
+                }
+            }
             AppLaunch::Uwp { app_user_model_id } => {
                 appicon::open_as_admin(&format!(r"shell:AppsFolder\{app_user_model_id}"));
             }
@@ -825,6 +844,29 @@ unsafe fn icon_location(shell_link: &IShellLinkW) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un raccourci porte ses ARGUMENTS (`powershell.exe -File lancer.ps1`) :
+    /// lancer la cible seule les perdait. On lance donc le `.lnk` tant qu'il
+    /// existe, et la cible sinon (raccourci supprimé depuis le cache, ou entrée
+    /// GOG/Epic dont le « raccourci » est l'exécutable lui-même).
+    #[test]
+    fn un_raccourci_se_lance_par_son_lnk_pour_garder_ses_arguments() {
+        let dossier = std::env::temp_dir().join(format!("nd-lnk-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dossier).unwrap();
+        let lnk = dossier.join("Outil.lnk");
+        std::fs::write(&lnk, b"").unwrap();
+        let cible = PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe");
+
+        let present = AppLaunch::Shortcut { target: cible.clone(), shortcut_path: lnk.clone() };
+        let disparu = AppLaunch::Shortcut { target: cible.clone(), shortcut_path: dossier.join("Absent.lnk") };
+        let exe = AppLaunch::Shortcut { target: cible.clone(), shortcut_path: cible.clone() };
+
+        assert_eq!(present.chemin_a_lancer(), Some(lnk.as_path()));
+        assert_eq!(disparu.chemin_a_lancer(), Some(cible.as_path()));
+        assert_eq!(exe.chemin_a_lancer(), Some(cible.as_path()));
+        assert_eq!(AppLaunch::UriProtocol { uri: "steam://x".into() }.chemin_a_lancer(), None);
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
 
     /// Un choix manuel remplace les catégories automatiques ; une application sans
     /// choix garde les siennes.
