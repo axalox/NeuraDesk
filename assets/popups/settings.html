@@ -4574,8 +4574,9 @@
           onInput: (v) => go("bottom-icon-scale", v),
         });
         slider(box, {
+          // Jusqu'à 1200 % (demande du 2026-11-16, voir `MAX_LEFT_ICON_SCALE`).
           label: "Taille des icônes de la barre de gauche",
-          min: state.topIconScaleBounds.min, max: state.topIconScaleBounds.max,
+          min: state.leftIconScaleBounds.min, max: state.leftIconScaleBounds.max,
           value: state.leftIconScale,
           valueLabel: (v) => v + "%",
           dataKey: "left-icon-scale",

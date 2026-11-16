@@ -5944,6 +5944,14 @@ fn push_state(refs: &SettingsRefs) {
                 "max": (crate::ui::dock::MAX_BOTTOM_ICON_SCALE * 100.0).round() as i32,
             }),
         );
+        // La GAUCHE aussi, jusqu'à 1200 % (voir `MAX_LEFT_ICON_SCALE`).
+        objet.insert(
+            "leftIconScaleBounds".into(),
+            json!({
+                "min": (crate::ui::dock::MIN_TOP_ICON_SCALE * 100.0).round() as i32,
+                "max": (crate::ui::dock::MAX_LEFT_ICON_SCALE * 100.0).round() as i32,
+            }),
+        );
         // Toute la page suit la taille des textes (voir `.root` de settings.html).
         objet.insert("pageScale".into(), json!(taille_panneaux::global(taille_panneaux::TEXTES)));
         // Hors du grand `json!` : il est à la limite de récursion du compilateur.

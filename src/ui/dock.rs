@@ -266,6 +266,11 @@ fn borner_echelle_bas(scale: f32) -> f32 {
 /// même règle que celles du haut et du bas : agrandie, une icône s'arrête à la
 /// largeur de la barre.
 pub const DEFAULT_LEFT_ICON_SCALE: f32 = 1.0;
+/// ⚠️ **SA BORNE HAUTE EST 1200 %** — DEMANDE EXPLICITE (2026-11-16) : « autorise
+/// la taille des icônes de la barre de gauche jusqu'à 1200 % » (750 % d'abord). La règle de
+/// `taille_a_l_echelle` reste : l'icône s'arrête à la largeur de la barre, le
+/// gain se voit donc sur une barre LARGE.
+pub const MAX_LEFT_ICON_SCALE: f32 = 12.0;
 
 static LEFT_ICON_SCALE_BITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3F80_0000); // 1.0
 
@@ -273,9 +278,13 @@ pub fn left_icon_scale() -> f32 {
     f32::from_bits(LEFT_ICON_SCALE_BITS.load(std::sync::atomic::Ordering::Relaxed))
 }
 
-/// Pose l'échelle, bornée par `MIN_TOP_ICON_SCALE`/`MAX_TOP_ICON_SCALE`.
+/// Pose l'échelle, bornée par `MIN_TOP_ICON_SCALE`/`MAX_LEFT_ICON_SCALE`.
 pub fn set_left_icon_scale(scale: f32) {
-    LEFT_ICON_SCALE_BITS.store(borner_echelle(scale).to_bits(), std::sync::atomic::Ordering::Relaxed);
+    LEFT_ICON_SCALE_BITS.store(borner_echelle_gauche(scale).to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn borner_echelle_gauche(scale: f32) -> f32 {
+    if scale.is_finite() { scale.clamp(MIN_TOP_ICON_SCALE, MAX_LEFT_ICON_SCALE) } else { DEFAULT_LEFT_ICON_SCALE }
 }
 
 /// Taille d'une icône d'une barre LATÉRALE de largeur `bar_width` : celle de gauche
@@ -14609,6 +14618,18 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
         assert_eq!(borner_echelle_bas(f32::NAN), DEFAULT_BOTTOM_ICON_SCALE);
         assert_eq!(taille_a_l_echelle(80.0, 250.0, 3.0), 240.0);
         assert_eq!(taille_a_l_echelle(80.0, 250.0, 4.5), 250.0, "bornée par l'épaisseur");
+    }
+
+    /// La barre de GAUCHE monte à 1200 % (demande du 2026-11-16) ; sa taille
+    /// s'arrête toujours à la largeur de la barre.
+    #[test]
+    fn l_echelle_de_gauche_monte_a_1200() {
+        assert_eq!(MAX_LEFT_ICON_SCALE, 12.0);
+        assert_eq!(borner_echelle_gauche(11.0), 11.0, "la borne du haut (150 %) ne s'applique plus à gauche");
+        assert_eq!(borner_echelle_gauche(20.0), MAX_LEFT_ICON_SCALE);
+        assert_eq!(borner_echelle_gauche(0.1), MIN_TOP_ICON_SCALE);
+        assert_eq!(borner_echelle_gauche(f32::NAN), DEFAULT_LEFT_ICON_SCALE);
+        assert_eq!(taille_laterale(Side::Left, 400.0, 12.0), 400.0, "bornée par la largeur de la barre");
     }
 
     /// L'échelle de la barre de gauche ne touche qu'elle : la droite garde sa taille.
