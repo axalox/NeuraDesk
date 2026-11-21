@@ -138,7 +138,6 @@ pub const PERSONNAGES: &[Personnage] = &[
     p("nd-grenouille", "Grenouille", "Créées pour NeuraDesk"),
     p("nd-girafe", "Girafe", "Créées pour NeuraDesk"),
     p("nd-dragon", "Dragon", "Créées pour NeuraDesk"),
-    p("nd-papillon", "Papillon", "Créées pour NeuraDesk"),
     p("nd-rousse", "Femme rousse", "Créées pour NeuraDesk"),
     p("nd-cheveux-roses", "Cheveux roses", "Créées pour NeuraDesk"),
 ];
@@ -986,7 +985,7 @@ mod tests {
         let styles = PERSONNAGES.iter().filter(|p| p.famille == "Styles du renard").count();
         assert_eq!(styles, 5);
         let creees = PERSONNAGES.iter().filter(|p| p.famille == "Créées pour NeuraDesk").count();
-        assert_eq!(creees, 7);
+        assert_eq!(creees, 6);
         assert_eq!(PERSONNAGES.len() - styles - creees, 59);
         let mut noms: Vec<_> = PERSONNAGES.iter().map(|p| p.nom).collect();
         noms.sort_unstable();

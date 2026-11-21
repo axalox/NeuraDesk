@@ -1,4 +1,4 @@
-# Les mascottes DESSINEES pour NeuraDesk (2026-11-14) : sept personnages en
+# Les mascottes DESSINEES pour NeuraDesk (2026-11-14) : six personnages en
 # vecteurs, au format de page-mascot — deux planches 3x3 :
 #   directions : haut-gauche, haut, haut-droite, gauche, centre, droite,
 #                bas-gauche, bas, bas-droite
@@ -316,30 +316,6 @@ def dragon(c):
     return out
 
 
-def papillon(c):
-    HX, HY, BX = c["HX"], c["HY"], c["BX"]
-    out = ""
-    for s in (-1, 1):  # ailes
-        ux, uy = BX + s * 80, 140
-        out += ell(ux, uy, 60, 52, "#ff9a3c", sw=4, extra=f'transform="rotate({s * 18} {ux:.1f} {uy})"')
-        out += ell(ux + s * 10, uy - 8, 30, 24, "#ffd166", stroke=None, extra=f'transform="rotate({s * 18} {ux + s * 10:.1f} {uy - 8})"')
-        out += ell(ux + s * 26, uy - 24, 8, 8, "#ffffff", stroke=None)
-        out += ell(ux + s * 36, uy - 2, 6, 6, "#ffffff", stroke=None)
-        lx, ly = BX + s * 66, 236
-        out += ell(lx, ly, 42, 38, "#f06f9a", sw=4, extra=f'transform="rotate({s * -20} {lx:.1f} {ly})"')
-        out += ell(lx + s * 8, ly + 6, 16, 14, "#ffb3c8", stroke=None)
-    out += buste("#4a3c6e", x=150, y0=210, l=40)
-    for y in (236, 258, 278):
-        out += path(f"M114,{y} Q150,{y + 6} 186,{y}", stroke="#6b5a96", sw=4)
-    for s in (-1, 1):  # antennes
-        ax = HX + s * 26
-        tx = HX + s * 58 + c["dx"] * 5
-        out += path(f"M{ax:.1f},{HY - 64:.1f} Q{ax + s * 6:.1f},{HY - 110:.1f} {tx:.1f},{HY - 106:.1f} q{s * 10:.1f},2 {s * 4:.1f},12 q{-s * 8:.1f},2 {-s * 6:.1f},-6", sw=4)
-    out += tete(c, "#5d4d88", 80, 76)
-    out += ell(HX - 30, HY - 40, 22, 12, "#7a69a8", stroke=None, extra='opacity="0.7"')
-    return out
-
-
 def cheveux_avant(c, couleur, sombre, style):
     HX, HY, dx = c["HX"], c["HY"], c["dx"]
     m = dx * 9
@@ -416,7 +392,6 @@ PERSOS = {
     "nd-grenouille": (grenouille, dict(oeil=dict(rx=19, ry=20, ecart=44, y=-46, iris="#2b2a2a", blanc=True), bouche_y=26, bouche_l=2.6, joue_dx=22, joue_dy=56)),
     "nd-girafe": (girafe, dict(oeil=dict(rx=12, ry=15, ecart=34, y=-10, iris="#3b2414", cils=True), bouche_y=58, joue_dx=14, joue_dy=26)),
     "nd-dragon": (dragon, dict(oeil=dict(rx=14, ry=17, ecart=36, y=-12, iris="#f0b429", pupille="#3a2208"), bouche_y=52, bouche_l=1.3, joue_dx=14, joue_dy=26)),
-    "nd-papillon": (papillon, dict(oeil=dict(rx=17, ry=20, ecart=34, y=-2, iris="#2a1f3d", blanc=True), bouche_y=36, bouche_trait="#fbe3f0", joue_dx=12)),
     "nd-rousse": (rousse, dict(oeil=dict(rx=13, ry=16, ecart=32, y=4, iris="#3f8a55", pupille="#16301e", cils=True), bouche_y=40, taches_rousseur=True)),
     "nd-cheveux-roses": (rose, dict(oeil=dict(rx=15, ry=19, ecart=32, y=6, iris="#8a5ad0", pupille="#3a1f5e", cils=True), bouche_y=40)),
 }

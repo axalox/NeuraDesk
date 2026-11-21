@@ -95,8 +95,8 @@ Les planches ont été réduites de 1080 à 768 px ; le comportement (regard en 
 secteurs, réactions au clic) est porté depuis son `src/mascot.tsx`.
 
 
-Les sept personnages `nd-*` du même dossier (mouche, grenouille, girafe, dragon,
-papillon, femme rousse, jeune femme aux cheveux roses) ne viennent pas de page-mascot :
+Les six personnages `nd-*` du même dossier (mouche, grenouille, girafe, dragon,
+femme rousse, jeune femme aux cheveux roses) ne viennent pas de page-mascot :
 ils sont dessinés en vecteurs par `tools/mascottes_dessinees.py`, et couverts par la
 GPLv3 comme le reste du programme.
 
