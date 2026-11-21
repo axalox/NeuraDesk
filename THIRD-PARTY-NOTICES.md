@@ -100,6 +100,18 @@ femme rousse, jeune femme aux cheveux roses) ne viennent pas de page-mascot :
 ils sont dessinés en vecteurs par `tools/mascottes_dessinees.py`, et couverts par la
 GPLv3 comme le reste du programme.
 
+Le chat à lunettes `nd-matou`, la pieuvre à lunettes `nd-pieuvre`, le hibou mécanicien
+`nd-hibou` et le robot `nd-neura` (chacun avec ses cinq styles `-ink`, `-sketch`, `-riso`,
+`-paper`, `-pixel`) ont un corps dessiné par IA : **FLUX.1-schnell** de Black Forest Labs,
+sous licence **Apache-2.0** (le chat sur le Space Hugging Face, les trois autres sur un
+serveur ComfyUI local), généré une fois et gardé sous `tools/mascottes_ia/`.
+Les têtes tournées des planches de regard viennent de **Qwen-Image-Edit-2509** (Alibaba Qwen,
+**Apache-2.0**), accéléré par le LoRA **Qwen-Image-Lightning** (lightx2v, **Apache-2.0**), sur le
+même serveur local ; elles sont gardées sous `tools/mascottes_ia/` et assemblées par
+`tools/mascottes_tetes.py`. Les yeux, bouches, décors et styles sont
+ajoutés par `tools/mascottes_ia.py`. Une image produite par une IA n'a pas d'auteur
+humain identifié ; elle est distribuée avec le programme sous la même GPLv3.
+
 ---
 
 ## 2. Police

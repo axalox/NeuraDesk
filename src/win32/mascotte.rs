@@ -140,6 +140,33 @@ pub const PERSONNAGES: &[Personnage] = &[
     p("nd-dragon", "Dragon", "Créées pour NeuraDesk"),
     p("nd-rousse", "Femme rousse", "Créées pour NeuraDesk"),
     p("nd-cheveux-roses", "Cheveux roses", "Créées pour NeuraDesk"),
+    // ⭐ LE CORPS DESSINÉ PAR UNE IA (2026-11-21) : FLUX.1-schnell, une image
+    // gardée dans `tools/mascottes_ia/` ; les yeux, bouches et décors sont ceux
+    // du script — `tools/mascottes_ia.py` rend la couleur et les cinq styles.
+    p("nd-matou", "Chat à lunettes", "Créées pour NeuraDesk"),
+    p("nd-matou-ink", "Chat à lunettes à l'encre", "Styles du chat à lunettes"),
+    p("nd-matou-sketch", "Chat à lunettes au crayon", "Styles du chat à lunettes"),
+    p("nd-matou-riso", "Chat à lunettes en risographie", "Styles du chat à lunettes"),
+    p("nd-matou-paper", "Chat à lunettes en papier découpé", "Styles du chat à lunettes"),
+    p("nd-matou-pixel", "Chat à lunettes en pixels", "Styles du chat à lunettes"),
+    p("nd-pieuvre", "Pieuvre à lunettes", "Créées pour NeuraDesk"),
+    p("nd-pieuvre-ink", "Pieuvre à lunettes à l'encre", "Styles de la pieuvre à lunettes"),
+    p("nd-pieuvre-sketch", "Pieuvre à lunettes au crayon", "Styles de la pieuvre à lunettes"),
+    p("nd-pieuvre-riso", "Pieuvre à lunettes en risographie", "Styles de la pieuvre à lunettes"),
+    p("nd-pieuvre-paper", "Pieuvre à lunettes en papier découpé", "Styles de la pieuvre à lunettes"),
+    p("nd-pieuvre-pixel", "Pieuvre à lunettes en pixels", "Styles de la pieuvre à lunettes"),
+    p("nd-hibou", "Hibou mécanicien", "Créées pour NeuraDesk"),
+    p("nd-hibou-ink", "Hibou mécanicien à l'encre", "Styles du hibou mécanicien"),
+    p("nd-hibou-sketch", "Hibou mécanicien au crayon", "Styles du hibou mécanicien"),
+    p("nd-hibou-riso", "Hibou mécanicien en risographie", "Styles du hibou mécanicien"),
+    p("nd-hibou-paper", "Hibou mécanicien en papier découpé", "Styles du hibou mécanicien"),
+    p("nd-hibou-pixel", "Hibou mécanicien en pixels", "Styles du hibou mécanicien"),
+    p("nd-neura", "Neura le robot", "Créées pour NeuraDesk"),
+    p("nd-neura-ink", "Neura le robot à l'encre", "Styles de Neura le robot"),
+    p("nd-neura-sketch", "Neura le robot au crayon", "Styles de Neura le robot"),
+    p("nd-neura-riso", "Neura le robot en risographie", "Styles de Neura le robot"),
+    p("nd-neura-paper", "Neura le robot en papier découpé", "Styles de Neura le robot"),
+    p("nd-neura-pixel", "Neura le robot en pixels", "Styles de Neura le robot"),
 ];
 
 pub const PAR_DEFAUT: &str = "fox";
@@ -985,8 +1012,12 @@ mod tests {
         let styles = PERSONNAGES.iter().filter(|p| p.famille == "Styles du renard").count();
         assert_eq!(styles, 5);
         let creees = PERSONNAGES.iter().filter(|p| p.famille == "Créées pour NeuraDesk").count();
-        assert_eq!(creees, 6);
-        assert_eq!(PERSONNAGES.len() - styles - creees, 59);
+        assert_eq!(creees, 10);
+        // Les styles des mascottes IA : cinq par personnage (quatre personnages),
+        // chacun dans sa famille.
+        let styles_ia = PERSONNAGES.iter().filter(|p| p.famille.starts_with("Styles ") && p.famille != "Styles du renard").count();
+        assert_eq!(styles_ia, 20);
+        assert_eq!(PERSONNAGES.len() - styles - creees - styles_ia, 59);
         let mut noms: Vec<_> = PERSONNAGES.iter().map(|p| p.nom).collect();
         noms.sort_unstable();
         noms.dedup();
