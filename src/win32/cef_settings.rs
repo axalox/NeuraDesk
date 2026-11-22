@@ -5310,6 +5310,7 @@ fn push_state(refs: &SettingsRefs) {
                 "bovo": refs.features.bovo,
                 "patience": refs.features.patience,
                 "mascotte": refs.features.mascotte,
+                "dns": refs.features.dns,
                 "display_settings": refs.features.display_settings,
                 "optional_features": refs.features.optional_features,
                 "notifications": refs.features.notifications,

@@ -1015,6 +1015,12 @@ impl DockInstance {
         if let Some(instance) = &mascotte_instance {
             push_icon_batch(&mut batches, &textures.mascotte, instance, clipped_for(mascotte_icon_index));
         }
+        // DNS (voir `win32::cef_dns`) — même règle, `+ 1`.
+        let dns_icon_index = mascotte_icon_index + 1;
+        let dns_instance = self.dock.external_glyph_instance(dns_icon_index, &layout, effective_topbar_text_color);
+        if let Some(instance) = &dns_instance {
+            push_icon_batch(&mut batches, &textures.dns, instance, clipped_for(dns_icon_index));
+        }
         let moniteur_instance = self.dock.external_glyph_instance(moniteur_icon_index, &layout, effective_topbar_text_color);
         if let Some(instance) = &moniteur_instance {
             push_icon_batch(&mut batches, &textures.moniteur, instance, clipped_for(moniteur_icon_index));
@@ -1658,6 +1664,7 @@ pub struct DockTextures {
     pub bovo: Texture,
     pub patience: Texture,
     pub mascotte: Texture,
+    pub dns: Texture,
 }
 
 /// Bundle of rendered bar background textures.
@@ -1689,7 +1696,7 @@ mod tests {
 
     /// Les applets, DANS L'ORDRE de `Dock::new` — c'est la table de
     /// résolution de tout ce fichier, et de `apply_topbar_features`.
-    const APPLETS: [&str; 50] = [
+    const APPLETS: [&str; 51] = [
         "alimentation",
         "terminal",
         "son",
@@ -1764,6 +1771,8 @@ mod tests {
         "patience",
         // MASCOTTE (2026-11-14) — même règle, EN FIN.
         "mascotte",
+        // DNS (2026-11-22) — même règle, EN FIN.
+        "dns",
     ];
 
     /// **LE TEST QUI AURAIT ATTRAPÉ LE DÉFAUT DE DISPLAY2 (2026-09-23).**
@@ -1888,6 +1897,7 @@ mod tests {
             bovo: true,
             patience: true,
             mascotte: true,
+            dns: true,
         };
         crate::app::apply_topbar_features(&mut instance.dock, PINS, &features);
 

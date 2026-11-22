@@ -357,6 +357,11 @@ pub(crate) struct Features {
     /// clic. Une BASCULE posée dans Intégrés après « Patience » (voir
     /// `MASCOTTE_INTEGRES`), index EN FIN DE CHAÎNE.
     pub mascotte: bool,
+    /// **DNS** (voir `win32::cef_dns`) — DEMANDE (2026-11-22) : « dans intégrés
+    /// je voudrais une applet pour modifier le dns de windows ». Une FENÊTRE
+    /// posée dans Intégrés après « Mascotte » (voir `DNS_INTEGRES`), index EN
+    /// FIN DE CHAÎNE.
+    pub dns: bool,
     /// Applet « Réglages de l'écran » (voir `win32::reglages_ecran`) — DEMANDE
     /// EXPLICITE : « une applet dans la zone réglages pour ouvrir les réglages
     /// écran dans les paramètres windows ». Une ACTION.
@@ -536,6 +541,7 @@ impl Features {
         bovo: config::load_feature_enabled("bovo"),
         patience: config::load_feature_enabled("patience"),
         mascotte: config::load_feature_enabled("mascotte"),
+        dns: config::load_feature_enabled("dns"),
         display_settings: config::load_feature_enabled("display_settings"),
         calculatrice: config::load_feature_enabled("calculatrice"),
         ssh: config::load_feature_enabled("ssh"),
@@ -662,6 +668,7 @@ pub(crate) fn set_feature_by_name(features: &mut Features, name: &str, enabled: 
         "bovo" => &mut features.bovo,
         "patience" => &mut features.patience,
         "mascotte" => &mut features.mascotte,
+        "dns" => &mut features.dns,
         "display_settings" => &mut features.display_settings,
         "calculatrice" => &mut features.calculatrice,
         "ssh" => &mut features.ssh,
@@ -737,6 +744,7 @@ fn get_feature_by_name(features: &Features, name: &str) -> Option<bool> {
         "bovo" => features.bovo,
         "patience" => features.patience,
         "mascotte" => features.mascotte,
+        "dns" => features.dns,
         "display_settings" => features.display_settings,
         "calculatrice" => features.calculatrice,
         "ssh" => features.ssh,
@@ -882,6 +890,7 @@ pub(crate) fn apply_topbar_features(dock: &mut Dock, pinned_apps_count: usize, f
     let bovo_icon_index = reversi_icon_index + 1;
     let patience_icon_index = bovo_icon_index + 1;
     let mascotte_icon_index = patience_icon_index + 1;
+    let dns_icon_index = mascotte_icon_index + 1;
     // ⭐ LA TABLE DES NOMS DU NOYAU (2026-10-29, étape 1 du plan
     // `docs/plans/disposition-barres-zones-icones.md`) : chaque applet reçoit SON
     // nom au moment où son index est calculé — la connaissance reste ici, le dock
@@ -940,6 +949,7 @@ pub(crate) fn apply_topbar_features(dock: &mut Dock, pinned_apps_count: usize, f
         (bovo_icon_index, "bovo"),
         (patience_icon_index, "patience"),
         (mascotte_icon_index, "mascotte"),
+        (dns_icon_index, "dns"),
     ]);
     // ⛔ **UNE SEULE LIGNE PAR CHANGEMENT, PAS UNE PAR FRAME.** `apply_topbar_features`
     // tourne à CHAQUE tour de boucle : ce `diag!` écrivait donc 50 lignes par seconde
@@ -1022,6 +1032,7 @@ pub(crate) fn apply_topbar_features(dock: &mut Dock, pinned_apps_count: usize, f
     set_icon_feature_enabled(dock, bovo_icon_index, features.bovo);
     set_icon_feature_enabled(dock, patience_icon_index, features.patience);
     set_icon_feature_enabled(dock, mascotte_icon_index, features.mascotte);
+    set_icon_feature_enabled(dock, dns_icon_index, features.dns);
 }
 
 /// Icônes DÉSACTIVÉES PAR DÉFAUT sur un écran secondaire, en plus d'une
@@ -1054,7 +1065,7 @@ pub(crate) fn apply_topbar_features(dock: &mut Dock, pinned_apps_count: usize, f
 /// chose sans mentir. Même traitement que `terminal` : la case disparaît aussi des
 /// Réglages (voir `assets/popups/settings.html`, `SECONDARY_TOPBAR_FEATURES`).
 const SECONDARY_DEFAULT_DISABLED_FEATURES: &[&str] =
-    &["terminal", "network", "clipboard_viewer", "notes", "dash", "theme_toggle", "night_light", "printer", "calendar", "image_editor", "screen_capture", "minuteur", "surveillance", "windows_update", "device_manager", "observateur_evenements", "display_settings", "calculatrice", "ssh", "couleurs", "optional_features", "notifications", "recherche", "automatisations", "meteo", "verrouillage", "caracteres", "kaomoji", "aide", "proprietes_systeme", "scanner", "shaders", "phonetique", "maths", "lueurs", "textures", "narrateur", "loupe", "moniteur", "enregistrer", "clavier", "jeu2048", "cinq_ou_plus", "quadrapassel", "lightsoff", "reversi", "bovo", "patience", "mascotte"];
+    &["terminal", "network", "clipboard_viewer", "notes", "dash", "theme_toggle", "night_light", "printer", "calendar", "image_editor", "screen_capture", "minuteur", "surveillance", "windows_update", "device_manager", "observateur_evenements", "display_settings", "calculatrice", "ssh", "couleurs", "optional_features", "notifications", "recherche", "automatisations", "meteo", "verrouillage", "caracteres", "kaomoji", "aide", "proprietes_systeme", "scanner", "shaders", "phonetique", "maths", "lueurs", "textures", "narrateur", "loupe", "moniteur", "enregistrer", "clavier", "jeu2048", "cinq_ou_plus", "quadrapassel", "lightsoff", "reversi", "bovo", "patience", "mascotte", "dns"];
 
 /// `Features` effectif pour l'écran secondaire `device_name` : `Features`
 /// PRIMAIRE, moins `SECONDARY_DEFAULT_DISABLED_FEATURES` ci-dessus, PUIS
@@ -2380,6 +2391,7 @@ fn tooltip_label_for_icon(
     bovo_icon_index: usize,
     patience_icon_index: usize,
     mascotte_icon_index: usize,
+    dns_icon_index: usize,
     pinned_apps: &[config::PinnedApp],
 ) -> Option<String> {
     Some(match index {
@@ -2441,6 +2453,7 @@ fn tooltip_label_for_icon(
         i if i == bovo_icon_index => "Jouer à Bovo".to_string(),
         i if i == patience_icon_index => "Jouer à Patience".to_string(),
         i if i == mascotte_icon_index => "Afficher ou masquer la mascotte".to_string(),
+        i if i == dns_icon_index => "Changer les serveurs DNS".to_string(),
         i if i == verrouillage_icon_index => "Verrouiller la session".to_string(),
         // Le libellé donne des EXEMPLES : « caractères accentués » seul ne dirait
         // pas que la ponctuation française et la ligature y sont aussi.
@@ -2530,6 +2543,7 @@ fn zone_row_for_icon(
     bovo_icon_index: usize,
     patience_icon_index: usize,
     mascotte_icon_index: usize,
+    dns_icon_index: usize,
     pinned_apps: &[config::PinnedApp],
 ) -> crate::win32::cef_settings::ZoneRow {
     let label = tooltip_label_for_icon(
@@ -2584,6 +2598,7 @@ fn zone_row_for_icon(
         bovo_icon_index,
         patience_icon_index,
         mascotte_icon_index,
+        dns_icon_index,
         pinned_apps,
     )
     .unwrap_or_else(|| format!("Icône {index}"));
@@ -2638,6 +2653,7 @@ fn zone_row_for_icon(
         i if i == bovo_icon_index => Some("bovo"),
         i if i == patience_icon_index => Some("patience"),
         i if i == mascotte_icon_index => Some("mascotte"),
+        i if i == dns_icon_index => Some("dns"),
         i if i == verrouillage_icon_index => Some("verrouillage"),
         i if i == caracteres_icon_index => Some("caracteres"),
         i if i == kaomoji_icon_index => Some("kaomoji"),
@@ -4123,6 +4139,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let bovo_icon_index = reversi_icon_index + 1;
     let patience_icon_index = bovo_icon_index + 1;
     let mascotte_icon_index = patience_icon_index + 1;
+    let dns_icon_index = mascotte_icon_index + 1;
     // **LES SEPT APPLETS, EN CLAIR DANS LE JOURNAL — C'EST LA TABLE DE RÉSOLUTION
     // DE LA SONDE.** `Dock::external_glyph_instance` signale un glyphe dessiné
     // dans la case d'un ESPACE en donnant un INDEX (défaut non élucidé du
@@ -5697,6 +5714,19 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 config::save_icon_order(&left, &right, &top_left, &top_right);
                 config::save_bool_setting(config::MASCOTTE_INTEGRES, true);
             }
+            // ⭐ **DNS** (voir `win32::cef_dns`) — DEMANDE (2026-11-22). Même
+            // migration à drapeau, ANCRÉE SUR « Mascotte » ; sinon en fin
+            // d'Intégrés (le 2ᵉ séparateur).
+            if !config::load_bool_setting(config::DNS_INTEGRES) {
+                ceder_la_place([&mut left, &mut right, &mut top_left, &mut top_right], dns_icon_index, &est_espace, &nouvelles);
+                let place = match right.iter().position(|&index| index == mascotte_icon_index) {
+                    Some(position) => position + 1,
+                    None => separateur(&right, 1),
+                };
+                right.insert(place, dns_icon_index);
+                config::save_icon_order(&left, &right, &top_left, &top_right);
+                config::save_bool_setting(config::DNS_INTEGRES, true);
+            }
             // VERROUILLER LA SESSION, dans la zone « Réglages » — DEMANDE EXPLICITE
             // (2026-10-05) : « une applet dans Réglages pour verrouiller la
             // session ». Même migration à drapeau, même place rendue.
@@ -5963,6 +5993,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 config::BOVO_INTEGRES,
                 config::PATIENCE_INTEGRES,
                 config::MASCOTTE_INTEGRES,
+                config::DNS_INTEGRES,
             ] {
                 config::save_bool_setting(drapeau, true);
             }
@@ -6015,7 +6046,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     // ⛔ **LA PLACE SE DONNE PAR IDENTITÉ** : `icon_order.txt` range des index, qui peuvent
     // désigner une autre icône d'une version à l'autre (mesuré sur la même VM). Une applet
     // nouvelle qui a une place voulue s'ajoute ICI, à côté de sa pose par défaut.
-    const PLACES_DES_APPLETS: &[(&str, &str)] = &[("noyau:observateur_evenements", "noyau:reglages_affichage"), ("noyau:enregistrer", "noyau:capture_ecran"), ("noyau:lightsoff", "noyau:quadrapassel"), ("noyau:reversi", "noyau:lightsoff"), ("noyau:bovo", "noyau:reversi"), ("noyau:patience", "noyau:bovo"), ("noyau:mascotte", "noyau:patience")];
+    const PLACES_DES_APPLETS: &[(&str, &str)] = &[("noyau:observateur_evenements", "noyau:reglages_affichage"), ("noyau:enregistrer", "noyau:capture_ecran"), ("noyau:lightsoff", "noyau:quadrapassel"), ("noyau:reversi", "noyau:lightsoff"), ("noyau:bovo", "noyau:reversi"), ("noyau:patience", "noyau:bovo"), ("noyau:mascotte", "noyau:patience"), ("noyau:dns", "noyau:mascotte")];
     let applets_ajoutees = dock.ajouter_les_applets_absentes(&mut zones, PLACES_DES_APPLETS);
     if !applets_ajoutees.is_empty() {
         let ecrit = ecriture_permise && config::save_zones(&zones);
@@ -7033,6 +7064,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         crate::win32::cef_reversi::preload,
         crate::win32::cef_bovo::preload,
         crate::win32::cef_patience::preload,
+        crate::win32::cef_dns::preload,
         crate::win32::cef_apropos::preload,
         crate::win32::cef_capture::preload,
         crate::win32::cef_lueurs::preload,
@@ -7929,6 +7961,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     &gfx,
                 ),
                 Some("mascotte") => crate::win32::mascotte::afficher(true),
+                Some("dns") => crate::win32::cef_dns::toggle(
+                    crate::win32::cef_dns::rect_pour_ecran_primaire(),
+                    &gfx,
+                ),
                 Some("apropos") => crate::win32::cef_apropos::toggle(
                     crate::win32::cef_apropos::rect_pour_ecran_primaire(),
                     &gfx,
@@ -9759,6 +9795,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 // MASCOTTE (DEMANDE, 2026-11-14) — une BASCULE :
                                 // la fenêtre en couches apparaît ou disparaît.
                                 crate::win32::mascotte::basculer();
+                            }
+                            _ if index == dns_icon_index => {
+                                // DNS (DEMANDE, 2026-11-22) — une FENÊTRE.
+                                let rect = crate::win32::cef_dns::rect_pour_ecran_primaire();
+                                crate::win32::cef_dns::toggle(rect, &gfx);
                             }
                             _ if index == windows_update_icon_index => {
                                 // WINDOWS UPDATE — une ACTION, comme la file
@@ -11701,6 +11742,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 crate::win32::cef_reversi::recaler_si_il_ne_tient_plus();
                 crate::win32::cef_bovo::recaler_si_il_ne_tient_plus();
                 crate::win32::cef_patience::recaler_si_il_ne_tient_plus();
+                crate::win32::cef_dns::recaler_si_il_ne_tient_plus();
                 crate::win32::cef_apropos::recaler_si_il_ne_tient_plus();
                 crate::win32::cef_capture::recaler_si_il_ne_tient_plus();
                 crate::win32::cef_visionneuse::recaler_si_il_ne_tient_plus();
@@ -12142,6 +12184,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     bovo_icon_index,
                     patience_icon_index,
                     mascotte_icon_index,
+                    dns_icon_index,
                     &pinned_apps,
                 )
             };
@@ -13419,6 +13462,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             crate::win32::cef_patience::dispatch_actions();
             crate::win32::cef_patience::refresh_if_visible();
             crate::win32::cef_patience::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_dns::dispatch_actions();
+            crate::win32::cef_dns::refresh_if_visible();
+            crate::win32::cef_dns::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
             // « À PROPOS DE NEURADESK » (voir `win32::cef_apropos`).
             crate::win32::cef_apropos::dispatch_actions();
             crate::win32::cef_apropos::refresh_if_visible();
@@ -14601,6 +14647,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             bovo_icon_index,
                             patience_icon_index,
                             mascotte_icon_index,
+                            dns_icon_index,
                             &pinned_apps,
                         )
                     })
@@ -16596,6 +16643,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             let bovo_instance = dock.external_glyph_instance(bovo_icon_index, &layout, effective_topbar_text_color);
             let patience_instance = dock.external_glyph_instance(patience_icon_index, &layout, effective_topbar_text_color);
             let mascotte_instance = dock.external_glyph_instance(mascotte_icon_index, &layout, effective_topbar_text_color);
+            let dns_instance = dock.external_glyph_instance(dns_icon_index, &layout, effective_topbar_text_color);
             let proprietes_systeme_instance = dock.external_glyph_instance(proprietes_systeme_icon_index, &layout, effective_topbar_text_color);
             // Échelle de survol de l'horloge — son PROPRE animateur, donc son
             // propre réglage (voir `clock_hover`, et `dock::clock_hover_scale`).
@@ -17344,6 +17392,18 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     &icones.mascotte,
                     instance,
                     clipped_for(mascotte_icon_index),
+                );
+            }
+            if let Some(instance) = &dns_instance {
+                push_dock_icon(
+                    &mut batches,
+                    &mut differes,
+                    &mut hover_icon,
+                    premier_plan,
+                    dns_icon_index,
+                    &icones.dns,
+                    instance,
+                    clipped_for(dns_icon_index),
                 );
             }
             if let Some(instance) = &moniteur_instance {
@@ -18397,6 +18457,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     bovo: icones.bovo.clone(),
                     patience: icones.patience.clone(),
                     mascotte: icones.mascotte.clone(),
+                    dns: icones.dns.clone(),
                 };
                 render_secondary_docks(
                     &gfx.device,
@@ -18505,6 +18566,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 Some("reversi") => Some(crate::win32::cef_reversi::debug_dump_backbuffer),
                 Some("bovo") => Some(crate::win32::cef_bovo::debug_dump_backbuffer),
                 Some("patience") => Some(crate::win32::cef_patience::debug_dump_backbuffer),
+                Some("dns") => Some(crate::win32::cef_dns::debug_dump_backbuffer),
                 Some("apropos") => Some(crate::win32::cef_apropos::debug_dump_backbuffer),
                 Some("capture") => Some(crate::win32::cef_capture::debug_dump_backbuffer),
                 Some("lueurs") => Some(crate::win32::cef_lueurs::debug_dump_backbuffer),
@@ -18959,6 +19021,7 @@ const PAGES_DES_APPLETS: &[(&str, Option<&'static str>)] = &[
     ("patience", Some("patience.html")),
     // Une BASCULE : pas de page, pas de fond au survol.
     ("mascotte", None),
+    ("dns", Some("dns.html")),
 ];
 
 /// La page CEF d'une applet, par son nom de noyau — `None` aussi bien pour une
@@ -23786,7 +23849,7 @@ fn a_zone_row_offers_the_action_its_nature_allows() {
     // `proprietes_systeme_icon_index`, en fin de chaîne). C'est ce qui fait que les
     // rangs ci-dessous ne bougent PAS : une applet insérée au milieu aurait décalé
     // tous les suivants.
-    let row = |index: usize| zone_row_for_icon(index, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, &apps);
+    let row = |index: usize| zone_row_for_icon(index, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, &apps);
 
     // 1. Une APPLET : « Cacher », et l'identifiant est le NOM DE LA FONCTIONNALITÉ
     //    (voir `set_feature_by_name`) — c'est le même interrupteur que la section
@@ -24253,6 +24316,7 @@ mod top_slot_tests {
             bovo: false,
             patience: false,
             mascotte: false,
+            dns: false,
             display_settings: false,
             calculatrice: false,
             ssh: false,

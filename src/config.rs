@@ -3696,6 +3696,9 @@ pub const PATIENCE_INTEGRES: &str = "patience_integres";
 /// **DRAPEAU DE MIGRATION DE LA MASCOTTE** (voir `win32::mascotte`) : posée une
 /// fois dans Intégrés, après « Patience ». Le nom porte la ZONE.
 pub const MASCOTTE_INTEGRES: &str = "mascotte_integres";
+/// **DRAPEAU DE MIGRATION DU DNS** (voir `win32::cef_dns`) : posé une fois dans
+/// Intégrés, après « Mascotte ». Le nom porte la ZONE.
+pub const DNS_INTEGRES: &str = "dns_integres";
 
 /// **DRAPEAU DE MIGRATION DU MONITEUR SYSTÈME** — posé par `app::run` la première
 /// fois qu'il range l'applet dans Intégrés, juste après l'éditeur des textures.

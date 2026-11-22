@@ -182,6 +182,7 @@ macro_rules! jeu_couleur {
         pub const BOVO: &[u8] = include_bytes!(concat!("../../TopbarIcons/", $dossier, "/bovo.png"));
         pub const PATIENCE: &[u8] = include_bytes!(concat!("../../TopbarIcons/", $dossier, "/patience.png"));
         pub const MASCOTTE: &[u8] = include_bytes!(concat!("../../TopbarIcons/", $dossier, "/mascotte.png"));
+        pub const DNS: &[u8] = include_bytes!(concat!("../../TopbarIcons/", $dossier, "/dns.png"));
         }
     };
 }
@@ -249,6 +250,10 @@ const PATIENCE: Icone = Icone { png: texture::PATIENCE_ICON_PNG, fluent: char::f
 /// ⭐ **MASCOTTE** — le renard de page-mascot (MIT) : de face en couleur, au
 /// trait d'encre pour les thèmes monochromes ; glyphe Segoe Fluent « Emoji2 » (E899).
 const MASCOTTE: Icone = Icone { png: texture::MASCOTTE_ICON_PNG, fluent: char::from_u32(0xE899).unwrap(), fluent_couleur: fluent_couleur::MASCOTTE, fluent_3d: fluent_3d::MASCOTTE, energy: energy::MASCOTTE };
+/// ⭐ **DNS** — le carnet d'adresses (Energy Icons, MIT) pour les thèmes
+/// monochromes, le fichier rotatif 📇 (Fluent Emoji, MIT) pour les thèmes
+/// couleur ; glyphe Segoe Fluent « Globe » (E774), distinct.
+const DNS: Icone = Icone { png: texture::DNS_ICON_PNG, fluent: char::from_u32(0xE774).unwrap(), fluent_couleur: fluent_couleur::DNS, fluent_3d: fluent_3d::DNS, energy: energy::DNS };
 const PERIPHERIQUES: Icone = Icone { png: texture::DEVICE_MANAGER_ICON_PNG, fluent: '\u{EEA1}', fluent_couleur: fluent_couleur::PERIPHERIQUES, fluent_3d: fluent_3d::PERIPHERIQUES, energy: energy::PERIPHERIQUES };
 const REGLAGES_ECRAN: Icone = Icone { png: texture::DISPLAY_SETTINGS_ICON_PNG, fluent: '\u{E7F4}', fluent_couleur: fluent_couleur::REGLAGES_ECRAN, fluent_3d: fluent_3d::REGLAGES_ECRAN, energy: energy::REGLAGES_ECRAN };
 const CALCULATRICE: Icone = Icone { png: texture::CALCULATRICE_ICON_PNG, fluent: '\u{E8EF}', fluent_couleur: fluent_couleur::CALCULATRICE, fluent_3d: fluent_3d::CALCULATRICE, energy: energy::CALCULATRICE };
@@ -348,9 +353,9 @@ const LOUPE: Icone = Icone { png: texture::LOUPE_ICON_PNG, fluent: '\u{E8A3}', f
 /// `E9D9` (« Diagnostic ») : un écran traversé d'un tracé de pouls — VU au rendu.
 const MONITEUR: Icone = Icone { png: texture::MONITEUR_ICON_PNG, fluent: '\u{E9D9}', fluent_couleur: fluent_couleur::MONITEUR, fluent_3d: fluent_3d::MONITEUR, energy: energy::MONITEUR };
 
-/// Les cinquante-quatre icônes, pour les tests qui les parcourent toutes.
+/// Les cinquante-cinq icônes, pour les tests qui les parcourent toutes.
 #[cfg(test)]
-const TOUTES: [Icone; 54] = [
+const TOUTES: [Icone; 55] = [
     REGLAGES,
     PRESSE_PAPIERS,
     SON,
@@ -379,6 +384,7 @@ const TOUTES: [Icone; 54] = [
     BOVO,
     PATIENCE,
     MASCOTTE,
+    DNS,
     REGLAGES_ECRAN,
     CALCULATRICE,
     SSH,
@@ -439,6 +445,7 @@ pub struct JeuIcones {
     pub bovo: Texture,
     pub patience: Texture,
     pub mascotte: Texture,
+    pub dns: Texture,
     pub display_settings: Texture,
     pub calculatrice: Texture,
     pub ssh: Texture,
@@ -505,6 +512,7 @@ impl JeuIcones {
             bovo: charger(BOVO)?,
             patience: charger(PATIENCE)?,
             mascotte: charger(MASCOTTE)?,
+            dns: charger(DNS)?,
             display_settings: charger(REGLAGES_ECRAN)?,
             calculatrice: charger(CALCULATRICE)?,
             ssh: charger(SSH)?,

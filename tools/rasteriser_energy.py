@@ -55,6 +55,8 @@ ICONES = [
     ("scanner", "scanner"),
     # L'applet « Enregistrer » (2026-11-01) : une caméra vidéo.
     ("enregistrer", "video"),
+    # L'applet « DNS » (2026-11-22) : le carnet d'adresses (un nom → une adresse).
+    ("dns", "address-book"),
 ]
 
 

@@ -84,6 +84,8 @@ EMOJI = [
     ("lueurs", "Bright button"),
     # L'applet « Enregistrer » (2026-11-01) : 📹, la caméra VIDÉO (📷 est la capture).
     ("enregistrer", "Video camera"),
+    # L'applet « DNS » (2026-11-22) : le fichier rotatif d'adresses.
+    ("dns", "Card index"),
 ]
 
 

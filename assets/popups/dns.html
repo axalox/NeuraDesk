@@ -1,0 +1,347 @@
+<!doctype html>
+<!--
+  win32::cef_dns — changer les serveurs DNS de Windows, en applet de la zone
+  Intégrés.
+
+  DEMANDE (2026-11-22) : « dans intégrés je voudrais une applet pour modifier le
+  dns de windows ».
+
+  La page montre les cartes réseau ACTIVES (nom, serveurs, automatique ou
+  manuel), laisse choisir une carte (ou toutes), un préréglage ou deux adresses
+  libres, puis demande à Rust d'appliquer. Rust REVALIDE tout (index relus dans
+  sa propre énumération, adresses parsées) avant le PowerShell élevé : la page
+  n'est qu'une commodité, jamais une garde.
+
+  ⚠️ **LA FACTURE DE `lightsoff.html`** — bande de titre qui DÉPLACE la fenêtre,
+  punaise, croix, et les MÊMES trois verbes de fenêtre (`deplacer`, `epingler`,
+  `fermer`).
+
+  ⚠️ **AUCUN `background` sur `<html>`/`<body>`** : le fond est le BUREAU FLOUTÉ que
+  Rust dessine SOUS la page.
+
+  ⚠️ Les noms de carte et les adresses sont du CONTENU (`data-no-i18n`) : le
+  dictionnaire anglais ne doit pas les toucher.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: var(--nd-police);
+    font-size: 13px;
+    color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
+    user-select: none;
+  }
+  #barre {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+    cursor: default;
+  }
+  #titre { flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bouton {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--nd-rayon-petit);
+    font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: calc(.85 * max(1, var(--popup-alpha, 1)));
+  }
+  .bouton:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1))); opacity: 1; }
+  .bouton[aria-pressed="true"] {
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1)));
+    opacity: 1;
+  }
+  #corps { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 12px; }
+  h2 { margin: 0 0 6px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; opacity: .7; }
+  .carte {
+    all: unset;
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    border-radius: var(--nd-rayon-controle, 8px);
+    cursor: pointer;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.08 * var(--popup-fond-alpha, 1)));
+    box-shadow: inset 0 0 0 1px rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.14 * var(--popup-fond-alpha, 1)));
+  }
+  .carte:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.14 * var(--popup-fond-alpha, 1))); }
+  .carte[aria-pressed="true"] {
+    background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.28 * var(--popup-fond-alpha, 1)));
+    box-shadow: inset 0 0 0 2px rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.8 * var(--popup-fond-alpha, 1)));
+  }
+  .carte .ligne { display: flex; align-items: baseline; gap: 8px; }
+  .carte .nom { flex: 1; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .carte .mode { font-size: 11px; opacity: .75; white-space: nowrap; }
+  .carte .desc { font-size: 11px; opacity: .6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .carte .serveurs { margin-top: 4px; font-family: var(--nd-police-mono, Consolas, monospace); font-size: 12px; opacity: .9; word-break: break-all; user-select: text; }
+  #vide { opacity: .7; font-style: italic; }
+  #prereglages { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .prereglage {
+    all: unset;
+    padding: 7px 10px;
+    border-radius: var(--nd-rayon-controle, 8px);
+    cursor: pointer;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.10 * var(--popup-fond-alpha, 1)));
+  }
+  .prereglage:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.18 * var(--popup-fond-alpha, 1))); }
+  .prereglage[aria-pressed="true"] { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1))); }
+  .prereglage .p-nom { display: block; font-weight: 700; }
+  .prereglage .p-adr { display: block; font-size: 11px; opacity: .7; font-family: var(--nd-police-mono, Consolas, monospace); }
+  #perso { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; }
+  #perso input {
+    all: unset;
+    padding: 5px 8px;
+    border-radius: var(--nd-rayon-petit, 6px);
+    font-family: var(--nd-police-mono, Consolas, monospace);
+    font-size: 12px;
+    user-select: text;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.10 * var(--popup-fond-alpha, 1)));
+    box-shadow: inset 0 0 0 1px rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.18 * var(--popup-fond-alpha, 1)));
+  }
+  #perso input:focus { box-shadow: inset 0 0 0 2px rgba(var(--popup-accent-rgb, 255, 255, 255), .9); }
+  #perso input.faux { box-shadow: inset 0 0 0 2px rgba(230, 80, 80, .9); }
+  #pied {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px 12px;
+    border-top: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(.12 * var(--popup-fond-alpha, 1)));
+  }
+  #message { flex: 1; font-size: 12px; opacity: .85; }
+  #message.ok { color: #6fd08c; opacity: 1; }
+  #message.ko { color: #ff8a80; opacity: 1; }
+  .action {
+    all: unset;
+    padding: 7px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    border-radius: var(--nd-rayon-controle, 8px);
+    cursor: pointer;
+    white-space: nowrap;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.14 * var(--popup-fond-alpha, 1)));
+  }
+  .action:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.24 * var(--popup-fond-alpha, 1))); }
+  .action.principale { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.50 * var(--popup-fond-alpha, 1))); }
+  .action.principale:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.70 * var(--popup-fond-alpha, 1))); }
+  .action:disabled, .action[aria-disabled="true"] { opacity: .4; cursor: default; }
+  #note { font-size: 11px; opacity: .6; }
+</style>
+</head>
+<body>
+  <div id="barre">
+    <span id="titre">Serveurs DNS</span>
+    <button id="actualiser" class="bouton" title="Actualiser"><span class="ico ico-arrow-clockwise"></span></button>
+    <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
+    <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="corps">
+    <section>
+      <h2>Carte réseau</h2>
+      <div id="cartes"></div>
+      <div id="vide" hidden>Aucune carte réseau connectée.</div>
+    </section>
+    <section>
+      <h2>Serveurs</h2>
+      <div id="prereglages"></div>
+    </section>
+    <section>
+      <h2>Adresses personnalisées</h2>
+      <div id="perso">
+        <label for="primaire">Préféré</label>
+        <input id="primaire" spellcheck="false" placeholder="ex. 1.1.1.1" data-no-i18n>
+        <label for="secondaire">Auxiliaire</label>
+        <input id="secondaire" spellcheck="false" placeholder="facultatif" data-no-i18n>
+      </div>
+    </section>
+    <div id="note">Windows demande l'autorisation administrateur à chaque changement.</div>
+  </div>
+  <div id="pied">
+    <span id="message"></span>
+    <button id="vider" class="action">Vider le cache</button>
+    <button id="appliquer" class="action principale">Appliquer</button>
+  </div>
+<script>
+  "use strict";
+  // Les préréglages : IPv4 puis IPv6. Rust revalide chaque adresse.
+  const PREREGLAGES = [
+    { id: "auto", nom: "Automatique", detail: "Donnés par le réseau (DHCP)" },
+    { id: "cloudflare", nom: "Cloudflare", adresses: ["1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"] },
+    { id: "google", nom: "Google", adresses: ["8.8.8.8", "8.8.4.4", "2001:4860:4860::8888", "2001:4860:4860::8844"] },
+    { id: "quad9", nom: "Quad9", adresses: ["9.9.9.9", "149.112.112.112", "2620:fe::fe", "2620:fe::9"] },
+    { id: "adguard", nom: "AdGuard", adresses: ["94.140.14.14", "94.140.15.15", "2a10:50c0::ad1:ff", "2a10:50c0::ad2:ff"] },
+    { id: "opendns", nom: "OpenDNS", adresses: ["208.67.222.222", "208.67.220.220", "2620:119:35::35", "2620:119:53::53"] },
+  ];
+  const TOUTES = "toutes";
+
+  function go(action) { location.href = "neuradesk://dns/" + action; }
+  document.getElementById("barre").addEventListener("mousedown", function (e) {
+    if (e.target.closest("button")) return;
+    go("deplacer");
+  });
+  document.getElementById("epingle").addEventListener("click", function () { go("epingler"); });
+  document.getElementById("fermer").addEventListener("click", function () { go("fermer"); });
+  document.getElementById("actualiser").addEventListener("click", function () { go("actualiser"); });
+  document.getElementById("vider").addEventListener("click", function () { if (!etat.enCours) go("vider"); });
+
+  let etat = { cartes: [], enCours: false, message: "" };
+  let carteChoisie = null;     // un index, ou TOUTES
+  let prereglageChoisi = null; // un id de PREREGLAGES, ou null (champs libres)
+
+  function el(tag, attrs, enfants) {
+    const n = document.createElement(tag);
+    for (const k in attrs || {}) {
+      if (k === "class") n.className = attrs[k];
+      else if (k === "texte") n.textContent = attrs[k];
+      else n.setAttribute(k, attrs[k]);
+    }
+    for (const e of enfants || []) n.appendChild(e);
+    return n;
+  }
+
+  function dessinerCartes() {
+    const boite = document.getElementById("cartes");
+    boite.textContent = "";
+    const cartes = etat.cartes || [];
+    document.getElementById("vide").hidden = cartes.length > 0;
+    if (carteChoisie !== TOUTES && !cartes.some(function (c) { return c.index === carteChoisie; })) {
+      carteChoisie = cartes.length ? cartes[0].index : null;
+    }
+    for (const c of cartes) {
+      const b = el("button", { class: "carte", "aria-pressed": String(carteChoisie === c.index) }, [
+        el("div", { class: "ligne" }, [
+          el("span", { class: "nom", texte: c.nom, "data-no-i18n": "" }),
+          el("span", { class: "mode", texte: c.manuel ? "Manuel" : "Automatique" }),
+        ]),
+        el("div", { class: "desc", texte: c.description, "data-no-i18n": "" }),
+        el("div", { class: "serveurs", texte: c.serveurs.length ? c.serveurs.join("  ·  ") : "—", "data-no-i18n": "" }),
+      ]);
+      b.addEventListener("click", function () { carteChoisie = c.index; dessinerCartes(); });
+      boite.appendChild(b);
+    }
+    if (cartes.length > 1) {
+      const toutes = el("button", { class: "carte", "aria-pressed": String(carteChoisie === TOUTES) }, [
+        el("div", { class: "ligne" }, [el("span", { class: "nom", texte: "Toutes les cartes actives" })]),
+      ]);
+      toutes.addEventListener("click", function () { carteChoisie = TOUTES; dessinerCartes(); });
+      boite.appendChild(toutes);
+    }
+  }
+
+  function dessinerPrereglages() {
+    const boite = document.getElementById("prereglages");
+    boite.textContent = "";
+    for (const p of PREREGLAGES) {
+      const detail = p.adresses ? p.adresses.slice(0, 2).join(", ") : p.detail;
+      const b = el("button", { class: "prereglage", "aria-pressed": String(prereglageChoisi === p.id) }, [
+        el("span", { class: "p-nom", texte: p.nom }),
+        el("span", p.adresses ? { class: "p-adr", texte: detail, "data-no-i18n": "" } : { class: "p-adr", texte: detail }),
+      ]);
+      b.addEventListener("click", function () {
+        prereglageChoisi = p.id;
+        document.getElementById("primaire").value = p.adresses ? p.adresses[0] : "";
+        document.getElementById("secondaire").value = p.adresses ? p.adresses[1] : "";
+        verifierChamps();
+        dessinerPrereglages();
+      });
+      boite.appendChild(b);
+    }
+  }
+
+  // Une vérification de COMMODITÉ (Rust revalide) : IPv4 pointée ou IPv6.
+  function ressembleAUneAdresse(s) {
+    if (/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(s)) {
+      return s.split(".").every(function (x) { return Number(x) <= 255; });
+    }
+    return /^[0-9a-fA-F:]+$/.test(s) && s.indexOf(":") >= 0 && s.length <= 39;
+  }
+
+  function verifierChamps() {
+    let bon = true;
+    for (const id of ["primaire", "secondaire"]) {
+      const champ = document.getElementById(id);
+      const v = champ.value.trim();
+      const faux = v !== "" && !ressembleAUneAdresse(v);
+      champ.classList.toggle("faux", faux);
+      if (faux) bon = false;
+    }
+    return bon;
+  }
+
+  for (const id of ["primaire", "secondaire"]) {
+    document.getElementById(id).addEventListener("input", function () {
+      prereglageChoisi = null;
+      verifierChamps();
+      dessinerPrereglages();
+    });
+  }
+
+  function montrerMessage(texte, classe) {
+    const m = document.getElementById("message");
+    m.textContent = texte;
+    m.className = classe || "";
+  }
+
+  document.getElementById("appliquer").addEventListener("click", function () {
+    if (etat.enCours) return;
+    if (carteChoisie === null) { montrerMessage("Choisissez une carte réseau.", "ko"); return; }
+    const cartes = carteChoisie === TOUTES ? etat.cartes.map(function (c) { return c.index; }) : [carteChoisie];
+    let quoi;
+    if (prereglageChoisi === "auto") {
+      quoi = "auto";
+    } else {
+      const p = PREREGLAGES.find(function (x) { return x.id === prereglageChoisi; });
+      const liste = p ? p.adresses : [document.getElementById("primaire").value.trim(), document.getElementById("secondaire").value.trim()].filter(Boolean);
+      if (!liste.length) { montrerMessage("Choisissez des serveurs ou saisissez une adresse.", "ko"); return; }
+      if (!p && !verifierChamps()) { montrerMessage("Adresse invalide.", "ko"); return; }
+      quoi = liste.join(",");
+    }
+    go("appliquer/" + cartes.join(",") + "/" + encodeURIComponent(quoi));
+  });
+
+  function dessinerPied() {
+    const enCours = !!etat.enCours;
+    for (const id of ["appliquer", "vider"]) document.getElementById(id).setAttribute("aria-disabled", String(enCours));
+    if (enCours) { montrerMessage("En attente de l'autorisation…"); return; }
+    switch (etat.message) {
+      case "reussi": montrerMessage("Serveurs DNS mis à jour.", "ok"); break;
+      case "annule": montrerMessage("Annulé.", ""); break;
+      case "echec": montrerMessage("Échec du changement.", "ko"); break;
+      case "invalide": montrerMessage("Demande refusée : adresse ou carte invalide.", "ko"); break;
+      default: montrerMessage("", "");
+    }
+  }
+
+  window.setState = function (state) {
+    etat = state || etat;
+    const epingle = document.getElementById("epingle");
+    epingle.setAttribute("aria-pressed", String(!!etat.epingle));
+    epingle.innerHTML = etat.epingle ? '<span class="ico ico-push-pin-fill"></span>' : '<span class="ico ico-push-pin"></span>';
+    epingle.title = etat.epingle ? "Ne plus rester au premier plan" : "Rester au premier plan";
+    dessinerCartes();
+    dessinerPied();
+  };
+
+  dessinerPrereglages();
+  dessinerCartes();
+  dessinerPied();
+  // L'état poussé à l'ouverture précède ce script : le redemander.
+  go("ready");
+</script>
+</body>
+</html>

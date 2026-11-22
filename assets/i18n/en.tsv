@@ -4029,3 +4029,26 @@ Footballeur	Footballer
 Plongeuse	Diver
 Facteur	Postman
 Boulangère	Baker
+Changer les serveurs DNS	Change DNS servers
+DNS	DNS
+Serveurs DNS	DNS servers
+Carte réseau	Network adapter
+Adresses personnalisées	Custom addresses
+Toutes les cartes actives	All active adapters
+Préféré	Preferred
+Auxiliaire	Alternate
+Donnés par le réseau (DHCP)	Provided by the network (DHCP)
+Manuel	Manual
+Vider le cache	Flush cache
+Windows demande l'autorisation administrateur à chaque changement.	Windows asks for administrator permission on every change.
+En attente de l'autorisation…	Waiting for permission…
+Serveurs DNS mis à jour.	DNS servers updated.
+Annulé.	Cancelled.
+Échec du changement.	The change failed.
+Demande refusée : adresse ou carte invalide.	Request refused: invalid address or adapter.
+Choisissez une carte réseau.	Choose a network adapter.
+Choisissez des serveurs ou saisissez une adresse.	Choose servers or type an address.
+Adresse invalide.	Invalid address.
+Aucune carte réseau connectée.	No network adapter connected.
+ex. 1.1.1.1	e.g. 1.1.1.1
+facultatif	optional

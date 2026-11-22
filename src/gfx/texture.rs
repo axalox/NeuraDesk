@@ -136,6 +136,8 @@ pub(crate) const BOVO_ICON_PNG: &[u8] = include_bytes!("../../TopbarIcons/bovo.p
 pub(crate) const PATIENCE_ICON_PNG: &[u8] = include_bytes!("../../TopbarIcons/patience.png");
 /// La MASCOTTE (voir `win32::mascotte`) : le renard de page-mascot (MIT) au trait.
 pub(crate) const MASCOTTE_ICON_PNG: &[u8] = include_bytes!("../../TopbarIcons/mascotte.png");
+/// Le DNS (voir `win32::cef_dns`) : le carnet d'adresses d'Energy Icons (MIT).
+pub(crate) const DNS_ICON_PNG: &[u8] = include_bytes!("../../TopbarIcons/dns.png");
 /// Icône « minuteur » — comptes à rebours et alarmes (voir `win32::minuteur`).
 /// RASTÉRISÉE depuis Keyline Icons (MIT), comme la capture d'écran (voir
 /// `TopbarIcons/SOURCE.md`).

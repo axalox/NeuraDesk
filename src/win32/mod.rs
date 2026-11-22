@@ -72,6 +72,10 @@ pub mod cef_bovo;
 pub mod cef_patience;
 /// La MASCOTTE : un personnage de page-mascot posé à l'écran (fenêtre en couches).
 pub mod mascotte;
+/// Le DNS de Windows : lire les serveurs des cartes actives, les changer (UAC).
+pub mod dns;
+/// La FENÊTRE de l'applet DNS (voir `dns`).
+pub mod cef_dns;
 /// La FENÊTRE de l'applet « Capture d'écran » — même présentation que
 /// l'enregistreur, avec la webcam en plus (voir `cef_capture`).
 pub mod cef_capture;

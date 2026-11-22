@@ -687,3 +687,14 @@ DEMANDE : un personnage de page-mascot posé à l'écran (`win32::mascotte`). So
 - `mascotte.png` et `energy/` : la même case de `fox-ink-directions.webp` (le renard au
   trait), l'encre tirée de l'obscurité et peinte en blanc.
 - Script : `C:/ndwork/scripts/mascotte_icones.py`. Glyphe Fluent : E899 (Emoji2).
+
+## dns.png — le DNS (2026-11-22)
+
+DEMANDE : « dans intégrés je voudrais une applet pour modifier le dns de windows »
+(`win32::cef_dns`). Un nom → une adresse : un CARNET D'ADRESSES.
+
+- `dns.png` et `energy/` : `address-book` d'Energy Icons (MIT, © 2026 Sam Passmore),
+  graisse `48-bold.svg`, rendu par `tools/rasteriser_energy.py` (entrée `dns`).
+- `fluent_couleur/` et `fluent_3d/` : 📇 « Card index » de Fluent Emoji (MIT, © Microsoft),
+  rendu par `tools/rasteriser_fluent_emoji.py` (entrée `dns`).
+- Script de la seule icône : `C:/ndwork/scripts/dns_icones.py`. Glyphe Fluent : E774 (Globe).

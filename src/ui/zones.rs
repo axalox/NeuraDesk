@@ -1191,7 +1191,11 @@ mod tests {
         // applet) : **58 est redevenu une APPLET**, les trois remplisseurs sont
         // **61, 59 et 60**. Le test a rendu `[168, 60, 58, 148, 147, 146, 59]` contre
         // `[168, 60, 148, 147, 146, 59]`.
-        let haut_droite = vec![9, 11, 10, 61, 2, 59, 12, 1, 8, 148, 147, 146, 60];
+        // ⚠️ **REMONTÉES UNE DIX-NEUVIÈME FOIS le 2026-11-22** (le DNS, 55ᵉ
+        // applet) : **59 est redevenu une APPLET**, les trois remplisseurs sont
+        // **62, 60 et 61**. Le test a rendu `[168, 61, 59, 148, 147, 146, 60]` contre
+        // `[168, 61, 148, 147, 146, 60]`.
+        let haut_droite = vec![9, 11, 10, 62, 2, 60, 12, 1, 8, 148, 147, 146, 61];
         (gauche, droite, haut_gauche, haut_droite)
     }
 
@@ -1599,7 +1603,7 @@ mod tests {
         // ⚠️ Puis **57** le 2026-11-10 (Reversi), avec la fixture.
         // ⚠️ Puis **58** le 2026-11-10 (Bovo), avec la fixture.
         // ⚠️ Puis **59** le 2026-11-10 (la Patience), avec la fixture.
-        assert_eq!(dock.spacer_index_at_rank(ordres, ZoneKey::new(BarLetter::Haut, 7).unwrap()), Some(60));
+        assert_eq!(dock.spacer_index_at_rank(ordres, ZoneKey::new(BarLetter::Haut, 7).unwrap()), Some(61));
         // Au-dela du dernier rang, aucun espace.
         assert_eq!(dock.spacer_index_at_rank(ordres, cle(4)), None);
     }
@@ -1635,7 +1639,7 @@ mod tests {
         // remplisseurs de `haut_droite`, donc celui qui reste un espace le plus longtemps.
         // ⚠️ 58 → 59 le 2026-11-10 (Bovo), même raison.
         // ⚠️ 59 → 60 le 2026-11-10 (la Patience), même raison.
-        assert!(dock.is_spacer(60), "premisse : un remplisseur est bien un espace");
+        assert!(dock.is_spacer(62), "premisse : un remplisseur est bien un espace");
         // ⚠️ Les remplisseurs SONT des espaces, mais seuls ceux qu'une liste cite prennent un
         // rang. La barre de gauche en cite 3 (116..118) et non les 77 remplisseurs ; celle du
         // haut en cite 3 d'entre eux (35, 33, 34) en plus de ses 4 espaces « vrais ».
