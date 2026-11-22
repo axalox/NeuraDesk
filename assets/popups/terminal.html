@@ -888,6 +888,9 @@
       if (!s) return;
       s.term.write("\r\x1b[2K");
       go("redimensionner", onglet, s.term.cols, s.term.rows);
+      // Retour de l'invite UAC : Rust rend le clavier au panneau, on le pose
+      // dans l'onglet administrateur s'il est celui qu'on regarde.
+      if (onglet === actif) s.term.focus();
     },
     erreur(onglet, message) {
       const s = sessions.get(onglet);

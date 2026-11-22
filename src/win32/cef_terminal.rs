@@ -42,6 +42,30 @@ thread_local! {
     /// La clé du dernier `window.setState(...)` émis — voir
     /// `cef_minuteur::PAYLOAD` : vidée à l'ouverture ET au `ready`.
     static PAYLOAD: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// **UNE INVITE UAC EST À L'ÉCRAN** (onglet administrateur demandé) —
+    /// DEMANDE (2026-11-22) : « le retour automatique au dash terminal » après
+    /// avoir demandé les droits. L'invite prend le premier plan : sans ce
+    /// drapeau, la perte de focus cachait le panneau. Posé par `ouvrir-admin`,
+    /// levé par `Pret`/`Erreur` (accordé ou refusé), qui rendent le clavier.
+    static ATTENTE_UAC: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+}
+
+/// Au-delà, une attente UAC est tenue pour perdue (relais jamais revenu) : le
+/// panneau retrouve sa règle normale de perte de focus.
+const ATTENTE_UAC_MAX: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// La perte de focus est-elle PARDONNÉE parce qu'une invite UAC est en cours ?
+fn invite_uac_en_cours(depuis: Option<std::time::Instant>, maintenant: std::time::Instant) -> bool {
+    depuis.is_some_and(|d| maintenant.saturating_duration_since(d) < ATTENTE_UAC_MAX)
+}
+
+/// L'invite UAC est finie (accordée ou refusée) : le panneau reprend le
+/// premier plan et le clavier, comme si l'utilisateur n'était jamais parti.
+fn retour_apres_uac() {
+    if ATTENTE_UAC.with(|a| a.take()).is_some() {
+        let obtenu = cef_popup::donner_le_clavier(&SLOT);
+        crate::diag!("[terminal] fin de l'invite UAC : clavier rendu = {obtenu}");
+    }
 }
 
 const SPEC: PopupSpec = PopupSpec {
@@ -196,11 +220,13 @@ fn relayer_evenements() {
             Evenement::Pret { onglet } => {
                 vider(&mut sortie);
                 appeler("pret", &[json!(onglet)]);
+                retour_apres_uac();
             }
             Evenement::Erreur { onglet, message } => {
                 vider(&mut sortie);
                 crate::diag!("[terminal] onglet administrateur {onglet} : {message}");
                 appeler("erreur", &[json!(onglet), json!(message)]);
+                retour_apres_uac();
             }
         }
     }
@@ -267,7 +293,10 @@ pub fn dispatch_actions() {
             }
             ["ouvrir-admin", onglet, shell, colonnes, lignes] => {
                 match (nombre(onglet), Shell::depuis_id(shell), nombre(colonnes), nombre(lignes)) {
-                    (Some(o), Some(s), Some(c), Some(l)) => pty::ouvrir_admin(o, s, c, l),
+                    (Some(o), Some(s), Some(c), Some(l)) => {
+                        ATTENTE_UAC.with(|a| a.set(Some(std::time::Instant::now())));
+                        pty::ouvrir_admin(o, s, c, l)
+                    }
                     _ => crate::diag!("[terminal] ouverture administrateur illisible : {action:?}"),
                 }
             }
@@ -298,6 +327,9 @@ pub fn dispatch_actions() {
 }
 
 pub fn hide_if_focus_elsewhere() {
+    if invite_uac_en_cours(ATTENTE_UAC.with(|a| a.get()), std::time::Instant::now()) {
+        return;
+    }
     cef_popup::hide_if_focus_elsewhere(&SLOT);
 }
 
@@ -389,6 +421,22 @@ mod tests {
         let theme = include_str!("../../assets/popups/terminal_theme.js");
         assert!(theme.contains("window.poserTextureDesTerminaux = function"), "la page reçoit l'image");
         assert!(theme.contains("devicePixelRatio"), "à l'échelle des pixels physiques");
+    }
+
+    /// L'invite UAC d'un onglet administrateur ne CACHE plus le panneau, et le
+    /// retour (accordé OU refusé) lui rend le clavier. Sur l'ancien code, rien
+    /// ne pardonnait la perte de focus : l'invite fermait le dash.
+    #[test]
+    fn l_invite_uac_ne_cache_pas_le_panneau_et_le_retour_rend_le_clavier() {
+        let t0 = std::time::Instant::now();
+        assert!(!super::invite_uac_en_cours(None, t0), "sans invite, la règle normale");
+        assert!(super::invite_uac_en_cours(Some(t0), t0 + std::time::Duration::from_secs(30)));
+        assert!(!super::invite_uac_en_cours(Some(t0), t0 + super::ATTENTE_UAC_MAX), "une attente perdue ne bloque pas pour toujours");
+        let rust = include_str!("cef_terminal.rs");
+        let corps = rust.split("pub fn hide_if_focus_elsewhere() {").nth(1).unwrap_or("");
+        assert!(corps.split("\n}").next().unwrap_or("").contains("invite_uac_en_cours("), "la perte de focus ne consulte pas l'invite");
+        assert_eq!(rust.split("#[cfg(test)]").next().unwrap_or("").matches("retour_apres_uac();").count(), 2, "Pret ET Erreur doivent rendre le clavier");
+        assert!(PAGE.contains("if (onglet === actif) s.term.focus();"), "la page ne pose pas le curseur dans l'onglet");
     }
 
     #[test]
