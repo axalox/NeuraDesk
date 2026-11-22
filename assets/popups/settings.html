@@ -3508,10 +3508,14 @@
     // dashs » — même liste que win32::taille_panneaux::PANNEAUX.
     const PANEL_SCALE_TARGETS = [["Calendrier", "calendar"], ["Minuteur", "minuteur"], ["Surveillance", "surveillance"], ["Calculatrice", "calculatrice"], ["Serveurs SSH", "ssh"], ["Terminal", "terminal"], ["Dash dossier", "dossier"], ["Visionneuse", "visionneuse"], ["Sélecteur de couleurs", "couleurs"], ["Aide", "aide"], ["Scanner", "scanner"], ["Recherche", "recherche"], ["Automatisations", "automatisations"], ["Météo", "meteo"], ["Éditeur de shaders", "shaders"], ["Éditeur de lueurs", "lueurs"], ["Éditeur de textures", "textures"], ["Éditeur d'image", "editeur_image"], ["Moniteur système", "moniteur"]];
 
+    // La rubrique demandée par `window.ouvrirRubrique` (plus bas), rejouée par
+    // chaque reconstruction tant qu'elle est armée.
+    let rubriqueDemandee = null;
     function rebuild() {
       renderMainTabs();
       renderGroupTabs();
       renderScroll();
+      if (rubriqueDemandee) allerALaRubrique(rubriqueDemandee, "instant");
     }
 
     // ⭐ LE FONDU CROISÉ D'UN CHANGEMENT D'ONGLET (View Transitions API) —
@@ -3724,28 +3728,43 @@
       }
       return null;
     }
+    function allerALaRubrique(titre, comportement) {
+      const cible = rubriqueParTitre(titre);
+      if (!cible) return false;
+      // Une rubrique d'un autre groupe est MASQUÉE : on bascule d'abord
+      // sur son groupe, sinon `scrollIntoView` n'aurait rien à montrer.
+      const champ = document.getElementById("category-search");
+      if (champ && champ.value) champ.value = "";
+      if (activeMainTab === "interface" && cible.dataset.groupe && cible.dataset.groupe !== activeGroup) {
+        activeGroup = cible.dataset.groupe;
+        renderGroupTabs();
+      }
+      filtrerLesReglages();
+      cible.scrollIntoView({ behavior: comportement, block: "start" });
+      return true;
+    }
+    // ⭐ OUVRIR LES RÉGLAGES SUR UNE RUBRIQUE, depuis Rust (DEMANDE du
+    // 2026-11-21 : le clic droit sur l'applet Mascotte ouvre le choix de la
+    // mascotte — voir `cef_settings::ouvrir_sur_rubrique`). Les rubriques
+    // d'écran n'existent que sous « Interface » : on y revient d'abord. La
+    // demande reste ARMÉE deux secondes : l'état poussé à l'ouverture peut
+    // reconstruire le panneau juste après, et une reconstruction remet le
+    // défilement à zéro — `rebuild` la rejoue.
+    window.ouvrirRubrique = (titre) => {
+      if (activeMainTab !== "interface") {
+        activeMainTab = "interface";
+        rebuild();
+      }
+      rubriqueDemandee = titre;
+      setTimeout(() => { if (rubriqueDemandee === titre) rubriqueDemandee = null; }, 2000);
+      allerALaRubrique(titre, "instant");
+    };
     function voirAussi(box, titres) {
       const row = el("div", { class: "voir-aussi" });
       row.appendChild(el("span", { class: "voir-aussi-titre" }, ["Voir aussi :"]));
       for (const titre of titres) {
         row.appendChild(
-          el("button", {
-            class: "voir-aussi-lien",
-            onclick: () => {
-              const cible = rubriqueParTitre(titre);
-              if (!cible) return;
-              // Une rubrique d'un autre groupe est MASQUÉE : on bascule d'abord
-              // sur son groupe, sinon `scrollIntoView` n'aurait rien à montrer.
-              const champ = document.getElementById("category-search");
-              if (champ && champ.value) champ.value = "";
-              if (activeMainTab === "interface" && cible.dataset.groupe && cible.dataset.groupe !== activeGroup) {
-                activeGroup = cible.dataset.groupe;
-                renderGroupTabs();
-              }
-              filtrerLesReglages();
-              cible.scrollIntoView({ behavior: "smooth", block: "start" });
-            },
-          }, [titre]),
+          el("button", { class: "voir-aussi-lien", onclick: () => allerALaRubrique(titre, "smooth") }, [titre]),
         );
       }
       box.appendChild(row);

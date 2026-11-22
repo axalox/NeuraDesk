@@ -626,6 +626,20 @@ pub fn toggle(rect: [i32; 4], gfx: &GfxDevice) {
     });
 }
 
+/// ⭐ **OUVRE LES RÉGLAGES SUR UNE RUBRIQUE** (DEMANDE du 2026-11-21 : le clic
+/// droit sur l'applet Mascotte ouvre le choix de la mascotte). `titre` est le
+/// titre FRANÇAIS du `<h2>` de la rubrique (gardé dans `data-titre`, donc aussi
+/// valable en anglais). Déjà ouverts, les Réglages restent ouverts : `toggle`
+/// les aurait refermés. La page bascule elle-même sur le bon groupe et rejoue
+/// la demande si l'état poussé à l'ouverture reconstruit le panneau (voir
+/// `window.ouvrirRubrique` dans settings.html).
+pub fn ouvrir_sur_rubrique(titre: &str, rect: [i32; 4], gfx: &GfxDevice) {
+    if !cef_popup::is_visible(&SLOT) {
+        toggle(rect, gfx);
+    }
+    cef_popup::execute_js(&SLOT, &format!("window.ouvrirRubrique?.({})", json!(titre)));
+}
+
 pub fn hide_if_visible() {
     cef_popup::hide_if_visible(&SLOT);
 }

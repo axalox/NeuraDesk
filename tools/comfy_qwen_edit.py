@@ -36,14 +36,16 @@ def envoyer_image(chemin: str) -> str:
     return json.load(urllib.request.urlopen(req, timeout=60))["name"]
 
 
-def graphe(image: str, graine: int, consigne: str, angles: bool) -> dict:
+def graphe(image: str, graine: int, consigne: str, angles: bool, megapixels: float = 1.0, masque: str | None = None,
+           etapes: int = 4, cfg: float = 1.0, rapide: bool = True, modele: str = MODELE,
+           denoise: float = 1.0) -> dict:
     g = {
-        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": MODELE, "weight_dtype": "default"}},
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": modele, "weight_dtype": "default"}},
         "2": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["1", 0], "lora_name": LORA_RAPIDE, "strength_model": 1.0}},
         "3": {"class_type": "CLIPLoader", "inputs": {"clip_name": ENCODEUR, "type": "qwen_image"}},
         "4": {"class_type": "VAELoader", "inputs": {"vae_name": VAE}},
         "5": {"class_type": "LoadImage", "inputs": {"image": image}},
-        "6": {"class_type": "ImageScaleToTotalPixels", "inputs": {"image": ["5", 0], "upscale_method": "lanczos", "megapixels": 1.0, "resolution_steps": 1}},
+        "6": {"class_type": "ImageScaleToTotalPixels", "inputs": {"image": ["5", 0], "upscale_method": "lanczos", "megapixels": megapixels, "resolution_steps": 1}},
         "7": {"class_type": "TextEncodeQwenImageEditPlus", "inputs": {"clip": ["3", 0], "prompt": consigne, "vae": ["4", 0], "image1": ["6", 0]}},
         "8": {"class_type": "TextEncodeQwenImageEditPlus", "inputs": {"clip": ["3", 0], "prompt": "", "vae": ["4", 0], "image1": ["6", 0]}},
         "9": {"class_type": "VAEEncode", "inputs": {"pixels": ["6", 0], "vae": ["4", 0]}},
@@ -54,14 +56,33 @@ def graphe(image: str, graine: int, consigne: str, angles: bool) -> dict:
         "12": {"class_type": "VAEDecode", "inputs": {"samples": ["11", 0], "vae": ["4", 0]}},
         "13": {"class_type": "SaveImage", "inputs": {"images": ["12", 0], "filename_prefix": "neuradesk_edit"}},
     }
+    g["11"]["inputs"].update(steps=etapes, cfg=cfg, denoise=denoise)
+    if not rapide:  # qualite normale : sans le LoRA Lightning (4 pas)
+        g["10"]["inputs"]["model"] = ["1", 0]
+        del g["2"]
     if angles:
-        g["14"] = {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["2", 0], "lora_name": LORA_ANGLES, "strength_model": 1.0}}
+        g["14"] = {"class_type": "LoraLoaderModelOnly", "inputs": {"model": g["10"]["inputs"]["model"], "lora_name": LORA_ANGLES, "strength_model": 1.0}}
         g["10"]["inputs"]["model"] = ["14", 0]
+    if masque:
+        # RETOUCHE EN PLACE : seul l'interieur du masque (blanc) est redessine,
+        # et le modele raccorde lui-meme ce qu'il dessine a ce qui reste.
+        # `DifferentialDiffusion` suit les gris du masque (bord progressif).
+        g["15"] = {"class_type": "LoadImageMask", "inputs": {"image": masque, "channel": "red"}}
+        g["16"] = {"class_type": "SetLatentNoiseMask", "inputs": {"samples": ["9", 0], "mask": ["15", 0]}}
+        g["17"] = {"class_type": "DifferentialDiffusion", "inputs": {"model": ["10", 0]}}
+        g["11"]["inputs"].update(latent_image=["16", 0], model=["17", 0])
     return g
 
 
-def modifier(entree: str, sortie: str, graine: int, consigne: str, angles: bool = False) -> None:
-    corps = json.dumps({"prompt": graphe(envoyer_image(entree), graine, consigne, angles)}).encode()
+def modifier(entree: str, sortie: str, graine: int, consigne: str, angles: bool = False,
+             megapixels: float = 1.0, masque: str | None = None, **reglages) -> None:
+    """`megapixels` : la taille de travail (0,6 suffit pour des cases de 256 px
+    et va presque deux fois plus vite). `masque` : une image (blanc = a
+    redessiner) de la taille de `entree`. `reglages` : `etapes`, `cfg`,
+    `rapide`, `modele` (voir `graphe`)."""
+    nom_masque = envoyer_image(masque) if masque else None
+    corps = json.dumps({"prompt": graphe(envoyer_image(entree), graine, consigne, angles, megapixels, nom_masque,
+                                         **reglages)}).encode()
     req = urllib.request.Request(f"{SERVEUR}/prompt", corps, {"Content-Type": "application/json"})
     try:
         ident = json.load(urllib.request.urlopen(req, timeout=60))["prompt_id"]

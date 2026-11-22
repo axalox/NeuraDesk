@@ -108,9 +108,24 @@ serveur ComfyUI local), généré une fois et gardé sous `tools/mascottes_ia/`.
 Les têtes tournées des planches de regard viennent de **Qwen-Image-Edit-2509** (Alibaba Qwen,
 **Apache-2.0**), accéléré par le LoRA **Qwen-Image-Lightning** (lightx2v, **Apache-2.0**), sur le
 même serveur local ; elles sont gardées sous `tools/mascottes_ia/` et assemblées par
-`tools/mascottes_tetes.py`. Les yeux, bouches, décors et styles sont
+`tools/mascottes_tetes.py`.
+
+Les 21 extraterrestres `alien-*` (et leurs cinq styles) ont un corps dessiné par
+**FLUX.1-schnell** (Apache-2.0) ; leurs huit regards et leurs réactions sont des retouches de
+**FLUX.2 [klein] 4B** de Black Forest Labs (**Apache-2.0**) ; ceux qui n'ont pas encore été
+refaits gardent des retouches de **Qwen-Image-Edit-2509** avec le LoRA **Qwen-Image-Lightning**
+(Apache-2.0). Toutes sont faites sur un serveur ComfyUI local. Les images de base et les retouches sont gardées sous
+`tools/mascottes_ia/aliens/` ; `tools/mascottes_aliens.py` assemble les planches. Les yeux, bouches, décors et styles sont
 ajoutés par `tools/mascottes_ia.py`. Une image produite par une IA n'a pas d'auteur
 humain identifié ; elle est distribuée avec le programme sous la même GPLv3.
+
+Les 14 personnes `personne-*` (pompière, policier, pilote, jardinier, peintre, cowboy,
+détective, chevalier, princesse, rockeuse, footballeur, plongeuse, facteur, boulangère) sont des
+retouches par **FLUX.2 [klein] 4B** (Black Forest Labs, **Apache-2.0**, serveur ComfyUI local) du
+buste du cuisinier ou de l'infirmière de **page-mascot** (© 2026 Kamran Ahmed, **MIT**, voir
+plus haut), dont elles reprennent le style ; leurs regards et leurs réactions sont aussi faits par
+Klein. Les images sont gardées sous `tools/mascottes_ia/personnes/` et assemblées par
+`tools/mascottes_personnes.py`.
 
 ---
 

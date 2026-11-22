@@ -10982,6 +10982,22 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 editeur_screen = target_device_name.clone();
                                 let rect = crate::win32::cef_capture::rect_pour_ecran_primaire();
                                 crate::win32::cef_capture::toggle_en_gardant_l_interface(rect, &gfx);
+                            } else if primary_dock_clicked && index == mascotte_icon_index {
+                                // Clic droit sur l'applet Mascotte : les Réglages,
+                                // ouverts sur le choix du personnage — DEMANDE du
+                                // 2026-11-21. Le clic gauche garde la bascule
+                                // (afficher/masquer). Même ancrage et même échelle
+                                // que le clic gauche sur l'icône des Réglages.
+                                settings_screen = target_device_name.clone();
+                                crate::win32::cef_settings::set_screen_scale_override(
+                                    secondary_screen_scale_override(&secondary_screen_scales, target_device_name.as_deref(), crate::config::CHAMP_REGLAGES_CONTENU),
+                                    crate::win32::dpi::ratio_dpi_de_l_ecran(hwnd),
+                                );
+                                crate::win32::cef_settings::ouvrir_sur_rubrique(
+                                    "Mascotte",
+                                    dash_rect_for_hwnd(hwnd_screen_origin(active_hwnd), active_layout, active_hwnd),
+                                    &gfx,
+                                );
                             } else if index == network_icon_index {
                                 // Clic droit sur l'applet réseau : les paramètres
                                 // réseau de Windows (DEMANDE EXPLICITE) — le clic
