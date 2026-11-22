@@ -90,10 +90,6 @@ cargo test --release --bin neuradesk
 
 ### Les composants à part
 
-- `window-hook/` : la DLL qui anime l'ouverture et la fermeture des fenêtres
-  (facultative). Elle se construit séparément, voir
-  [`window-hook/README.md`](window-hook/README.md) ; `build.rs` la copie à
-  côté de l'exe si elle existe.
 - `shell-hook/` : expérimentation d'observation du shell, hors du binaire.
 - `tools/` : outils de régénération des données embarquées (table des fêtes).
 

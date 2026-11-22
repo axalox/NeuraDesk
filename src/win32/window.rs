@@ -2964,28 +2964,6 @@ fn is_workarea_setting_change(wparam: u32) -> bool {
     wparam == SPI_SETWORKAREA.0
 }
 
-/// ⭐ **LE MESSAGE PAR LEQUEL `window-hook` ANNONCE UN GESTE RETENU.**
-///
-/// Enregistré des DEUX côtés par le même NOM, jamais par un numéro : un
-/// `WM_APP + n` en dur entrerait en collision avec celui d'une autre
-/// application, alors que les messages enregistrés sont uniques pour la session.
-///
-/// Disposition des mots :
-/// - `wParam` : la fenêtre de l'application (HWND) ;
-/// - `lParam` : `geste | (retenue_ms << 8)`. Gestes : `1` fermer, `2` réduire,
-///   `3` agrandir, `4` restaurer (voir `ouverture_fenetres::Geste`).
-///
-/// C'est ce qui évite tout `WM_COPYDATA` (donc tout envoi bloquant depuis le
-/// fil de l'application, qui attendrait notre réponse).
-pub fn message_de_geste() -> u32 {
-    static MESSAGE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *MESSAGE.get_or_init(|| unsafe {
-        windows::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW(windows::core::w!(
-            "NeuraDesk.GesteFenetre"
-        ))
-    })
-}
-
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_MOUSEMOVE => {
@@ -3137,23 +3115,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_DESTROY => {
             push_event(Event::CloseRequested);
             PostQuitMessage(0);
-            LRESULT(0)
-        }
-        // ── LE MODULE INJECTÉ (`window-hook`) NOUS ANNONCE UN GESTE RETENU ──
-        // Il retient `WM_CLOSE` / `SC_MINIMIZE` dans l'application, et nous
-        // prévient ICI pour qu'on joue l'effet PENDANT la retenue — sinon la
-        // fenêtre ne disparaîtrait qu'à la libération, l'effet arrivant après
-        // coup. Voir `message_de_geste` pour la disposition des deux mots.
-        msg if msg == message_de_geste() => {
-            let application = wparam.0 as isize;
-            let geste = (lparam.0 & 0xFF) as u32;
-            let retenue = (lparam.0 >> 8) as u64;
-            crate::diag!("[geste] application {application:#x}, geste {geste}, retenue {retenue} ms");
-            crate::win32::ouverture_fenetres::geste_retenu(
-                windows::Win32::Foundation::HWND(application as *mut std::ffi::c_void),
-                geste,
-                retenue,
-            );
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),

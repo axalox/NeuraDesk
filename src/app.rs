@@ -4328,64 +4328,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     crate::win32::ombre_barre::regler_intensite_couleur(config::load_ombre_couleur_intensite().unwrap_or(100.0));
     crate::win32::ombre_barre::regler_intensite_noire(config::load_ombre_noire_intensite().unwrap_or(100.0));
     crate::win32::plein_ecran_zone::activer(config::load_bool_setting_or(config::PLEIN_ECRAN_DANS_LA_ZONE, false));
-    crate::win32::ouverture_fenetres::activer(config::load_bool_setting_or(config::EFFET_OUVERTURE, true));
-    if let Some(ms) = config::load_effet_ouverture_duree() {
-        crate::win32::ouverture_fenetres::regler_duree(ms);
-    }
-    crate::win32::ouverture_fenetres::activer_fermeture(config::load_bool_setting_or(config::EFFET_FERMETURE, true));
-    crate::win32::ouverture_fenetres::activer_bascule(config::load_bool_setting_or(config::EFFET_BASCULE, true));
-    crate::win32::ouverture_fenetres::activer_fondu(config::load_bool_setting_or(config::FONDU_NEURADESK, false));
+    // Le FONDU DES FENÊTRES DE NEURADESK (voir `win32::fondu_fenetres`) — les
+    // effets des fenêtres des autres applications ont été retirés (2026-11-22).
+    crate::win32::fondu_fenetres::activer_fondu(config::load_bool_setting_or(config::FONDU_NEURADESK, false));
     if let Some((ouverture, fermeture)) = config::load_fondu_neuradesk_durees() {
-        crate::win32::ouverture_fenetres::regler_duree_fondu_ouverture(ouverture);
-        crate::win32::ouverture_fenetres::regler_duree_fondu_fermeture(fermeture);
+        crate::win32::fondu_fenetres::regler_duree_fondu_ouverture(ouverture);
+        crate::win32::fondu_fenetres::regler_duree_fondu_fermeture(fermeture);
     }
-    if let Some(ms) = config::load_effet_fermeture_duree() {
-        crate::win32::ouverture_fenetres::regler_duree_fermeture(ms);
-    }
-    if let Some(code) = config::load_effet_fermeture_style() {
-        crate::win32::ouverture_fenetres::regler_effet(
-            crate::win32::ouverture_fenetres::Moment::Fermeture,
-            code,
-        );
-    }
-    // ⭐ Chaque moment a SA forme (DEMANDE EXPLICITE 2026-11-05) : ouverture,
-    // fermeture, réduction, mise en avant. Sans fichier, la réduction suit la
-    // fermeture (comportement d'avant) et l'agrandissement s'étire.
-    crate::win32::ouverture_fenetres::regler_effet(
-        crate::win32::ouverture_fenetres::Moment::Ouverture,
-        config::load_effet_ouverture_style().unwrap_or(0),
-    );
-    crate::win32::ouverture_fenetres::regler_effet(
-        crate::win32::ouverture_fenetres::Moment::Reduction,
-        config::load_effet_reduction_style().unwrap_or_else(|| crate::win32::ouverture_fenetres::effet_code(
-            crate::win32::ouverture_fenetres::Moment::Fermeture,
-        )),
-    );
-    crate::win32::ouverture_fenetres::regler_effet(
-        crate::win32::ouverture_fenetres::Moment::Agrandissement,
-        config::load_effet_agrandissement_style().unwrap_or(5),
-    );
-    // ⛔ APRÈS la durée : la retenue que lit la DLL en dérive (voir
-    // `win32::injection::regler_retenue`). Effet de fermeture éteint → 0 : la
-    // DLL ne retient plus rien (voir l'action `effet-fermeture`).
-    crate::win32::injection::regler_retenue(if crate::win32::ouverture_fenetres::fermeture_active() {
-        crate::win32::ouverture_fenetres::duree_fermeture_ms()
-    } else {
-        0
-    });
-    // ⛔ Crochet des effets éteint ⇒ pas d'injection : sans crochet, aucune
-    // animation ne jouerait, et la DLL retiendrait chaque fermeture pour rien.
-    crate::win32::injection::activer(
-        config::load_bool_setting_or(config::EFFET_INJECTION, false) && config::load_bool_setting_or(config::EFFET_CROCHET, true),
-    );
-    // ⭐ APRÈS `injection::activer` (le fichier n'est écrit non nul que si
-    // l'injection est active) : la durée du vol que la DLL lira pour voiler la
-    // fenêtre d'une application AVANT son affichage (point 1/2 — plus de flash).
-    crate::win32::injection::regler_ouverture(if crate::win32::ouverture_fenetres::est_active() {
-        crate::win32::ouverture_fenetres::duree_ms()
-    } else {
-        0
-    });
     crate::win32::jeux_fenetres::activer(config::load_bool_setting_or(config::JEUX_EN_FENETRE, false));
     if let Some(contenu) = config::load_ombre_cotes() {
         let reglages = crate::win32::ombre_barre::ReglagesCotes::charger(&contenu);
@@ -7089,19 +7038,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     ];
     let mut preload_frame: u64 = 0;
 
-    // L'effet d'ouverture des fenêtres (voir `win32::ouverture_fenetres`) vit sur
-    // un fil à lui ; la boucle ne lui publie que les icônes d'où partent les
-    // fenêtres, quatre fois par seconde.
-    // ⭐ Sauf si l'interrupteur général des Réglages l'a éteint (voir
-    // `ouverture_fenetres::activer_crochet`).
-    crate::win32::ouverture_fenetres::activer_crochet(config::load_bool_setting_or(config::EFFET_CROCHET, true));
     // Le clic molette sur le bureau ouvre la sphère des fenêtres (voir
     // `win32::clic_molette_bureau`). ⛔ PAS sous le harnais : il tourne à côté de
     // la session vivante, et ouvrirait SA sphère aux clics de l'utilisateur.
     if std::env::var_os("NEURADESK_CAPTURE_FRAMES").is_none() {
         crate::win32::clic_molette_bureau::installer();
     }
-    let mut icones_ouverture_echeance = Instant::now();
     // ⭐ **PRÉSENTER SEULEMENT QUAND L'IMAGE CHANGE** (2026-11-10, demande
     // « l'app semble consommer beaucoup de ressources CPU »).
     //
@@ -7189,11 +7131,6 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             presenter_jusqua = Instant::now() + PRESENTATION_APRES_ACTIVITE;
         }
         if !continuer {
-            // ⛔ **LE MODULE INJECTÉ LIT LA RETENUE DANS UN FICHIER** : le
-            // laisser derrière nous ferait retarder chaque fermeture des
-            // applications déjà injectées, sans animation, jusqu'au prochain
-            // démarrage (voir `win32::injection::arreter`).
-            crate::win32::injection::arreter();
             break 'main;
         }
 
@@ -8986,14 +8923,6 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     let shift_held = unsafe { (GetAsyncKeyState(VK_SHIFT.0 as i32) as u16) & 0x8000 != 0 };
                     active_dock.update_drag(x, y, ctrl_held, shift_held, active_layout);
                     let fin_du_geste = active_dock.end_drag(active_layout, hwnd);
-                    // L'icône cliquée : d'où s'envole le panneau qu'elle ouvre (voir
-                    // `win32::ouverture_fenetres::animer_interne`).
-                    if let DragOutcome::Clicked(index) = &fin_du_geste {
-                        if let Some(rect) = active_dock.presented_rect(*index, active_layout) {
-                            let (ox, oy) = hwnd_screen_origin(active_hwnd);
-                            crate::win32::cef_popup::set_origine_ouverture([rect[0] + ox as f32, rect[1] + oy as f32, rect[2], rect[3]]);
-                        }
-                    }
                     match fin_du_geste {
                         DragOutcome::None => {}
                         // LE LÂCHER N'A PAS EU LIEU — ordre intact, donc rien à
@@ -14868,23 +14797,6 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             )?;
         }
 
-        // L'effet d'ouverture : l'icône d'où part une fenêtre est celle que le
-        // clic sur le dock associe à son application (`cible_de_l_icone`).
-        if Instant::now() >= icones_ouverture_echeance {
-            icones_ouverture_echeance = Instant::now() + Duration::from_millis(250);
-            if let Ok(origine) = window.screen_origin() {
-                crate::win32::ouverture_fenetres::publier_icones(icones_des_applications(
-                    &dock,
-                    &layout,
-                    origine,
-                    winpin_icon_base,
-                    &pinned_process_names,
-                    &winpins,
-                    dynamic_icon_base,
-                ));
-            }
-        }
-
         // PAS D'INFOBULLE SUR LES ÉCRANS SECONDAIRES — DEMANDE EXPLICITE du
         // 2026-09-18 : « je ne veux pas les infobulles sur les écrans
         // secondaires ».
@@ -18702,8 +18614,6 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     // Referme les shells du panneau Terminal plutôt que de les laisser
     // tourner sans fenêtre (voir `win32::pty::fermer_tout`).
     crate::win32::pty::fermer_tout();
-    // Aucune fenêtre ne doit rester cachée par l'effet d'ouverture.
-    crate::win32::ouverture_fenetres::arreter();
 
     Ok(())
 }
@@ -23323,30 +23233,6 @@ fn cible_de_l_icone(
     // (`pin.target` à `None`, cas d'un raccourci cassé) doit elle aussi pouvoir
     // retomber sur l'application ouverte, ce que le clic fait déjà.
     target.or_else(|| dynamic_exe.map(app_identity::dynamic_target))
-}
-
-/// Les icônes d'application VISIBLES du dock principal, avec leur cible et leur
-/// rectangle ÉCRAN (voir `win32::ouverture_fenetres`).
-fn icones_des_applications(
-    dock: &Dock,
-    layout: &DockLayout,
-    origine: (i32, i32),
-    winpin_icon_base: usize,
-    pinned_process_names: &[String],
-    winpins: &[taskbar_pins::TaskbarPin],
-    dynamic_icon_base: Option<usize>,
-) -> Vec<(WindowTarget, [f32; 4])> {
-    (PINNED_ICON_BASE..dock.icons.len())
-        .filter_map(|index| {
-            if dock.icons[index].hidden {
-                return None;
-            }
-            let dynamic_exe = dynamic_icon_base.is_some_and(|base| index >= base).then(|| dock.dynamic_exe(index)).flatten();
-            let cible = cible_de_l_icone(index, winpin_icon_base, pinned_process_names, winpins, dynamic_exe)?;
-            let rect = dock.presented_rect(index, layout)?;
-            Some((cible, [rect[0] + origine.0 as f32, rect[1] + origine.1 as f32, rect[2], rect[3]]))
-        })
-        .collect()
 }
 
 /// **OÙ VA UNE CAPTURE PRÊTE** — la FENÊTRE DES ACTIONS de l'applet Capture

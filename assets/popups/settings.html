@@ -1292,7 +1292,7 @@
       // capturable ; ils valent dans les deux modes depuis le 2026-11-14 et
       // tombent dans « apparence » (le groupe par défaut).
       [/capture/, "captures"],
-      // Fenêtres et bureaux : aperçus, ouverture/fondu, plein écran, bureaux
+      // Fenêtres et bureaux : aperçus, fondu, plein écran, bureaux
       // virtuels, et la sphère des FENÊTRES ouvertes.
       [/apercu|ouverture|fondu|plein ecran|bureaux virtuels|sphere/, "fenetres"],
       // Système : modules, performances, affichage/DPI, sauvegarde.
@@ -1356,7 +1356,7 @@
       ],
       fenetres: [
         "Aperçus de fenêtres", "Aperçu des bureaux virtuels",
-        "Ouverture des fenêtres", "Fondu des fenêtres", "Plein écran",
+        "Fondu des fenêtres", "Plein écran",
         "Sphère des programmes",
       ],
       widgets: [
@@ -1666,8 +1666,7 @@
 
     function checkboxRow(container, checked, label, onChange, dataKey) {
       const row = el("label", { class: "check" });
-      // ⭐ Une case peut être ALLUMÉE par un autre contrôle (choisir une forme
-      // allume l'effet, voir `effet-<moment>-style`). Sans `data-key`, la page
+      // ⭐ Une case peut être ALLUMÉE par un autre contrôle. Sans `data-key`, la page
       // ne saurait pas la rafraîchir et la case resterait décochée à l'écran
       // alors que le réglage est actif.
       const box = dataKey ? el("input", { type: "checkbox", "data-key": dataKey }) : el("input", { type: "checkbox" });
@@ -6014,98 +6013,6 @@
         box.appendChild(el("p", { class: "hint" }, ["Quand une barre latérale contient plus d'icônes que sa hauteur n'en tient, les dernières se replient en bas de la barre, basculées en arrière comme dans le lanceur de Unity. Toutes comptent : épinglées, applications ouvertes, applets et espaces. Au survol de la barre, tout se déplie ; la molette la fait alors défiler. La souris partie, elle se replie. Une barre qui a des zones garde son défilement ordinaire."]));
       });
 
-      // ⭐ L'effet d'ouverture des fenêtres — DEMANDE EXPLICITE (2026-10-16) :
-      // « une fenêtre volante qui tourbillonne en s'agrandissant depuis la zone
-      // de l'appli, un peu comme faisait Compiz ».
-      section(scroll, (box) => {
-        box.appendChild(el("h2", {}, ["Ouverture des fenêtres"]));
-        // ⭐ DEMANDE EXPLICITE (2026-11-16) : « désactiver le hook pour les
-        // effets d'animations des fenêtres » — l'interrupteur général (voir
-        // `ouverture_fenetres::activer_crochet`).
-        checkboxRow(box, state.effetCrochet !== false, "Surveiller les fenêtres pour les animer (crochet système)",
-          (checked) => go("effet-crochet", checked ? "1" : "0"), "effet-crochet");
-        box.appendChild(el("p", { class: "hint" }, ["Décochée, NeuraDesk retire son crochet sur les fenêtres de Windows : plus aucune animation d'ouverture, de fermeture, de réduction ni d'Alt+Tab, plus de fondu de ses propres panneaux, et aucun module n'est chargé dans les applications. Les réglages ci-dessous sont conservés et reprennent effet quand la case est recochée."]));
-        checkboxRow(box, state.effetOuverture, "Animer les fenêtres qui s'ouvrent",
-          (checked) => go("effet-ouverture", checked ? "1" : "0"), "effet-ouverture");
-        slider(box, { label: "Durée de l'effet", min: state.effetOuvertureDureeMin, max: state.effetOuvertureDureeMax, step: 10, value: state.effetOuvertureDuree, valueLabel: (v) => v + " ms", dataKey: "effet-ouverture-duree", onInput: (v) => go("effet-ouverture-duree", v) });
-        checkboxRow(box, state.effetFermeture, "Animer les fenêtres qui se ferment, se réduisent ou changent de taille",
-          (checked) => go("effet-fermeture", checked ? "1" : "0"), "effet-fermeture");
-        slider(box, { label: "Durée de la fermeture", min: state.effetOuvertureDureeMin, max: state.effetOuvertureDureeMax, step: 10, value: state.effetFermetureDuree, valueLabel: (v) => v + " ms", dataKey: "effet-fermeture-duree", onInput: (v) => go("effet-fermeture-duree", v) });
-        // ⭐ DEMANDE EXPLICITE (2026-11-05) : « tout, Alt+Tab compris » — la
-        // fenêtre choisie revient en grandissant de 94 % (voir `rappel_bascule`).
-        checkboxRow(box, state.effetBascule, "Animer le changement de fenêtre (Alt+Tab)",
-          (checked) => go("effet-bascule", checked ? "1" : "0"), "effet-bascule");
-        // ⭐ DEMANDE EXPLICITE (2026-11-04) : « proposer ces effets » — la forme
-        // du retour (voir `win32::ouverture_fenetres::effets`).
-        // ⭐ DEMANDE EXPLICITE (2026-11-05) : « choisir n'importe quel effet pour
-        // l'ouverture, la fermeture, la mise en avant et la réduction » et « la
-        // possibilité de mettre les effets en aléatoire ».
-        // Les codes sont NUMÉRIQUES et stables (ils vivent dans
-        // `effet_<moment>_style.txt`) ; 255 = au hasard.
-        // ⭐ DEMANDE EXPLICITE (2026-11-05) : « il semble manquer des effets par
-        // rapport à ce que l'addon ajoute sur windhawk » — les dix formes du mod
-        // qui manquaient (8 à 17) rejoignent les nôtres (0 à 7 ; le 5,
-        // étirement, ne va qu'à l'agrandissement).
-        const FORMES_DE_FENETRE = [
-          { value: 0, label: "Vers l'icône" },
-          { value: 1, label: "Extinction" },
-          { value: 2, label: "Fondu" },
-          { value: 3, label: "Chute" },
-          { value: 4, label: "Zoom" },
-          { value: 6, label: "Éclatement" },
-          { value: 7, label: "Génie" },
-          { value: 8, label: "Thanos" },
-          { value: 9, label: "Dissolution" },
-          { value: 10, label: "Glitch" },
-          { value: 11, label: "Coulure" },
-          { value: 12, label: "Encre" },
-          { value: 13, label: "Brûlure" },
-          { value: 14, label: "Fissure" },
-          { value: 15, label: "Mirage" },
-          { value: 16, label: "Pointillé" },
-          { value: 17, label: "Gonflement" },
-        ];
-        const AU_HASARD = { value: 255, label: "Aléatoire" };
-        segmented(box, {
-          label: "Forme de l'ouverture",
-          options: [...FORMES_DE_FENETRE, AU_HASARD],
-          value: state.effetOuvertureStyle,
-          dataKey: "effet-ouverture-style",
-          onSelect: (v) => go("effet-ouverture-style", String(v)),
-        });
-        segmented(box, {
-          label: "Forme de la fermeture",
-          options: [...FORMES_DE_FENETRE, AU_HASARD],
-          value: state.effetFermetureStyle,
-          dataKey: "effet-fermeture-style",
-          onSelect: (v) => go("effet-fermeture-style", String(v)),
-        });
-        segmented(box, {
-          label: "Forme de la réduction",
-          options: [...FORMES_DE_FENETRE, AU_HASARD],
-          value: state.effetReductionStyle,
-          dataKey: "effet-reduction-style",
-          onSelect: (v) => go("effet-reduction-style", String(v)),
-        });
-        segmented(box, {
-          // L'étirement est le défaut de ce geste : la fenêtre ne disparaît
-          // pas, elle change de rectangle (voir `Moment::Agrandissement`).
-          label: "Forme de l'agrandissement et de la restauration",
-          options: [{ value: 5, label: "Étirement" }, ...FORMES_DE_FENETRE, AU_HASARD],
-          value: state.effetAgrandissementStyle,
-          dataKey: "effet-agrandissement-style",
-          onSelect: (v) => go("effet-agrandissement-style", String(v)),
-        });
-        // ⭐ Animer AUSSI les fenêtres des AUTRES applications — DEMANDE
-        // EXPLICITE (2026-11-04) : « injection automatique ». ⛔ Décochée par
-        // défaut : c'est un module chargé dans les processus des applications
-        // (voir `win32::injection`).
-        checkboxRow(box, state.effetInjection, "Animer aussi les fenêtres des autres applications (charge un module dans chaque application)",
-          (checked) => go("effet-injection", checked ? "1" : "0"));
-        box.appendChild(el("p", { class: "hint" }, ["Sans cette case, les effets ne jouent que dans les applications où le module a été chargé à la main. Cochée, NeuraDesk le charge dans chaque application qui ouvre une fenêtre : fermer et réduire y sont alors retenus le temps de l'effet. Le module n'est jamais chargé dans Windows lui-même (Explorateur, barre des tâches, bureau). Décochez-la si une application se comporte anormalement."]));
-        box.appendChild(el("p", { class: "hint" }, ["Choisir une forme ALLUME l'effet de ce moment — la case au-dessus reste l'interrupteur pour l'éteindre ; celle de l'ouverture vaut pour l'ouverture seule, celle de la fermeture vaut pour la fermeture, la réduction, l'agrandissement et la restauration. Une fenêtre d'application qui s'ouvre suit la forme choisie pour l'ouverture ; « vers l'icône » la fait s'envoler de son icône dans le dock en tournant et en grandissant jusqu'à sa place ; sans icône, elle grandit depuis son centre. Les applications du Store et les fenêtres d'une application lancée en administrateur s'ouvrent sans effet. À la fermeture, à la réduction, à l'agrandissement et à la restauration, chaque geste suit SA forme : retour au point d'apparition, extinction comme un tube cathodique, fondu sur place, chute en tournant, contraction vers le centre, éclatement, ou aspiration vers l'icône en bandes ; l'étirement, propre à l'agrandissement, fait passer la fenêtre d'un rectangle à l'autre sans la faire disparaître. « Aléatoire » tire une forme à chaque animation. Une fenêtre réduite, ou qui couvre tout l'écran, se ferme sans effet."]));
-      });
-
       // ⭐ Le fondu des fenêtres de NeuraDesk — DEMANDE EXPLICITE (2026-10-25) :
       // « un effet de fondu paramétrable à l'ouverture et à la fermeture des
       // fenêtres neuradesk ».
@@ -6115,7 +6022,7 @@
           (checked) => go("fondu-neuradesk", checked ? "1" : "0"));
         slider(box, { label: "Durée de l'apparition", min: state.fonduNeuradeskMin, max: state.fonduNeuradeskMax, step: 10, value: state.fonduNeuradeskOuverture, valueLabel: (v) => v + " ms", dataKey: "fondu-neuradesk-ouverture", onInput: (v) => go("fondu-neuradesk-duree", "ouverture", v) });
         slider(box, { label: "Durée de la disparition", min: state.fonduNeuradeskMin, max: state.fonduNeuradeskMax, step: 10, value: state.fonduNeuradeskFermeture, valueLabel: (v) => v + " ms", dataKey: "fondu-neuradesk-fermeture", onInput: (v) => go("fondu-neuradesk-duree", "fermeture", v) });
-        box.appendChild(el("p", { class: "hint" }, ["Les panneaux (Réglages, calendrier, presse-papiers…) et les fenêtres de NeuraDesk apparaissent et disparaissent sur place, en fondu, au lieu de voler depuis leur icône. Les menus gardent leur propre fondu, réglé dans leur section."]));
+        box.appendChild(el("p", { class: "hint" }, ["Les panneaux (Réglages, calendrier, presse-papiers…) et les fenêtres de NeuraDesk apparaissent et disparaissent sur place, en fondu. Les menus gardent leur propre fondu, réglé dans leur section. Pour animer les fenêtres des autres applications, voir l'Aide (Windhawk)."]));
       });
 
       // ⭐ Le plein écran dans la zone centrale — DEMANDE EXPLICITE (2026-10-16) :
@@ -6516,18 +6423,6 @@
         updateSegmented("running-dot-color-mode", m === "auto" || m === "degrade" ? m : "perso");
       }
       updateSegmented("lueurs-effet", state.lueur ? state.lueursEffet : null);
-      // La FORME de chaque moment animé (voir `effets::Effet`) : sans ces
-      // lignes, le bouton surligné resterait l'ancien — le défaut déjà payé sur
-      // le thème d'icônes.
-      updateSegmented("effet-ouverture-style", state.effetOuvertureStyle);
-      updateSegmented("effet-fermeture-style", state.effetFermetureStyle);
-      updateSegmented("effet-reduction-style", state.effetReductionStyle);
-      updateSegmented("effet-agrandissement-style", state.effetAgrandissementStyle);
-      // ⭐ Choisir une forme ALLUME l'effet (voir l'action `effet-…-style`) :
-      // la case au-dessus doit le montrer sans reconstruire la page.
-      updateCheckbox("effet-ouverture", state.effetOuverture);
-      updateCheckbox("effet-fermeture", state.effetFermeture);
-      updateCheckbox("effet-bascule", state.effetBascule);
       updateSegmented("style", state.style);
       updateSegmented("police", state.police);
       const policeDuStyle = document.getElementById("police-du-style");

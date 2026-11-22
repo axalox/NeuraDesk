@@ -385,6 +385,13 @@ pub fn installer_pawnio() -> Result<(), String> {
     }
 }
 
+/// L'invite UAC du service est-elle à l'écran ? (`ShellExecuteExW` ne rend la
+/// main qu'après la réponse : `EnCours` couvre exactement l'invite.) Le
+/// Moniteur s'en sert pour ne pas se cacher pendant qu'elle a le focus.
+pub fn invite_en_cours() -> bool {
+    lancement() == Lancement::EnCours
+}
+
 /// Le bouton du panneau — affiché seulement sans mesure fraîche, donc sans
 /// service vivant (un service en double sortirait aussitôt : verrou nommé).
 pub fn activer() {

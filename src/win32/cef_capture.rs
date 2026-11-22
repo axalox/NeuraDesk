@@ -553,9 +553,8 @@ pub fn hide_if_visible() {
         // pas voir apparaître la fenêtre des paramètres de capture sur la
         // capture »). Le gel suit de quelques millisecondes (mesuré : 20 ms), et
         // le fondu de fermeture dessine ENCORE la fenêtre pendant ~150 ms : elle
-        // se retrouvait en fantôme dans l'image. Voir `ouverture_fenetres::oublier`.
-        crate::win32::ouverture_fenetres::oublier(hwnd);
-        cef_popup::cacher_fenetre(hwnd);
+        // se retrouvait en fantôme dans l'image. D'où un masquage SANS fondu.
+        cef_popup::cacher_fenetre_sans_fondu(hwnd);
         // ⛔ **LE MASQUAGE SE VÉRIFIE** : c'est lui qui décide si la fenêtre est
         // dans l'image (le gel a lieu dans `capture_ecran::lancer`, APRÈS ceci).
         crate::diag!(
@@ -1231,9 +1230,7 @@ mod tests {
         let debut = source.find("pub fn hide_if_visible").expect("le masquage a disparu");
         let fin = source[debut..].find("fn etat_de_la_fenetre").map(|i| debut + i).unwrap_or(source.len());
         let masquage = &source[debut..fin];
-        let oublier = masquage.find("ouverture_fenetres::oublier(hwnd)").expect("la fenêtre reste dans l'animation de fermeture");
-        let cacher = masquage.find("cacher_fenetre(hwnd)").expect("le masquage a disparu");
-        assert!(oublier < cacher, "il faut OUBLIER l'animation AVANT de cacher la fenêtre");
+        assert!(masquage.contains("cacher_fenetre_sans_fondu(hwnd)"), "la fenêtre fond encore pendant le gel");
         // Et le gel mesure l'état réel de la fenêtre : la preuve, pas la croyance.
         let ecran = include_str!("capture_ecran.rs");
         assert!(ecran.contains("cef_capture::etat_de_la_fenetre()"), "le gel ne dit pas si la fenêtre est encore visible");

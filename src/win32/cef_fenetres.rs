@@ -19,8 +19,7 @@
 //! sans copie ni capture : vingt aperçus vivants ne coûtent rien, et les
 //! fenêtres réduites y gardent leur dernière image (voir
 //! `win32::desktop_previews`, où c'est mesuré). WGC aurait coûté une session par
-//! fenêtre, et chaque session fermée gonfle le compteur GPU du processus (voir
-//! `win32::ouverture_fenetres`).
+//! fenêtre, et chaque session fermée gonfle le compteur GPU du processus.
 //!
 //! ⛔ **Une vignette DWM est un RECTANGLE DROIT** : elle ne se penche pas. Les
 //! cartes de la page sont donc posées sur la sphère FACE À LA CAMÉRA (leur place
@@ -87,7 +86,7 @@ const FICHIER_ZOOM_AUTO: &str = "sphere_fenetres_zoom_auto";
 
 /// **La durée du fondu de la sphère** (apparition, disparition), en ms —
 /// PROPRE à cette fenêtre, sans toucher au réglage global des fenêtres de
-/// NeuraDesk (voir `ouverture_fenetres::regler_fondu_de_fenetre`).
+/// NeuraDesk (voir `cef_popup::regler_fondu_propre`).
 pub const FONDU_MIN_MS: u32 = 50;
 pub const FONDU_MAX_MS: u32 = 1200;
 const FICHIER_FONDU: &str = "sphere_fenetres_fondu.txt";
@@ -195,8 +194,8 @@ pub fn fondu() -> (u32, u32) {
         // curseurs ne font que le AFFINER.
         .unwrap_or_else(|| {
             (
-                crate::win32::ouverture_fenetres::duree_fondu_ouverture_ms(),
-                crate::win32::ouverture_fenetres::duree_fondu_fermeture_ms(),
+                crate::win32::fondu_fenetres::duree_fondu_ouverture_ms(),
+                crate::win32::fondu_fenetres::duree_fondu_fermeture_ms(),
             )
         });
     FONDU.with(|c| c.set(Some(lu)));
@@ -222,9 +221,7 @@ pub fn regler_fondu(direction: &str, texte: &str) {
     }
     FONDU.with(|c| c.set(Some((apparition, disparition))));
     crate::config::write_config(FICHIER_FONDU, format!("{apparition}\n{disparition}"));
-    if let Some(hwnd) = cef_popup::hwnd(&SLOT) {
-        crate::win32::ouverture_fenetres::regler_fondu_de_fenetre(hwnd, apparition, disparition);
-    }
+    cef_popup::regler_fondu_propre(&SLOT, apparition, disparition);
 }
 
 const SPEC: PopupSpec = PopupSpec {
@@ -297,13 +294,12 @@ pub fn ouvrir_ou_fermer(zone: [i32; 4], gfx: &GfxDevice, content_scale: f32) {
     CONTENT_SCALE.with(|c| c.set(content_scale));
     PAYLOAD.with(|p| *p.borrow_mut() = None);
     relire();
+    // ⚠️ AVANT l'ouverture : c'est elle qui engage le fondu (voir
+    // `cef_popup::engager_fondu_panneau`).
+    let (apparition, disparition) = fondu();
+    cef_popup::regler_fondu_propre(&SLOT, apparition, disparition);
     cef_popup::toggle_with(&SLOT, &SPEC, zone, gfx, || {});
     if let Some(hwnd) = cef_popup::hwnd(&SLOT) {
-        // ⚠️ AVANT la première frame de l'animation : le fondu d'apparition lit
-        // cette durée à chaque tick (voir `ouverture_fenetres`), et l'évènement
-        // `Interne` n'est consommé qu'à la frame suivante.
-        let (apparition, disparition) = fondu();
-        crate::win32::ouverture_fenetres::regler_fondu_de_fenetre(hwnd, apparition, disparition);
         let _ = unsafe { SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) };
     }
     push_state();

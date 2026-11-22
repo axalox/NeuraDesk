@@ -41,8 +41,8 @@ fn create_process_detached(path: &Path, args: Option<&str>) -> bool {
     use windows::core::PWSTR;
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
-        CreateProcessW, ResumeThread, CREATE_BREAKAWAY_FROM_JOB, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
-        PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
+        CreateProcessW, CREATE_BREAKAWAY_FROM_JOB, CREATE_UNICODE_ENVIRONMENT,
+        PROCESS_INFORMATION, STARTUPINFOW,
     };
 
     // Un raccourci `.lnk` n'est PAS un exécutable : `CreateProcessW` le
@@ -104,12 +104,6 @@ fn create_process_detached(path: &Path, args: Option<&str>) -> bool {
         cb: std::mem::size_of::<STARTUPINFOW>() as u32,
         ..Default::default()
     };
-    // ⭐ **CRÉÉ SUSPENDU QUAND L'INJECTION EST ACTIVE** (point 1 de l'effet
-    // d'ouverture sans flash) : on charge `window-hook` AVANT que l'application
-    // ne crée sa première fenêtre, pour que son crochet de `ShowWindow` la
-    // voile à temps. Injection éteinte : lancement normal, chemin externe.
-    let injecte = crate::win32::injection::actif();
-    let suspendu = if injecte { CREATE_SUSPENDED } else { PROCESS_CREATION_FLAGS(0) };
     let mut info = PROCESS_INFORMATION::default();
     let launched = unsafe {
         CreateProcessW(
@@ -118,7 +112,7 @@ fn create_process_detached(path: &Path, args: Option<&str>) -> bool {
             None,
             None,
             false,
-            CREATE_BREAKAWAY_FROM_JOB | CREATE_UNICODE_ENVIRONMENT | suspendu,
+            CREATE_BREAKAWAY_FROM_JOB | CREATE_UNICODE_ENVIRONMENT,
             None,
             PCWSTR::null(),
             &startup,
@@ -137,17 +131,6 @@ fn create_process_detached(path: &Path, args: Option<&str>) -> bool {
         return false;
     }
     crate::diag!("lancement DETACHE reussi : {}", path.display());
-    if injecte {
-        // Pendant qu'il est suspendu : on injecte, on laisse au crochet le
-        // temps de se poser (la veille de la DLL l'installe dès sa première
-        // itération), puis on reprend. Si l'injection échoue, on reprend quand
-        // même — le processus repart simplement sur le chemin externe.
-        crate::win32::injection::injecter_au_lancement(info.dwProcessId);
-        std::thread::sleep(std::time::Duration::from_millis(25));
-        unsafe {
-            ResumeThread(info.hThread);
-        }
-    }
     if let Some(racine) = jeu {
         super::jeux_fenetres::placer_quand_elle_parait(racine);
     }

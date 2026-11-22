@@ -37,6 +37,32 @@ thread_local! {
     /// Les couleurs choisies des courbes, par série — lues au premier usage
     /// (voir `config::load_moniteur_couleurs`).
     static COULEURS: RefCell<Option<BTreeMap<String, String>>> = const { RefCell::new(None) };
+    /// **L'INVITE UAC DES CAPTEURS A ÉTÉ VUE** — DEMANDE (2026-11-22) : « le
+    /// retour sur le dash moniteur ne se fait plus automatiquement après avoir
+    /// donné les droits ». L'invite prend le premier plan ; sans ce drapeau, la
+    /// perte de focus cachait le panneau. Même remède que le Terminal
+    /// (`cef_terminal::ATTENTE_UAC`).
+    static ATTENTE_UAC: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Ce que fait la règle « perte de focus » à cette image.
+#[derive(Debug, PartialEq)]
+enum ApresFocus {
+    /// L'invite est à l'écran : la perte de focus est pardonnée.
+    Pardonner,
+    /// L'invite vient de finir (accordée ou refusée) : rendre le premier plan.
+    RendreLeClavier,
+    /// Règle ordinaire : cacher si le focus est ailleurs.
+    RegleNormale,
+}
+
+/// PURE : la décision, selon l'invite EN COURS et l'invite VUE auparavant.
+fn apres_focus(invite_en_cours: bool, attendait: bool) -> ApresFocus {
+    match (invite_en_cours, attendait) {
+        (true, _) => ApresFocus::Pardonner,
+        (false, true) => ApresFocus::RendreLeClavier,
+        (false, false) => ApresFocus::RegleNormale,
+    }
 }
 
 fn couleurs<R>(f: impl FnOnce(&mut BTreeMap<String, String>) -> R) -> R {
@@ -272,7 +298,20 @@ pub fn dispatch_actions() {
 }
 
 pub fn hide_if_focus_elsewhere() {
-    cef_popup::hide_if_focus_elsewhere(&SLOT);
+    let invite = crate::win32::capteurs_cpu::invite_en_cours();
+    match apres_focus(invite, ATTENTE_UAC.with(Cell::get)) {
+        ApresFocus::Pardonner => {
+            // Panneau caché : l'invite ne le concerne pas (première
+            // ouverture d'office alors qu'il est déjà fermé).
+            ATTENTE_UAC.with(|a| a.set(cef_popup::is_visible(&SLOT)));
+        }
+        ApresFocus::RendreLeClavier => {
+            ATTENTE_UAC.with(|a| a.set(false));
+            let obtenu = cef_popup::donner_le_clavier(&SLOT);
+            crate::diag!("[moniteur] fin de l'invite UAC : premier plan rendu = {obtenu}");
+        }
+        ApresFocus::RegleNormale => cef_popup::hide_if_focus_elsewhere(&SLOT),
+    }
 }
 
 pub fn hide_if_visible() {
@@ -297,7 +336,8 @@ pub fn debug_dump_backbuffer(path: &std::path::Path) -> bool {
 /// chaque frame (`execute_js` ne fait rien tant que la page n'a pas d'état).
 pub fn debug_defiler(y: f64) {
     if cef_popup::is_visible(&SLOT) {
-        cef_popup::execute_js(&SLOT, &format!("document.body.scrollTop = {y}; window.scrollTo(0, {y})"));
+        // Seule `#defile` défile : la barre du haut reste fixe (voir `moniteur.html`).
+        cef_popup::execute_js(&SLOT, &format!("document.getElementById('defile').scrollTop = {y}"));
     }
 }
 
@@ -310,6 +350,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
 #[cfg(test)]
 mod tests {
+    /// L'invite UAC des capteurs ne CACHE plus le Moniteur, et sa fin (accordée
+    /// OU refusée) lui rend le premier plan. Sur l'ancien code, la perte de
+    /// focus le cachait aussitôt.
+    #[test]
+    fn l_invite_uac_ne_cache_pas_le_moniteur_et_sa_fin_rend_le_premier_plan() {
+        use super::{apres_focus, ApresFocus};
+        assert_eq!(apres_focus(true, false), ApresFocus::Pardonner);
+        assert_eq!(apres_focus(true, true), ApresFocus::Pardonner);
+        assert_eq!(apres_focus(false, true), ApresFocus::RendreLeClavier);
+        assert_eq!(apres_focus(false, false), ApresFocus::RegleNormale);
+        let rust = include_str!("cef_moniteur.rs");
+        let corps = rust.split("pub fn hide_if_focus_elsewhere() {").nth(1).unwrap_or("");
+        let corps = corps.split("
+}").next().unwrap_or("");
+        assert!(corps.contains("invite_en_cours()"), "la perte de focus ne consulte pas l'invite");
+        assert!(corps.contains("donner_le_clavier(&SLOT)"), "la fin de l'invite ne rend pas le premier plan");
+    }
+
     use super::*;
 
     const PAGE: &str = include_str!("../../assets/popups/moniteur.html");

@@ -31,7 +31,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, GetClientRect, GetMessageTime, GetSystemMetrics, GetWindowRect, SM_CXDOUBLECLK, SM_CYDOUBLECLK, GetCursorPos, GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
-    LoadCursorW, RegisterClassExW, SetCursor, SetForegroundWindow, SetWindowPos, ShowWindow, GetWindowLongW, GWL_EXSTYLE, HCURSOR, HTCLIENT, HWND_TOP, HWND_TOPMOST, WINDOWPOS, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING, GetTopWindow, GetWindow, GW_HWNDNEXT, HWND_BOTTOM, HWND_NOTOPMOST,
+    LoadCursorW, RegisterClassExW, SetCursor, SetForegroundWindow, SetWindowPos, ShowWindow, GetWindowLongW, SetWindowLongW, SWP_FRAMECHANGED, GWL_EXSTYLE, HCURSOR, HTCLIENT, HWND_TOP, HWND_TOPMOST, WINDOWPOS, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING, GetTopWindow, GetWindow, GW_HWNDNEXT, HWND_BOTTOM, HWND_NOTOPMOST,
     IDC_ARROW, SHOW_WINDOW_CMD, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, WM_CHAR, WM_KEYDOWN, WM_KEYUP,
     WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN,
     WM_RBUTTONUP, WM_SETCURSOR,
@@ -527,6 +527,11 @@ struct CefPopupState {
     /// Il est `Some` si et seulement si la fenêtre a `WS_EX_LAYERED` (voir
     /// `create_window`), donc les deux ne peuvent pas diverger.
     fade: Option<fade::WindowFade>,
+    /// `fade` est-il le FONDU D'UN PANNEAU ou d'une fenêtre (voir
+    /// `engager_fondu_panneau`) plutôt que celui d'un menu ? Ses durées sont
+    /// alors celles de `win32::fondu_fenetres`, et `WS_EX_LAYERED` a été posé
+    /// à l'ouverture (puis retiré si le fondu est éteint).
+    fondu_panneau: bool,
     /// Recopié de `PopupSpec::fenetre` — lu par `render` (pas de fond flouté, taille
     /// suivie sur la zone cliente) et par `visible_popup_hwnd` (qui l'écarte).
     fenetre: bool,
@@ -612,6 +617,10 @@ pub struct PopupSlot {
     /// dash** le ferme aussi (un seul dash à la fois, voir `toggle_with`). Une
     /// punaise qui résisterait à tout ne se déferait plus.
     epingle: Cell<bool>,
+    /// Le FONDU PROPRE de ce popup (apparition, disparition, en ms) — voir
+    /// `regler_fondu_propre`. Posé sur le SLOT, pas sur la fenêtre : il doit
+    /// valoir dès la première ouverture, avant que la fenêtre n'existe.
+    fondu_propre: Cell<Option<(u32, u32)>>,
     /// **LE ZOOM DE CE POPUP SUIT-IL LE DPI DE SON ÉCRAN ?** — voir
     /// [`regler_zoom_dpi`], qui porte le pourquoi, la liste des trois inscrits, et
     /// ce qui arriverait si on l'activait pour les autres.
@@ -722,7 +731,7 @@ pub fn un_menu_visible() -> bool {
                 s.state
                     .borrow()
                     .as_ref()
-                    .is_some_and(|state| state.fade.is_some() && unsafe { IsWindowVisible(state.hwnd).as_bool() })
+                    .is_some_and(|state| state.fade.is_some() && !state.fondu_panneau && unsafe { IsWindowVisible(state.hwnd).as_bool() })
             })
         })
     })
@@ -1133,6 +1142,7 @@ impl PopupSlot {
             clic: Cell::new(Clic { instant: 0, x: 0, y: 0, nombre: 0 }),
             content_factor: Cell::new(0.0),
             epingle: Cell::new(false),
+            fondu_propre: Cell::new(None),
             zoom_suit_le_dpi: Cell::new(false),
             facteur_textes: Cell::new(1.0),
             identite: Cell::new(None),
@@ -1346,7 +1356,6 @@ pub fn toggle_with(slot: &'static LocalKey<PopupSlot>, spec: &PopupSpec, rect: [
     // d'après qui ne prendrait plus le premier plan, sans que rien ne le dise.
     // Voir `set_ouverture_sans_focus`.
     let sans_focus = prendre_intention_sans_focus();
-    let origine = prendre_origine_ouverture();
     let now = Instant::now();
     let too_soon = slot.with(|s| s.last_toggle.get().is_some_and(|last| now.duration_since(last) < TOGGLE_DEBOUNCE));
     if too_soon {
@@ -1509,7 +1518,7 @@ pub fn toggle_with(slot: &'static LocalKey<PopupSlot>, spec: &PopupSpec, rect: [
                     let drapeaux = if sans_focus { SWP_NOZORDER | SWP_NOACTIVATE } else { SWP_NOZORDER };
                     let _ = SetWindowPos(hwnd, None, x, y, w, h, drapeaux);
                     if !closing {
-                        animer_l_ouverture(spec, hwnd, origine);
+                        engager_fondu_du_slot(slot, spec);
                     }
                     if !slot.with(|s| s.state.borrow().as_ref().is_some_and(|st| st.pending_show.is_some())) {
                         let _ = ShowWindow(hwnd, verbe_de_show(sans_focus));
@@ -1598,7 +1607,7 @@ pub fn toggle_with(slot: &'static LocalKey<PopupSlot>, spec: &PopupSpec, rect: [
         // que la file de préchargement ne l'atteigne prendrait le premier plan une
         // fois sur deux (voir `set_ouverture_sans_focus`).
         state.sans_focus = sans_focus;
-        animer_l_ouverture(spec, state.hwnd, origine);
+        engager_fondu_panneau(slot.with(|s| s.fondu_propre.get()), spec, &mut state);
         unsafe {
             let _ = ShowWindow(state.hwnd, verbe_de_show(sans_focus));
         }
@@ -1970,32 +1979,75 @@ fn prendre_intention_sans_focus() -> bool {
     OUVERTURE_SANS_FOCUS.with(|cell| cell.replace(false))
 }
 
-thread_local! {
-    /// L'icône (rectangle ÉCRAN) qu'on vient de cliquer, et quand — d'où part
-    /// l'effet d'ouverture du panneau qu'elle ouvre (voir
-    /// `win32::ouverture_fenetres::animer_interne`).
-    static ORIGINE_OUVERTURE: Cell<Option<([f32; 4], Instant)>> = const { Cell::new(None) };
-}
-
-/// Une origine plus vieille ne vaut plus : le clic n'ouvrait pas de panneau.
-const ORIGINE_VALIDITE: Duration = Duration::from_millis(500);
-
-/// Retient l'icône cliquée — posée par `app::run` à chaque clic sur une icône.
-pub fn set_origine_ouverture(rect: [f32; 4]) {
-    ORIGINE_OUVERTURE.with(|c| c.set(Some((rect, Instant::now()))));
-}
-
-/// Prend l'origine — et la consomme, comme `prendre_intention_sans_focus`.
-fn prendre_origine_ouverture() -> Option<[f32; 4]> {
-    ORIGINE_OUVERTURE.with(|c| c.take()).filter(|(_, quand)| quand.elapsed() < ORIGINE_VALIDITE).map(|(rect, _)| rect)
-}
-
-/// L'effet d'ouverture, pour un panneau ou une fenêtre — pas pour un MENU, qui a
-/// son fondu. ⚠️ AVANT le `ShowWindow` : la fenêtre ne doit jamais paraître.
-fn animer_l_ouverture(spec: &PopupSpec, hwnd: HWND, origine: Option<[f32; 4]>) {
-    if !spec.fades {
-        crate::win32::ouverture_fenetres::animer_interne(hwnd, origine);
+/// **LE FONDU DU POPUP QU'ON MONTRE — S'IL EN A UN** (voir `win32::fondu_fenetres`).
+/// Les menus gardent le leur, posé à la création. Un panneau ou une fenêtre fond
+/// si le fondu global est allumé ou s'il a un fondu PROPRE ; sinon il apparaît
+/// d'un coup, comme avant. ⚠️ AVANT le `ShowWindow` : l'opacité nulle doit être
+/// posée avant que la fenêtre ne paraisse.
+///
+/// `WS_EX_LAYERED` est posé ou retiré ICI, à l'ouverture — jamais pendant que la
+/// fenêtre est à l'écran —, suivi de `SWP_FRAMECHANGED` (un style changé sans lui
+/// n'est pas pris en compte ; voir la mémoire du cadre recalculé).
+fn engager_fondu_panneau(propre: Option<(u32, u32)>, spec: &PopupSpec, state: &mut CefPopupState) {
+    if spec.fades {
+        return;
     }
+    let voulu = crate::win32::fondu_fenetres::fondu_actif() || propre.is_some();
+    if voulu == state.fondu_panneau {
+        if let Some(window_fade) = state.fade.as_mut() {
+            window_fade.restart();
+            window_fade.push(state.hwnd);
+        }
+        return;
+    }
+    unsafe {
+        let ex = GetWindowLongW(state.hwnd, GWL_EXSTYLE);
+        let layered = WS_EX_LAYERED.0 as i32;
+        let _ = SetWindowLongW(state.hwnd, GWL_EXSTYLE, if voulu { ex | layered } else { ex & !layered });
+        let _ = SetWindowPos(
+            state.hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+    state.fondu_panneau = voulu;
+    state.fade = if voulu {
+        let mut window_fade = fade::WindowFade::new();
+        window_fade.restart();
+        window_fade.push(state.hwnd);
+        Some(window_fade)
+    } else {
+        None
+    };
+}
+
+/// `engager_fondu_panneau` pour un popup DÉJÀ créé (son état vit dans le slot).
+fn engager_fondu_du_slot(slot: &'static LocalKey<PopupSlot>, spec: &PopupSpec) {
+    slot.with(|s| {
+        let propre = s.fondu_propre.get();
+        if let Ok(mut state) = s.state.try_borrow_mut() {
+            if let Some(state) = state.as_mut() {
+                engager_fondu_panneau(propre, spec, state);
+            }
+        }
+    });
+}
+
+/// Le FONDU PROPRE d'un popup (apparition, disparition, en ms) — DEMANDE
+/// EXPLICITE (2026-11-04) : la sphère des programmes a le sien, distinct du
+/// « Fondu des fenêtres de NeuraDesk ». À poser AVANT l'ouverture.
+pub fn regler_fondu_propre(slot: &'static LocalKey<PopupSlot>, apparition_ms: u32, disparition_ms: u32) {
+    use crate::win32::fondu_fenetres::{DUREE_FONDU_MAX_MS, DUREE_FONDU_MIN_MS};
+    slot.with(|s| {
+        s.fondu_propre.set(Some((
+            apparition_ms.clamp(DUREE_FONDU_MIN_MS, DUREE_FONDU_MAX_MS),
+            disparition_ms.clamp(DUREE_FONDU_MIN_MS, DUREE_FONDU_MAX_MS),
+        )))
+    });
 }
 
 /// Retient la zone libre du menu qu'on vient de placer (voir `MENU_ROOM`).
@@ -3355,6 +3407,7 @@ fn create_window(spec: &PopupSpec, gfx: &GfxDevice, rect @ [x, y, w, h]: [i32; 4
             // Voir `PopupSpec::fades` : le fondu existe si et seulement si la
             // fenêtre a reçu `WS_EX_LAYERED` juste au-dessus.
             fade: spec.fades.then(fade::WindowFade::new),
+            fondu_panneau: false,
             fenetre: spec.fenetre,
             // Une fenêtre qui vient d'être créée est à son `rect` — mais elle n'a
             // pas encore été MONTRÉE (voir `montrer_fenetre`).
@@ -3610,7 +3663,6 @@ mod tests_couleur_des_pages {
 #[allow(dead_code)]
 pub fn montrer_fenetre(slot: &'static LocalKey<PopupSlot>, spec: &PopupSpec, rect: [i32; 4], gfx: &GfxDevice) -> bool {
     // Consommée à chaque appel, comme dans `toggle_with`.
-    let origine = prendre_origine_ouverture();
     register(slot);
     let existante = slot.with(|s| s.state.borrow().as_ref().map(|state| state.hwnd));
     let (hwnd, creee) = match existante {
@@ -3695,7 +3747,7 @@ pub fn montrer_fenetre(slot: &'static LocalKey<PopupSlot>, spec: &PopupSpec, rec
     // par `toggle_with`. Seulement si elle était cachée : une fenêtre réduite qu'on
     // restaure est déjà visible pour Windows.
     if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
-        animer_l_ouverture(spec, hwnd, origine);
+        engager_fondu_du_slot(slot, spec);
     }
     // ⚠️ **LA MONTRER ICI ANNULERAIT LA DIFFÉRATION** : c'est `render_if_visible`
     // qui s'en charge, une fois `pending_show` écoulé (voir son `a_montrer`).
@@ -3719,8 +3771,23 @@ pub fn montrer_fenetre(slot: &'static LocalKey<PopupSlot>, spec: &PopupSpec, rec
 /// `WM_CLOSE` (la croix) à la place de `DefWindowProcW`, qui la DÉTRUIRAIT sous
 /// un état encore vivant dans le `thread_local`.
 #[allow(dead_code)]
-pub fn cacher_fenetre(hwnd: HWND) {
+pub fn cacher_fenetre_sans_fondu(hwnd: HWND) {
     cacher_et_garer(hwnd);
+}
+
+/// Cache une FENÊTRE (voir `cacher_fenetre_sans_fondu`), en fondant si elle a un
+/// fondu (voir `engager_fondu_panneau`).
+#[allow(dead_code)]
+pub fn cacher_fenetre(hwnd: HWND) {
+    // Le fondu de sortie, si la fenêtre en a un : c'est le SLOT qui le porte,
+    // retrouvé par sa fenêtre (`begin_hide` cache d'un coup sinon).
+    let slot = REGISTRY.with(|registry| {
+        registry.borrow().iter().copied().find(|slot| slot.with(|s| s.state.borrow().as_ref().is_some_and(|st| st.hwnd == hwnd)))
+    });
+    match slot {
+        Some(slot) => begin_hide(hwnd, slot),
+        None => cacher_et_garer(hwnd),
+    }
 }
 
 /// Le rayon des coins des fenêtres d'APPLET — DEMANDE (2026-11-01) : « mettre
@@ -3798,8 +3865,14 @@ pub fn render_if_visible(slot: &'static LocalKey<PopupSlot>, tint_rgba: [f32; 4]
                 // DÉJÀ ouvert (même propriété que le zoom, réappliqué
                 // ci-dessus — et pour la même raison : c'est ce module qui
                 // reçoit la palette, pas `SettingsRefs`).
+                let fondu_panneau = state.fondu_panneau;
                 if let Some(window_fade) = state.fade.as_mut() {
-                    window_fade.tick(state.hwnd, fade::menu_fade_ms());
+                    let fade_ms = if fondu_panneau {
+                        crate::win32::fondu_fenetres::duree_du_pas(s.fondu_propre.get(), window_fade.is_fading_out())
+                    } else {
+                        fade::menu_fade_ms()
+                    };
+                    window_fade.tick(state.hwnd, fade_ms);
                     if window_fade.is_hidden() {
                         // Rien à redessiner : la fenêtre s'en va (voir le
                         // commentaire d'en-tête pour le pourquoi de ce retour

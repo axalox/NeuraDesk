@@ -105,7 +105,8 @@ pub mod lueurs_effets;
 pub mod textures_bibliotheque;
 pub mod fullscreen_clock;
 pub mod plein_ecran_zone;
-pub mod ouverture_fenetres;
+/// Le fondu des fenêtres de NeuraDesk (les effets des autres applications ont été retirés).
+pub mod fondu_fenetres;
 pub mod jeux_fenetres;
 pub mod gestionnaire_peripheriques;
 pub mod observateur_evenements;
@@ -243,13 +244,6 @@ pub mod theme;
 // production (voir sa doc), donc il n'existe que dans les binaires de test — il
 // n'alourdit pas l'application, et rien de ce qu'il fabrique ne peut se
 // déclencher en usage normal.
-/// ⭐ **LA CAPTURE D'UNE FENÊTRE SANS `Windows.Graphics.Capture`** — lue par
-/// `PrintWindow`, elle rend le contenu d'une fenêtre HORS DE L'ÉCRAN et sous
-/// alpha nul, sans session ni mémoire GPU à rendre (voir sa doc, mesurée).
-pub mod capture_fenetre;
-/// ⭐ **L'INJECTION AUTOMATIQUE DU MODULE `window-hook`** dans les applications
-/// qui ouvrent une fenêtre animable (voir sa doc) — désactivée par défaut.
-pub mod injection;
 #[cfg(test)]
 pub mod thumb_probe;
 // SONDE, elle aussi — la seule qui touche à la fenêtre d'un AUTRE processus

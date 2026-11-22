@@ -1382,7 +1382,7 @@ Les dossiers de la barre du bas, et celui sur lequel s'ouvre le dash dossier.	Bo
 Les fenêtres ouvertes posées sur une sphère (clic molette sur une barre du haut ou du bas). 100 % : le niveau d'ouverture d'origine.	Open windows laid out on a sphere (middle-click on a top or bottom bar). 100 %: the original spread.
 Les icônes des applications dans la barre de droite, et leur réaction quand un message arrive.	App icons in the right bar, and how they react when a message arrives.
 Les intensités, la couleur et la texture des ombres restent celles de l'écran principal (section Ombres). L'ombre de couleur ne paraît que si elle y est activée.	Shadow intensities, color and texture stay those of the primary screen (Shadows section). The color shadow only appears if it is enabled there.
-Les panneaux (Réglages, calendrier, presse-papiers…) et les fenêtres de NeuraDesk apparaissent et disparaissent sur place, en fondu, au lieu de voler depuis leur icône. Les menus gardent leur propre fondu, réglé dans leur section.	NeuraDesk panels (Settings, calendar, clipboard…) and windows fade in and out in place instead of flying from their icon. Menus keep their own fade, set in their section.
+Les panneaux (Réglages, calendrier, presse-papiers…) et les fenêtres de NeuraDesk apparaissent et disparaissent sur place, en fondu. Les menus gardent leur propre fondu, réglé dans leur section. Pour animer les fenêtres des autres applications, voir l'Aide (Windhawk).	NeuraDesk panels (Settings, calendar, clipboard…) and windows appear and disappear in place, with a fade. Menus keep their own fade, set in their section. To animate other applications' windows, see Help (Windhawk).
 Lien dans la réponse	Link in the response
 Liste complète	Full list
 Loupe	Magnifier

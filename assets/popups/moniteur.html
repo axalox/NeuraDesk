@@ -66,13 +66,22 @@
     margin: 0;
     color: rgba(var(--popup-fg-rgb, 255, 255, 255), min(1, var(--popup-alpha, 1)));
     font-size: 14px;
-    overflow-y: auto;
     /* Même grossissement que la Surveillance : `zoom` seul. */
     zoom: var(--text-scale);
     width: calc(100vw / var(--text-scale));
-    min-height: calc(100vh / var(--text-scale));
+    /* ⭐ **LA BARRE DU HAUT RESTE FIXE** — DEMANDE (2026-11-22) : « garder la
+       barre du haut fixe dans le moniteur système pour facilement pouvoir le
+       fermer ». La fenêtre est une COLONNE et seule la partie basse
+       (`#defile`) défile, comme `couleurs.html` : la barre n'a besoin d'aucun
+       fond, contrairement à un `position: sticky` sous lequel le contenu
+       passerait en transparence. */
+    height: calc(100vh / var(--text-scale));
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
   }
-  header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 6px; }
+  header { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 6px; }
+  #defile { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
   h1 { margin: 0; font-size: 17px; font-weight: 600; }
   section { padding: 0 16px 14px; }
   button {
@@ -147,7 +156,7 @@
   <button class="close-btn" onclick="go('close')" title="Fermer"><span class="ico ico-x"></span></button>
 </header>
 
-<section>
+<section id="defile">
   <div class="ligne" id="plages">
     <button data-plage="5min" onclick="choisirPlage('5min')">5 min</button>
     <button data-plage="1h" onclick="choisirPlage('1h')">1 h</button>

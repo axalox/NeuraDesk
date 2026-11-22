@@ -3044,138 +3044,16 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
                 crate::win32::plein_ecran_zone::activer(active);
                 config::save_bool_setting(config::PLEIN_ECRAN_DANS_LA_ZONE, active);
             }
-            // ⭐ DEMANDE EXPLICITE (2026-10-16) : le plein écran exclusif dans la
-            // zone centrale, voie B (sans injection) — voir `win32::jeux_fenetres`.
-            // ⭐ DEMANDE EXPLICITE (2026-10-16) : « un effet d'ouverture pour les
-            // fenêtres des applis » — voir `win32::ouverture_fenetres`.
-            ["effet-ouverture", flag] => {
-                let active = *flag == "1";
-                crate::win32::ouverture_fenetres::activer(active);
-                // ⭐ La DLL voile la fenêtre au lancement tant que cette durée
-                // est non nulle (point 1/2 — plus de flash avant le vol) ; 0
-                // quand l'effet est éteint.
-                crate::win32::injection::regler_ouverture(if active {
-                    crate::win32::ouverture_fenetres::duree_ms()
-                } else {
-                    0
-                });
-                config::save_bool_setting(config::EFFET_OUVERTURE, active);
-            }
-            // ⭐ DEMANDE EXPLICITE (2026-10-16) : « un effet de fermeture […] la
-            // durée de l'effet doit être paramétrable ».
-            ["effet-fermeture", flag] => {
-                let active = *flag == "1";
-                crate::win32::ouverture_fenetres::activer_fermeture(active);
-                // ⛔ La retenue de la DLL SUIT l'interrupteur : éteint, elle vaut
-                // 0 et l'application n'est plus retenue du tout (plus d'effet,
-                // mais surtout plus d'attente de 1,6 s pour rien).
-                crate::win32::injection::regler_retenue(if active {
-                    crate::win32::ouverture_fenetres::duree_fermeture_ms()
-                } else {
-                    0
-                });
-                config::save_bool_setting(config::EFFET_FERMETURE, active);
-            }
-            // ⭐ DEMANDE EXPLICITE (2026-11-05) : « tout, Alt+Tab compris » —
-            // l'animation du changement de fenêtre (voir `rappel_bascule`).
-            ["effet-bascule", flag] => {
-                let active = *flag == "1";
-                crate::win32::ouverture_fenetres::activer_bascule(active);
-                config::save_bool_setting(config::EFFET_BASCULE, active);
-            }
-            ["effet-fermeture-duree", valeur] => {
-                if let Ok(ms) = valeur.parse::<f32>() {
-                    crate::win32::ouverture_fenetres::regler_duree_fermeture(ms.round() as u32);
-                    // La DLL tient chaque geste aussi longtemps que l'effet
-                    // (voir `win32::injection`).
-                    crate::win32::injection::regler_retenue(crate::win32::ouverture_fenetres::duree_fermeture_ms());
-                    config::save_effet_fermeture_duree(crate::win32::ouverture_fenetres::duree_fermeture_ms());
-                }
-            }
-            // ⭐ Animer AUSSI les fenêtres des autres applications — voir
-            // `win32::injection` (désactivé par défaut).
-            ["effet-injection", flag] => {
-                let actif = *flag == "1";
-                // Le choix est gardé ; il n'agit que si le crochet des effets
-                // est posé (voir `effet-crochet`).
-                crate::win32::injection::activer(actif && crate::win32::ouverture_fenetres::crochet_actif());
-                config::save_bool_setting(config::EFFET_INJECTION, actif);
-            }
-            // ⭐ DEMANDE EXPLICITE (2026-11-16) : « donner la possibilité de
-            // désactiver le hook pour les effets d'animations des fenêtres ».
-            ["effet-crochet", flag] => {
-                let actif = *flag == "1";
-                crate::win32::ouverture_fenetres::activer_crochet(actif);
-                crate::win32::injection::activer(actif && config::load_bool_setting_or(config::EFFET_INJECTION, false));
-                config::save_bool_setting(config::EFFET_CROCHET, actif);
-            }
-            // ⭐ DEMANDE EXPLICITE (2026-11-04) : « proposer ces effets » —
-            // la forme du retour, choisie dans la page des réglages.
-            //
-            // ⭐ DEMANDE EXPLICITE (2026-11-05) : « choisir n'importe quel effet
-            // pour l'ouverture, la fermeture, la mise en avant et la réduction ».
-            // Un verbe par moment ; le code 255 est « au hasard ».
-            ["effet-fermeture-style", code] => {
-                if let Ok(code) = code.parse::<u32>() {
-                    use crate::win32::ouverture_fenetres::Moment;
-                    crate::win32::ouverture_fenetres::regler_effet(Moment::Fermeture, code);
-                    // ⭐ DEMANDE EXPLICITE (2026-11-05) : « je ne peux pas
-                    // activer simplement un des nouveaux effets ». Choisir une
-                    // forme ALLUME le moment : c'est le geste d'activation
-                    // attendu, la case n'étant plus qu'un interrupteur pour
-                    // l'éteindre. Sans cela, « Éclater » restait sans effet
-                    // tant que la case « Faire retourner… » n'était pas cochée
-                    // — un réglage que rien n'annonçait.
-                    crate::win32::ouverture_fenetres::activer_fermeture(true);
-                    config::save_bool_setting(config::EFFET_FERMETURE, true);
-                    config::save_effet_fermeture_style(crate::win32::ouverture_fenetres::effet_code(Moment::Fermeture));
-                }
-            }
-            ["effet-ouverture-style", code] => {
-                if let Ok(code) = code.parse::<u32>() {
-                    use crate::win32::ouverture_fenetres::Moment;
-                    crate::win32::ouverture_fenetres::regler_effet(Moment::Ouverture, code);
-                    crate::win32::ouverture_fenetres::activer(true);
-                    crate::win32::injection::regler_ouverture(crate::win32::ouverture_fenetres::duree_ms());
-                    config::save_bool_setting(config::EFFET_OUVERTURE, true);
-                    config::save_effet_ouverture_style(crate::win32::ouverture_fenetres::effet_code(Moment::Ouverture));
-                }
-            }
-            ["effet-reduction-style", code] => {
-                if let Ok(code) = code.parse::<u32>() {
-                    use crate::win32::ouverture_fenetres::Moment;
-                    crate::win32::ouverture_fenetres::regler_effet(Moment::Reduction, code);
-                    // Choisir une forme ALLUME le geste (voir le commentaire
-                    // d'`effet-fermeture-style`) ; les quatre gestes de
-                    // fermeture partagent l'interrupteur.
-                    crate::win32::ouverture_fenetres::activer_fermeture(true);
-                    crate::win32::injection::regler_retenue(crate::win32::ouverture_fenetres::duree_fermeture_ms());
-                    config::save_bool_setting(config::EFFET_FERMETURE, true);
-                    config::save_effet_reduction_style(crate::win32::ouverture_fenetres::effet_code(Moment::Reduction));
-                }
-            }
-            ["effet-agrandissement-style", code] => {
-                if let Ok(code) = code.parse::<u32>() {
-                    use crate::win32::ouverture_fenetres::Moment;
-                    crate::win32::ouverture_fenetres::regler_effet(Moment::Agrandissement, code);
-                    crate::win32::ouverture_fenetres::activer_fermeture(true);
-                    crate::win32::injection::regler_retenue(crate::win32::ouverture_fenetres::duree_fermeture_ms());
-                    config::save_bool_setting(config::EFFET_FERMETURE, true);
-                    config::save_effet_agrandissement_style(crate::win32::ouverture_fenetres::effet_code(
-                        Moment::Agrandissement,
-                    ));
-                }
-            }
             // ⭐ DEMANDE EXPLICITE (2026-10-25) : « un effet de fondu paramétrable à
             // l'ouverture et à la fermeture des fenêtres neuradesk ».
             ["fondu-neuradesk", flag] => {
                 let actif = *flag == "1";
-                crate::win32::ouverture_fenetres::activer_fondu(actif);
+                crate::win32::fondu_fenetres::activer_fondu(actif);
                 config::save_bool_setting(config::FONDU_NEURADESK, actif);
             }
             ["fondu-neuradesk-duree", sens, valeur] => {
                 if let Ok(ms) = valeur.parse::<f32>() {
-                    use crate::win32::ouverture_fenetres as effet;
+                    use crate::win32::fondu_fenetres as effet;
                     match *sens {
                         "ouverture" => effet::regler_duree_fondu_ouverture(ms.round() as u32),
                         "fermeture" => effet::regler_duree_fondu_fermeture(ms.round() as u32),
@@ -3184,16 +3062,8 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
                     config::save_fondu_neuradesk_durees(effet::duree_fondu_ouverture_ms(), effet::duree_fondu_fermeture_ms());
                 }
             }
-            ["effet-ouverture-duree", valeur] => {
-                if let Ok(ms) = valeur.parse::<f32>() {
-                    crate::win32::ouverture_fenetres::regler_duree(ms.round() as u32);
-                    // La DLL voile pour cette même durée (si l'effet est actif).
-                    if crate::win32::ouverture_fenetres::est_active() {
-                        crate::win32::injection::regler_ouverture(crate::win32::ouverture_fenetres::duree_ms());
-                    }
-                    config::save_effet_ouverture_duree(crate::win32::ouverture_fenetres::duree_ms());
-                }
-            }
+            // ⭐ DEMANDE EXPLICITE (2026-10-16) : le plein écran exclusif dans la
+            // zone centrale, voie B (sans injection) — voir `win32::jeux_fenetres`.
             ["jeux-en-fenetre", flag] => {
                 let active = *flag == "1";
                 crate::win32::jeux_fenetres::activer(active);
@@ -5732,7 +5602,6 @@ fn push_state(refs: &SettingsRefs) {
         "scrollStepLeftPx": crate::ui::dock::scroll_step_px(crate::ui::dock::Side::Left).round() as i32,
         "scrollStepRightPx": crate::ui::dock::scroll_step_px(crate::ui::dock::Side::Right).round() as i32,
         "pleinEcranZone": crate::win32::plein_ecran_zone::est_active(),
-        "effetOuverture": crate::win32::ouverture_fenetres::est_active(),
         "jeuxEnFenetre": crate::win32::jeux_fenetres::est_active(),
         "fullscreenClockEnabled": crate::win32::fullscreen_clock::is_enabled(),
         "fullscreenClockPositionTop": crate::win32::fullscreen_clock::is_position_top(),
@@ -6082,32 +5951,15 @@ fn etat_ajoute() -> serde_json::Value {
         // Les horloges du monde (voir `win32::horloges_monde`).
         "horlogesMonde": crate::win32::horloges_monde::json(),
         "horlogesMondeMax": crate::win32::horloges_monde::MAX_HORLOGES,
-        // Le fondu des fenêtres de NeuraDesk (voir `ouverture_fenetres::fondu_actif`).
-        "fonduNeuradesk": crate::win32::ouverture_fenetres::fondu_actif(),
-        "fonduNeuradeskOuverture": crate::win32::ouverture_fenetres::duree_fondu_ouverture_ms(),
-        "fonduNeuradeskFermeture": crate::win32::ouverture_fenetres::duree_fondu_fermeture_ms(),
-        "fonduNeuradeskMin": crate::win32::ouverture_fenetres::DUREE_FONDU_MIN_MS,
-        "fonduNeuradeskMax": crate::win32::ouverture_fenetres::DUREE_FONDU_MAX_MS,
+        // Le fondu des fenêtres de NeuraDesk (voir `win32::fondu_fenetres`).
+        "fonduNeuradesk": crate::win32::fondu_fenetres::fondu_actif(),
+        "fonduNeuradeskOuverture": crate::win32::fondu_fenetres::duree_fondu_ouverture_ms(),
+        "fonduNeuradeskFermeture": crate::win32::fondu_fenetres::duree_fondu_fermeture_ms(),
+        "fonduNeuradeskMin": crate::win32::fondu_fenetres::DUREE_FONDU_MIN_MS,
+        "fonduNeuradeskMax": crate::win32::fondu_fenetres::DUREE_FONDU_MAX_MS,
         // Le décalage de l'horloge plein écran du principal (voir `fullscreen_clock`).
         "fullscreenClockDecalage": crate::win32::fullscreen_clock::decalage_de(crate::win32::fullscreen_clock::ECRAN_PRINCIPAL),
         "fullscreenClockDecalageMax": [crate::win32::fullscreen_clock::DECALAGE_X_MAX, crate::win32::fullscreen_clock::DECALAGE_Y_MAX],
-        // La durée de l'effet d'ouverture (voir `win32::ouverture_fenetres`).
-        "effetOuvertureDuree": crate::win32::ouverture_fenetres::duree_ms(),
-        "effetOuvertureDureeMin": crate::win32::ouverture_fenetres::DUREE_MIN_MS,
-        "effetOuvertureDureeMax": crate::win32::ouverture_fenetres::DUREE_MAX_MS,
-        "effetFermeture": crate::win32::ouverture_fenetres::fermeture_active(),
-        "effetBascule": crate::win32::ouverture_fenetres::bascule_active(),
-        "effetFermetureDuree": crate::win32::ouverture_fenetres::duree_fermeture_ms(),
-        // La FORME de chaque moment animé (voir `ouverture_fenetres::effets::Effet`).
-        "effetOuvertureStyle": crate::win32::ouverture_fenetres::effet_code(crate::win32::ouverture_fenetres::Moment::Ouverture),
-        "effetFermetureStyle": crate::win32::ouverture_fenetres::effet_code(crate::win32::ouverture_fenetres::Moment::Fermeture),
-        "effetReductionStyle": crate::win32::ouverture_fenetres::effet_code(crate::win32::ouverture_fenetres::Moment::Reduction),
-        "effetAgrandissementStyle": crate::win32::ouverture_fenetres::effet_code(crate::win32::ouverture_fenetres::Moment::Agrandissement),
-        // Charger `window_hook.dll` dans les applications (voir `win32::injection`).
-        // ⛔ Le CHOIX enregistré, pas `injection::actif()` : crochet éteint,
-        // l'injection est coupée mais la case doit garder la valeur choisie.
-        "effetInjection": config::load_bool_setting_or(config::EFFET_INJECTION, false),
-        "effetCrochet": crate::win32::ouverture_fenetres::crochet_actif(),
         // L'ombre sous la barre du haut (voir `ui::dock::ombre_barre_haut`).
         "ombreBarreHaut": crate::ui::dock::ombre_barre_haut().round() as i32,
         "ombreBarreHautMax": crate::ui::dock::MAX_OMBRE_BARRE_HAUT as i32,
@@ -6281,7 +6133,7 @@ mod tests {
                 "la rangée « {cle} » n'est jamais rafraîchie par `updateSegmented`"
             );
         }
-        assert_eq!(vues, 19, "nombre de rangées de boutons dans la page (la LANGUE, le 2026-11-15 ; la texture de l'interface, puis celle des terminaux, le 2026-10-15 ; la couleur des ombres, le 2026-10-19 ; les coins du centre de la barre du haut, le 2026-10-31 ; la forme du retour à la fermeture, le 2026-11-04 ; les formes de l'ouverture, de la réduction et de l'agrandissement, le 2026-11-05 ; le PROFIL de performances, le 2026-11-11 ; la CARTE GRAPHIQUE, le 2026-11-14)");
+        assert_eq!(vues, 15, "nombre de rangées de boutons dans la page (la LANGUE, le 2026-11-15 ; la texture de l'interface, puis celle des terminaux, le 2026-10-15 ; la couleur des ombres, le 2026-10-19 ; les coins du centre de la barre du haut, le 2026-10-31 ; les quatre formes des effets de fenêtres RETIRÉES le 2026-11-22 ; le PROFIL de performances, le 2026-11-11 ; la CARTE GRAPHIQUE, le 2026-11-14)");
     }
 
     #[test]

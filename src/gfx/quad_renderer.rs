@@ -18,10 +18,10 @@ use crate::gfx::shader::{blob_bytes, compile_shader};
 /// Nombre maximum de quads qu'un seul appel de dessin peut porter (l'instance
 /// buffer est alloué une fois pour cette taille).
 ///
-/// ⭐ 16 384 DEPUIS (2026-11-05) : les effets se découpent au grain du plugin
-/// Windhawk — 5 px, soit jusqu'à 191 000 cases sur une fenêtre maximisée (voir
-/// `ouverture_fenetres::effets::COTE_MOD`). À 4 096 il fallait 47 `Map`/`Unmap`
-/// du tampon par image et autant d'appels de dessin ; à 16 384, douze.
+/// ⭐ 16 384 DEPUIS (2026-11-05) : les effets de fenêtres (retirés le
+/// 2026-11-22) se découpaient en cases de 5 px. À 4 096 il fallait 47
+/// `Map`/`Unmap` du tampon par image et autant d'appels de dessin ; à 16 384,
+/// douze. La taille est gardée : elle ne coûte qu'un tampon alloué une fois.
 pub const MAX_INSTANCES: usize = 16_384;
 
 #[repr(C)]
@@ -90,9 +90,9 @@ pub struct QuadInstance {
     pub bascule: f32,
     /// ⭐ **SOUS-RECTANGLE DE LA TEXTURE** `(u0, v0, u1, v1)`, en 0..1 —
     /// `(0, 0, 1, 1)` par défaut, donc toutes les instances existantes sont
-    /// inchangées. Il n'existe que pour les EFFETS EN TUILES (éclatement,
-    /// génie : voir `win32::ouverture_fenetres::effets`) : sans lui, une
-    /// fenêtre ne peut être dessinée qu'entière, en un seul quadrilatère.
+    /// inchangées. Il est né pour les effets de fenêtres en tuiles (retirés le
+    /// 2026-11-22) : sans lui, une texture ne peut être dessinée qu'entière, en
+    /// un seul quadrilatère.
     ///
     /// Même contrat que `ring` : un élément de layout à son décalage (56), et
     /// ⛔ un champ RÉORDONNÉ est SILENCIEUX (voir le test
@@ -3217,7 +3217,7 @@ float4 PSMain(PSInput input) : SV_TARGET {
         baseColor = lerp(input.Color, texSample, input.TexMode > 4.5 ? 0.0 : input.TexMode);
         if (input.TexMode > 4.5) baseColor.rgb = AplatTexture(baseColor.rgb, texDelta);
         // L'OPACITÉ d'une texture (mode 1) : `Color.a`, que `new_textured` pose
-        // à 1 — le fondu des fenêtres de NeuraDesk (`win32::ouverture_fenetres`).
+        // à 1 (une texture partiellement transparente garde son alpha).
         if (input.TexMode > 0.5 && input.TexMode < 1.5) baseColor.a *= input.Color.a;
         // Et sa TEINTE : `new_textured` pose un blanc, sans effet ; une tranche de la
         // pile des barres latérales s'y assombrit (`ui::empilement`).

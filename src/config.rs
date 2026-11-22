@@ -3754,20 +3754,7 @@ pub const PLEIN_ECRAN_DANS_LA_ZONE: &str = "plein_ecran_dans_la_zone";
 /// `win32::jeux_fenetres`) ; coupé par défaut.
 pub const JEUX_EN_FENETRE: &str = "jeux_en_fenetre";
 
-/// L'effet d'ouverture des fenêtres (voir `win32::ouverture_fenetres`) ; actif
-/// par défaut — DEMANDE EXPLICITE.
-pub const EFFET_OUVERTURE: &str = "effet_ouverture";
-
-/// La durée de l'effet d'ouverture, en millisecondes ; `None` : jamais réglée.
-pub fn load_effet_ouverture_duree() -> Option<u32> {
-    read_config_floats("effet_ouverture_duree.txt")?.first().map(|&v| v as u32)
-}
-
-pub fn save_effet_ouverture_duree(ms: u32) {
-    write_config("effet_ouverture_duree.txt", ms.to_string());
-}
-
-/// Le fondu des fenêtres de NeuraDesk (voir `win32::ouverture_fenetres::fondu_actif`) ;
+/// Le fondu des fenêtres de NeuraDesk (voir `win32::fondu_fenetres`) ;
 /// coupé par défaut.
 pub const FONDU_NEURADESK: &str = "fondu_neuradesk";
 
@@ -3781,77 +3768,6 @@ pub fn load_fondu_neuradesk_durees() -> Option<(u32, u32)> {
 pub fn save_fondu_neuradesk_durees(ouverture: u32, fermeture: u32) {
     write_config("fondu_neuradesk_durees.txt", format!("{ouverture}\n{fermeture}"));
 }
-
-/// L'effet de fermeture des fenêtres (voir `win32::ouverture_fenetres::fermeture`) ;
-/// actif par défaut — DEMANDE EXPLICITE.
-pub const EFFET_FERMETURE: &str = "effet_fermeture";
-
-/// L'animation d'Alt+Tab (voir `win32::ouverture_fenetres::activer_bascule`) ;
-/// active par défaut — DEMANDE EXPLICITE (2026-11-05 : « tout, Alt+Tab
-/// compris »).
-pub const EFFET_BASCULE: &str = "effet_bascule";
-
-/// La durée de l'effet de fermeture, en millisecondes ; `None` : jamais réglée.
-pub fn load_effet_fermeture_duree() -> Option<u32> {
-    read_config_floats("effet_fermeture_duree.txt")?.first().map(|&v| v as u32)
-}
-
-pub fn save_effet_fermeture_duree(ms: u32) {
-    write_config("effet_fermeture_duree.txt", ms.to_string());
-}
-
-/// ⭐ **LA FORME DE CHAQUE MOMENT ANIMÉ** — un fichier par moment
-/// (voir `ouverture_fenetres::Moment`). Codes : 0 retour vers l'icône,
-/// 1 extinction, 2 fondu, 3 chute, 4 zoom, 5 étirement (agrandir/restaurer
-/// seulement), 6 éclatement, 7 génie, **255 au hasard**. `None` : jamais réglée.
-pub fn load_effet_fermeture_style() -> Option<u32> {
-    read_config_floats("effet_fermeture_style.txt")?.first().map(|&v| v as u32)
-}
-
-pub fn save_effet_fermeture_style(code: u32) {
-    write_config("effet_fermeture_style.txt", code.to_string());
-}
-
-pub fn load_effet_ouverture_style() -> Option<u32> {
-    read_config_floats("effet_ouverture_style.txt")?.first().map(|&v| v as u32)
-}
-
-pub fn save_effet_ouverture_style(code: u32) {
-    write_config("effet_ouverture_style.txt", code.to_string());
-}
-
-/// ⛔ Jamais réglée, la réduction SUIT la fermeture : c'est ce qu'elle faisait
-/// avant d'avoir son propre fichier (une seule forme pour les deux gestes), et
-/// un utilisateur qui avait choisi « zoom » ne doit pas se retrouver avec le
-/// vol par défaut au premier lancement de cette version.
-pub fn load_effet_reduction_style() -> Option<u32> {
-    read_config_floats("effet_reduction_style.txt")?.first().map(|&v| v as u32)
-}
-
-pub fn save_effet_reduction_style(code: u32) {
-    write_config("effet_reduction_style.txt", code.to_string());
-}
-
-pub fn load_effet_agrandissement_style() -> Option<u32> {
-    read_config_floats("effet_agrandissement_style.txt")?.first().map(|&v| v as u32)
-}
-
-pub fn save_effet_agrandissement_style(code: u32) {
-    write_config("effet_agrandissement_style.txt", code.to_string());
-}
-
-/// **Animer les fenêtres des AUTRES applications** — charge `window_hook.dll`
-/// dans chaque application qui ouvre une fenêtre (voir `win32::injection`).
-/// ⛔ DÉSACTIVÉ par défaut : c'est une injection de module dans les processus de
-/// l'utilisateur, la case des Réglages doit être cochée.
-pub const EFFET_INJECTION: &str = "effet_injection";
-
-/// **LE CROCHET DES EFFETS DE FENÊTRES** — `SetWinEventHook` sur la création,
-/// l'affichage, le masquage et le premier plan de TOUTES les fenêtres, plus le
-/// fil de rendu de la surcouche (voir `win32::ouverture_fenetres::activer_crochet`).
-/// Actif par défaut ; décoché, aucun effet de fenêtre ne joue et rien n'est
-/// injecté.
-pub const EFFET_CROCHET: &str = "effet_crochet";
 
 /// Les lueurs (voir `gfx::lueur`, qui porte le format). `None` : jamais réglées.
 pub fn load_lueurs() -> Option<String> {

@@ -36,56 +36,6 @@ fn main() {
     copy_polices_de_terminal_assets();
     // Les planches de la mascotte voir `copy_mascottes_assets`.
     copy_mascottes_assets();
-    // Le module injecté — voir `copy_window_hook_dll` (facultatif : absent si
-    // la crate `window-hook` n'a jamais été construite).
-    copy_window_hook_dll();
-}
-
-/// Copie `window_hook.dll` à côté de l'exe — NeuraDesk la charge dans les
-/// applications quand le réglage « Animer aussi les fenêtres des autres
-/// applications » est coché (voir `win32::injection`).
-///
-/// ⚠️ **FACULTATIF ET SILENCIEUX QUAND ELLE MANQUE**, comme `son/` : la crate
-/// `window-hook` se construit à part (`CARGO_TARGET_DIR=... cargo build
-/// --release`, voir son README) et n'appartient pas à ce build. Sans elle, la
-/// case cochée ne fait rien et le journal le dit — l'application démarre.
-fn copy_window_hook_dll() {
-    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR non fourni par Cargo");
-    let Some(target_dir) = dossier_de_l_exe(&out_dir) else {
-        return;
-    };
-    // Deux emplacements : le `target/` de la crate (build ordinaire) et le
-    // dossier externe employé ici pour ne pas construire dans OneDrive.
-    let mut sources = vec![std::path::Path::new("window-hook").join("target").join("release").join("window_hook.dll")];
-    if let Some(externe) = std::env::var_os("NEURADESK_WINDOW_HOOK_DLL") {
-        sources.push(std::path::PathBuf::from(externe));
-    }
-    for source in &sources {
-        println!("cargo:rerun-if-changed={}", source.display());
-    }
-    let Some(source) = sources.into_iter().find(|chemin| chemin.is_file()) else {
-        return;
-    };
-    let destination = target_dir.join("window_hook.dll");
-    if std::fs::copy(&source, &destination).is_ok() {
-        return;
-    }
-    // ⛔ **UNE DLL CHARGÉE EST VERROUILLÉE** — MESURÉ (2026-11-05) : des
-    // applications où elle a été injectée la tiennent, la copie échoue
-    // (« Device or resource busy ») et la version suivante ne partirait jamais.
-    // ⭐ Le RENOMMAGE, lui, reste permis sur un fichier chargé : on écarte
-    // l'ancienne et on pose la neuve.
-    let ancienne = target_dir.join(format!(
-        "window_hook.ancienne-{}.dll",
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-    ));
-    if std::fs::rename(&destination, &ancienne).is_ok() {
-        if let Err(err) = std::fs::copy(&source, &destination) {
-            eprintln!("cargo:warning=échec copie {}: {err}", source.display());
-        }
-    } else {
-        eprintln!("cargo:warning={} est verrouillée et introuvable au renommage", destination.display());
-    }
 }
 
 /// Copie `assets/popups/*.{html,css}` à côté de l'exe compilé — les pages CEF

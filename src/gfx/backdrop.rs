@@ -49,7 +49,46 @@ use crate::gfx::{blur, duplication};
 /// SOUS-ÉCHANTILLONNÉE (voir `DOWNSCALE`), donc largement assez fort
 /// visuellement malgré un rayon modeste en pixels de la texture
 /// réellement produite.
+///
+/// ⭐ **C'EST LA VALEUR AU RÉGLAGE PAR DÉFAUT** — BUG SIGNALÉ (2026-11-22) :
+/// « force du flou avec le curseur ne fonctionne plus ». Ce rayon était FIXE,
+/// et c'est lui qui sert en mode capturable (la loupe) : le curseur
+/// « Intensité du flou » n'y changeait rien. Il suit désormais le curseur,
+/// voir `rayon_du_flou`.
 const BLUR_RADIUS: i32 = 6;
+
+/// Le rayon du flou boîte pour `passes` (le curseur « Intensité du flou »,
+/// 1 à 8, voir `blur::blur_passes`). La pyramide GPU double son étalement à
+/// chaque niveau : le rayon suit donc une loi EXPONENTIELLE, √2 par cran,
+/// calée pour rendre `BLUR_RADIUS` au réglage par défaut (6) — l'aspect
+/// connu ne bouge pas. 1 → 1 px, 4 → 3, 6 → 6, 8 → 12 (matériau Givré).
+///
+/// ⭐ **ET LE MATÉRIAU** — BUG SIGNALÉ (2026-11-22) : « le matériau du flou ne
+/// semble plus être pris en compte ». Ce chemin ignorait le matériau : seul
+/// son post-traitement (reflets, saturation) atteignait le shader, et Givré
+/// et Mica n'en ont presque pas — ils ne se distinguaient que par leur flou.
+/// Voir `diffusion_du_materiau`.
+fn rayon_du_flou(passes: u32, materiau: &crate::gfx::material::Material) -> i32 {
+    let ecart = passes as f32 - 6.0;
+    ((BLUR_RADIUS as f32) * 2f32.powf(ecart / 2.0) * diffusion_du_materiau(materiau)).round().max(1.0) as i32
+}
+
+/// Le rayon du réglage en cours (curseur ET matériau, lus sur le fil
+/// d'affichage, où ils vivent — voir `blur::blur_passes`).
+fn rayon_courant() -> i32 {
+    rayon_du_flou(blur::blur_passes(), crate::gfx::material::current())
+}
+
+/// Ce que le matériau fait au flou dans la pyramide GPU, traduit en facteur
+/// de rayon : plus de remontée Kawase (`stop_levels`) = plus DIFFUS (voir la
+/// doc du champ) ; la tente du Mica donne l'aspect plat et laiteux, le plus
+/// étalé. Givré (3 paliers) vaut 1 : le rayon calé plus haut.
+fn diffusion_du_materiau(materiau: &crate::gfx::material::Material) -> f32 {
+    match materiau.algo {
+        crate::gfx::material::BlurAlgo::MicaTent => 1.6,
+        crate::gfx::material::BlurAlgo::DualKawase => 0.45 + 0.55 * (materiau.stop_levels.min(3) as f32 / 3.0),
+    }
+}
 
 /// Facteur de réduction linéaire appliqué À LA CAPTURE elle-même (pas après
 /// coup) — BUG DE PERFORMANCE RÉEL CONSTATÉ EN PRATIQUE sans ça : capturer
@@ -192,7 +231,7 @@ struct EntreeGdi {
 type CaptureGdi = ([i32; 4], u32, u32, Vec<u8>);
 
 struct FilGdi {
-    demandes: std::sync::mpsc::Sender<[i32; 4]>,
+    demandes: std::sync::mpsc::Sender<([i32; 4], i32)>,
     rendues: std::sync::mpsc::Receiver<CaptureGdi>,
 }
 
@@ -205,11 +244,13 @@ thread_local! {
 /// `capture_blurred_rect_gdi_en_fond`. `None` si le fil n'a pas pu naître :
 /// les captures redeviennent alors immédiates.
 fn lancer_le_fil_gdi() -> Option<FilGdi> {
-    let (demandes, recues) = std::sync::mpsc::channel::<[i32; 4]>();
+    let (demandes, recues) = std::sync::mpsc::channel::<([i32; 4], i32)>();
     let (rendre, rendues) = std::sync::mpsc::channel::<CaptureGdi>();
     let lance = std::thread::Builder::new().name("fonds-gdi".into()).spawn(move || {
-        while let Ok(rect) = recues.recv() {
-            let (largeur, hauteur, pixels) = capture_floutee_gdi(rect);
+        // Le rayon vient du fil d'affichage : `blur_passes` y est un
+        // `thread_local`, il vaudrait ici sa valeur par défaut.
+        while let Ok((rect, rayon)) = recues.recv() {
+            let (largeur, hauteur, pixels) = capture_floutee_gdi(rect, rayon);
             if rendre.send((rect, largeur, hauteur, pixels)).is_err() {
                 return;
             }
@@ -256,7 +297,7 @@ fn capture_blurred_rect_gdi_en_fond(device: &ID3D11Device, rect: [i32; 4]) -> Re
         cache.retain(|_, e| maintenant.duration_since(e.oublie) < MAG_CACHE_OUBLI);
         if let Some(entree) = cache.get_mut(&rect) {
             entree.oublie = maintenant;
-            if !entree.en_cours && maintenant.duration_since(entree.quand) >= GDI_CACHE_TTL && demandes.send(rect).is_ok() {
+            if !entree.en_cours && maintenant.duration_since(entree.quand) >= GDI_CACHE_TTL && demandes.send((rect, rayon_courant())).is_ok() {
                 entree.en_cours = true;
             }
             return Ok(entree.texture.clone());
@@ -317,7 +358,7 @@ fn capture_blurred_mag(device: &ID3D11Device, rect: [i32; 4]) -> Result<Texture>
 
     match crate::gfx::mag_capture::capturer(rect, DOWNSCALE) {
         Some((largeur, hauteur, pixels)) => {
-            let flou = box_blur(&pixels, largeur, hauteur, BLUR_RADIUS);
+            let flou = box_blur(&pixels, largeur, hauteur, rayon_courant());
             let texture = Texture::from_rgba(device, largeur, hauteur, &flou)?;
             MAG_CACHE.with(|cache| {
                 let mut cache = cache.borrow_mut();
@@ -378,17 +419,17 @@ fn rect_within(rect: [i32; 4], desktop_rect: RECT) -> bool {
 /// `box_blur`) — l'ancien chemin, avant l'ajout de `gfx::duplication`/
 /// `gfx::blur`, gardé comme filet de sécurité.
 fn capture_blurred_rect_gdi(device: &ID3D11Device, rect: [i32; 4]) -> Result<Texture> {
-    let (width, height, blurred) = capture_floutee_gdi(rect);
+    let (width, height, blurred) = capture_floutee_gdi(rect, rayon_courant());
     Texture::from_rgba(device, width, height, &blurred)
 }
 
 /// La partie CPU du repli GDI — capture réduite puis flou — sans GPU, donc
 /// faisable sur n'importe quel fil (voir `lancer_le_fil_gdi`).
-fn capture_floutee_gdi([x, y, w, h]: [i32; 4]) -> (u32, u32, Vec<u8>) {
+fn capture_floutee_gdi([x, y, w, h]: [i32; 4], rayon: i32) -> (u32, u32, Vec<u8>) {
     let width = (w.max(1) as u32 / DOWNSCALE).max(1);
     let height = (h.max(1) as u32 / DOWNSCALE).max(1);
     let pixels = unsafe { capture_screen_region_scaled(x, y, w.max(1) as u32, h.max(1) as u32, width, height) };
-    (width, height, box_blur(&pixels, width, height, BLUR_RADIUS))
+    (width, height, box_blur(&pixels, width, height, rayon))
 }
 
 /// Capture le rectangle écran `(x, y, src_width, src_height)` via GDI, DÉJÀ
@@ -505,5 +546,43 @@ fn box_blur_pass(src: &[u8], dst: &mut [u8], w: i32, h: i32, radius: i32, horizo
                 dst[idx + c] = (sum[c] / count.max(1)) as u8;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Le curseur « Intensité du flou » agit AUSSI en mode capturable : le
+    /// rayon du flou boîte change avec lui, et le défaut garde l'aspect connu.
+    /// Sur l'ancien code, le rayon valait `BLUR_RADIUS` quel que soit le
+    /// réglage.
+    #[test]
+    fn le_rayon_du_flou_suit_le_curseur_et_garde_le_defaut() {
+        let givre = &crate::gfx::material::MATERIALS[1];
+        assert_eq!(rayon_du_flou(6, givre), BLUR_RADIUS);
+        assert_eq!(rayon_du_flou(1, givre), 1);
+        assert_eq!(rayon_du_flou(8, givre), 12);
+        for passes in 1..8 {
+            assert!(rayon_du_flou(passes, givre) <= rayon_du_flou(passes + 1, givre), "le rayon ne décroît jamais");
+        }
+        assert!(rayon_du_flou(4, givre) < rayon_du_flou(6, givre) && rayon_du_flou(6, givre) < rayon_du_flou(8, givre));
+        let source = include_str!("backdrop.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(!code.contains(", BLUR_RADIUS)"), "un flou appelé avec le rayon fixe ignore le curseur");
+    }
+
+    /// Le matériau change AUSSI le flou du mode capturable : Mica le plus
+    /// étalé, Acrylique le plus net, Givré au rayon calé. Sur l'ancien code
+    /// le rayon ne dépendait d'aucun matériau.
+    #[test]
+    fn le_materiau_change_le_rayon_du_flou() {
+        use crate::gfx::material::MATERIALS;
+        let r: Vec<i32> = MATERIALS.iter().map(|m| rayon_du_flou(6, m)).collect();
+        let (mica, givre, acrylique) = (r[0], r[1], r[2]);
+        assert!(acrylique < givre && givre < mica, "rayons {r:?}");
+        let source = include_str!("backdrop.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap_or("");
+        assert_eq!(code.matches("rayon_courant()").count(), 4, "les trois flous ET la définition passent par le réglage courant");
     }
 }
