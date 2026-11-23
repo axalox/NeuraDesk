@@ -4030,6 +4030,17 @@ Plongeuse	Diver
 Facteur	Postman
 Boulangère	Baker
 Changer les serveurs DNS	Change DNS servers
+Modifier réglages réseau	Change network settings
+Adresse IP	IP address
+Adresse IPv4	IPv4 address
+Manuelle	Manual
+Adresse fixe	Static address
+Donnée par le réseau (DHCP)	Provided by network (DHCP)
+Masque	Subnet mask
+Passerelle	Gateway
+Adresse IP mise à jour.	IP address updated.
+Adresse, masque ou passerelle invalide.	Invalid address, mask or gateway.
+Une adresse manuelle garde les serveurs DNS actuels de la carte.	A manual address keeps the adapter's current DNS servers.
 DNS	DNS
 Serveurs DNS	DNS servers
 Carte réseau	Network adapter

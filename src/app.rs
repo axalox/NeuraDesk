@@ -2453,7 +2453,7 @@ fn tooltip_label_for_icon(
         i if i == bovo_icon_index => "Jouer à Bovo".to_string(),
         i if i == patience_icon_index => "Jouer à Patience".to_string(),
         i if i == mascotte_icon_index => "Afficher ou masquer la mascotte".to_string(),
-        i if i == dns_icon_index => "Changer les serveurs DNS".to_string(),
+        i if i == dns_icon_index => "Modifier réglages réseau".to_string(),
         i if i == verrouillage_icon_index => "Verrouiller la session".to_string(),
         // Le libellé donne des EXEMPLES : « caractères accentués » seul ne dirait
         // pas que la ponctuation française et la ligature y sont aussi.

@@ -12,6 +12,13 @@
   sa propre énumération, adresses parsées) avant le PowerShell élevé : la page
   n'est qu'une commodité, jamais une garde.
 
+  DEMANDE (2026-11-23) : un onglet « Adresse IP » (automatique ou manuelle, avec
+  la passerelle) et le nom « Modifier réglages réseau ». La liste des cartes est
+  COMMUNE aux deux onglets ; l'onglet IP ne règle qu'UNE carte à la fois
+  (`ip/<carte>/<auto|adresse,masque,passerelle>`, revalidé par
+  `win32::reseau_ip`). Ses champs sont remplis depuis la carte à chaque
+  changement de carte, pas à chaque `setState` (la rafale effacerait la saisie).
+
   ⚠️ **LA FACTURE DE `lightsoff.html`** — bande de titre qui DÉPLACE la fenêtre,
   punaise, croix, et les MÊMES trois verbes de fenêtre (`deplacer`, `epingler`,
   `fermer`).
@@ -140,15 +147,50 @@
   .action.principale { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.50 * var(--popup-fond-alpha, 1))); }
   .action.principale:hover { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.70 * var(--popup-fond-alpha, 1))); }
   .action:disabled, .action[aria-disabled="true"] { opacity: .4; cursor: default; }
-  #note { font-size: 11px; opacity: .6; }
+  /* `all: unset` remet `display` : sans ceci, `hidden` ne cache pas le bouton. */
+  .action[hidden] { display: none; }
+  .note { font-size: 11px; opacity: .6; }
+  #onglets { flex: 0 0 auto; display: flex; gap: 4px; padding: 8px 12px 0; }
+  .onglet {
+    all: unset;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    border-radius: var(--nd-rayon-controle, 8px);
+    cursor: pointer;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.08 * var(--popup-fond-alpha, 1)));
+  }
+  .onglet:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.16 * var(--popup-fond-alpha, 1))); }
+  .onglet[aria-selected="true"] { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.50 * var(--popup-fond-alpha, 1))); }
+  .vue { display: flex; flex-direction: column; gap: 12px; }
+  .vue[hidden] { display: none; }
+  #modes-ip { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  #ip-champs { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; }
+  #ip-champs[aria-disabled="true"] { opacity: .45; }
+  #ip-champs input {
+    all: unset;
+    padding: 5px 8px;
+    border-radius: var(--nd-rayon-petit, 6px);
+    font-family: var(--nd-police-mono, Consolas, monospace);
+    font-size: 12px;
+    user-select: text;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.10 * var(--popup-fond-alpha, 1)));
+    box-shadow: inset 0 0 0 1px rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.18 * var(--popup-fond-alpha, 1)));
+  }
+  #ip-champs input:focus { box-shadow: inset 0 0 0 2px rgba(var(--popup-accent-rgb, 255, 255, 255), .9); }
+  #ip-champs input.faux { box-shadow: inset 0 0 0 2px rgba(230, 80, 80, .9); }
 </style>
 </head>
 <body>
   <div id="barre">
-    <span id="titre">Serveurs DNS</span>
+    <span id="titre">Modifier réglages réseau</span>
     <button id="actualiser" class="bouton" title="Actualiser"><span class="ico ico-arrow-clockwise"></span></button>
     <button id="epingle" class="bouton" title="Rester au premier plan"><span class="ico ico-push-pin"></span></button>
     <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
+  </div>
+  <div id="onglets" role="tablist">
+    <button id="onglet-dns" class="onglet" role="tab" aria-selected="true">DNS</button>
+    <button id="onglet-ip" class="onglet" role="tab" aria-selected="false">Adresse IP</button>
   </div>
   <div id="corps">
     <section>
@@ -156,6 +198,7 @@
       <div id="cartes"></div>
       <div id="vide" hidden>Aucune carte réseau connectée.</div>
     </section>
+    <div id="vue-dns" class="vue">
     <section>
       <h2>Serveurs</h2>
       <div id="prereglages"></div>
@@ -169,7 +212,28 @@
         <input id="secondaire" spellcheck="false" placeholder="facultatif" data-no-i18n>
       </div>
     </section>
-    <div id="note">Windows demande l'autorisation administrateur à chaque changement.</div>
+    </div>
+    <div id="vue-ip" class="vue" hidden>
+      <section>
+        <h2>Adresse IPv4</h2>
+        <div id="modes-ip">
+          <button id="ip-auto" class="prereglage"><span class="p-nom">Automatique</span><span class="p-adr">Donnée par le réseau (DHCP)</span></button>
+          <button id="ip-manuelle" class="prereglage"><span class="p-nom">Manuelle</span><span class="p-adr">Adresse fixe</span></button>
+        </div>
+      </section>
+      <section>
+        <div id="ip-champs">
+          <label for="ip-adresse">Adresse IP</label>
+          <input id="ip-adresse" spellcheck="false" placeholder="ex. 192.168.1.50" data-no-i18n>
+          <label for="ip-masque">Masque</label>
+          <input id="ip-masque" spellcheck="false" placeholder="ex. 255.255.255.0" data-no-i18n>
+          <label for="ip-passerelle">Passerelle</label>
+          <input id="ip-passerelle" spellcheck="false" placeholder="ex. 192.168.1.1" data-no-i18n>
+        </div>
+      </section>
+      <div class="note">Une adresse manuelle garde les serveurs DNS actuels de la carte.</div>
+    </div>
+    <div class="note">Windows demande l'autorisation administrateur à chaque changement.</div>
   </div>
   <div id="pied">
     <span id="message"></span>
@@ -197,11 +261,15 @@
   document.getElementById("epingle").addEventListener("click", function () { go("epingler"); });
   document.getElementById("fermer").addEventListener("click", function () { go("fermer"); });
   document.getElementById("actualiser").addEventListener("click", function () { go("actualiser"); });
-  document.getElementById("vider").addEventListener("click", function () { if (!etat.enCours) go("vider"); });
+  document.getElementById("vider").addEventListener("click", function () { if (!etat.enCours) { derniereAction = "dns"; go("vider"); } });
 
   let etat = { cartes: [], enCours: false, message: "" };
   let carteChoisie = null;     // un index, ou TOUTES
   let prereglageChoisi = null; // un id de PREREGLAGES, ou null (champs libres)
+  let onglet = "dns";          // "dns" ou "ip"
+  let ipManuelle = false;      // le mode choisi dans l'onglet IP
+  let ipRemplieDe = null;      // la carte dont les champs IP ont été remplis
+  let derniereAction = "dns";  // l'onglet qui a demandé la dernière application
 
   function el(tag, attrs, enfants) {
     const n = document.createElement(tag);
@@ -219,6 +287,7 @@
     boite.textContent = "";
     const cartes = etat.cartes || [];
     document.getElementById("vide").hidden = cartes.length > 0;
+    if (onglet === "ip" && carteChoisie === TOUTES) carteChoisie = null;
     if (carteChoisie !== TOUTES && !cartes.some(function (c) { return c.index === carteChoisie; })) {
       carteChoisie = cartes.length ? cartes[0].index : null;
     }
@@ -226,15 +295,19 @@
       const b = el("button", { class: "carte", "aria-pressed": String(carteChoisie === c.index) }, [
         el("div", { class: "ligne" }, [
           el("span", { class: "nom", texte: c.nom, "data-no-i18n": "" }),
-          el("span", { class: "mode", texte: c.manuel ? "Manuel" : "Automatique" }),
+          onglet === "ip"
+            ? el("span", { class: "mode", texte: c.dhcp ? "Automatique" : "Manuelle" })
+            : el("span", { class: "mode", texte: c.manuel ? "Manuel" : "Automatique" }),
         ]),
         el("div", { class: "desc", texte: c.description, "data-no-i18n": "" }),
-        el("div", { class: "serveurs", texte: c.serveurs.length ? c.serveurs.join("  ·  ") : "—", "data-no-i18n": "" }),
+        onglet === "ip"
+          ? el("div", { class: "serveurs", texte: [c.ipv4 || "—", c.masque || "—", "→ " + (c.passerelle || "—")].join("  ·  "), "data-no-i18n": "" })
+          : el("div", { class: "serveurs", texte: c.serveurs.length ? c.serveurs.join("  ·  ") : "—", "data-no-i18n": "" }),
       ]);
-      b.addEventListener("click", function () { carteChoisie = c.index; dessinerCartes(); });
+      b.addEventListener("click", function () { carteChoisie = c.index; dessinerCartes(); remplirIp(false); });
       boite.appendChild(b);
     }
-    if (cartes.length > 1) {
+    if (cartes.length > 1 && onglet === "dns") {
       const toutes = el("button", { class: "carte", "aria-pressed": String(carteChoisie === TOUTES) }, [
         el("div", { class: "ligne" }, [el("span", { class: "nom", texte: "Toutes les cartes actives" })]),
       ]);
@@ -297,8 +370,88 @@
     m.className = classe || "";
   }
 
+  // ── Onglets ──
+  function montrerOnglet(quel) {
+    onglet = quel;
+    document.getElementById("onglet-dns").setAttribute("aria-selected", String(quel === "dns"));
+    document.getElementById("onglet-ip").setAttribute("aria-selected", String(quel === "ip"));
+    document.getElementById("vue-dns").hidden = quel !== "dns";
+    document.getElementById("vue-ip").hidden = quel !== "ip";
+    document.getElementById("vider").hidden = quel !== "dns";
+    dessinerCartes();
+    remplirIp(false);
+  }
+  document.getElementById("onglet-dns").addEventListener("click", function () { montrerOnglet("dns"); });
+  document.getElementById("onglet-ip").addEventListener("click", function () { montrerOnglet("ip"); });
+
+  // ── Onglet Adresse IP ──
+  const CHAMPS_IP = ["ip-adresse", "ip-masque", "ip-passerelle"];
+  function carteCourante() {
+    return (etat.cartes || []).find(function (c) { return c.index === carteChoisie; }) || null;
+  }
+  // Remplit les champs depuis la carte choisie — seulement quand la carte
+  // change (ou `force`), pour ne pas écraser une saisie en cours.
+  function remplirIp(force) {
+    const c = carteCourante();
+    const index = c ? c.index : null;
+    if (!force && index === ipRemplieDe) { dessinerIp(); return; }
+    ipRemplieDe = index;
+    ipManuelle = c ? !c.dhcp : false;
+    document.getElementById("ip-adresse").value = c && c.ipv4 ? c.ipv4 : "";
+    document.getElementById("ip-masque").value = c && c.masque ? c.masque : "";
+    document.getElementById("ip-passerelle").value = c && c.passerelle ? c.passerelle : "";
+    verifierIp();
+    dessinerIp();
+  }
+  function dessinerIp() {
+    document.getElementById("ip-auto").setAttribute("aria-pressed", String(!ipManuelle));
+    document.getElementById("ip-manuelle").setAttribute("aria-pressed", String(ipManuelle));
+    document.getElementById("ip-champs").setAttribute("aria-disabled", String(!ipManuelle));
+    for (const id of CHAMPS_IP) document.getElementById(id).disabled = !ipManuelle;
+  }
+  document.getElementById("ip-auto").addEventListener("click", function () { ipManuelle = false; dessinerIp(); });
+  document.getElementById("ip-manuelle").addEventListener("click", function () { ipManuelle = true; dessinerIp(); });
+
+  // Des vérifications de COMMODITÉ : Rust (`reseau_ip`) revalide tout.
+  function ressembleAUneIpv4(s) {
+    return /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(s) && s.split(".").every(function (x) { return Number(x) <= 255; });
+  }
+  function ressembleAUnMasque(s) {
+    const n = s.replace(/^\//, "");
+    if (/^\d{1,2}$/.test(n)) return Number(n) >= 1 && Number(n) <= 30;
+    if (!ressembleAUneIpv4(s)) return false;
+    const bits = s.split(".").map(function (x) { return Number(x).toString(2).padStart(8, "0"); }).join("");
+    const zero = bits.indexOf("0");
+    return /^1+0+$/.test(bits) && zero >= 1 && zero <= 30;
+  }
+  function verifierIp() {
+    let bon = true;
+    for (const id of CHAMPS_IP) {
+      const champ = document.getElementById(id);
+      const v = champ.value.trim();
+      const faux = v === "" || !(id === "ip-masque" ? ressembleAUnMasque(v) : ressembleAUneIpv4(v));
+      champ.classList.toggle("faux", faux && v !== "");
+      if (faux) bon = false;
+    }
+    return bon;
+  }
+  for (const id of CHAMPS_IP) document.getElementById(id).addEventListener("input", verifierIp);
+
+  function appliquerIp() {
+    const c = carteCourante();
+    if (!c) { montrerMessage("Choisissez une carte réseau.", "ko"); return; }
+    let quoi = "auto";
+    if (ipManuelle) {
+      if (!verifierIp()) { montrerMessage("Adresse, masque ou passerelle invalide.", "ko"); return; }
+      quoi = CHAMPS_IP.map(function (id) { return document.getElementById(id).value.trim(); }).join(",");
+    }
+    derniereAction = "ip";
+    go("ip/" + c.index + "/" + encodeURIComponent(quoi));
+  }
+
   document.getElementById("appliquer").addEventListener("click", function () {
     if (etat.enCours) return;
+    if (onglet === "ip") { appliquerIp(); return; }
     if (carteChoisie === null) { montrerMessage("Choisissez une carte réseau.", "ko"); return; }
     const cartes = carteChoisie === TOUTES ? etat.cartes.map(function (c) { return c.index; }) : [carteChoisie];
     let quoi;
@@ -311,6 +464,7 @@
       if (!p && !verifierChamps()) { montrerMessage("Adresse invalide.", "ko"); return; }
       quoi = liste.join(",");
     }
+    derniereAction = "dns";
     go("appliquer/" + cartes.join(",") + "/" + encodeURIComponent(quoi));
   });
 
@@ -319,7 +473,7 @@
     for (const id of ["appliquer", "vider"]) document.getElementById(id).setAttribute("aria-disabled", String(enCours));
     if (enCours) { montrerMessage("En attente de l'autorisation…"); return; }
     switch (etat.message) {
-      case "reussi": montrerMessage("Serveurs DNS mis à jour.", "ok"); break;
+      case "reussi": montrerMessage(derniereAction === "ip" ? "Adresse IP mise à jour." : "Serveurs DNS mis à jour.", "ok"); break;
       case "annule": montrerMessage("Annulé.", ""); break;
       case "echec": montrerMessage("Échec du changement.", "ko"); break;
       case "invalide": montrerMessage("Demande refusée : adresse ou carte invalide.", "ko"); break;
@@ -328,17 +482,23 @@
   }
 
   window.setState = function (state) {
+    const messageAvant = etat.message;
     etat = state || etat;
     const epingle = document.getElementById("epingle");
     epingle.setAttribute("aria-pressed", String(!!etat.epingle));
     epingle.innerHTML = etat.epingle ? '<span class="ico ico-push-pin-fill"></span>' : '<span class="ico ico-push-pin"></span>';
     epingle.title = etat.epingle ? "Ne plus rester au premier plan" : "Rester au premier plan";
+    // Après une application réussie, les champs IP reprennent la carte relue
+    // — une fois, quand le message ARRIVE (pas à chaque envoi qui suit).
+    const relue = etat.message === "reussi" && messageAvant !== "reussi" && derniereAction === "ip";
     dessinerCartes();
+    remplirIp(relue);
     dessinerPied();
   };
 
   dessinerPrereglages();
   dessinerCartes();
+  remplirIp(true);
   dessinerPied();
   // L'état poussé à l'ouverture précède ce script : le redemander.
   go("ready");

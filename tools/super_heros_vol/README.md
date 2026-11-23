@@ -15,7 +15,7 @@ Détourage : alpha doux par « excès de vert » (G − max(R, B)) rapporté au 
 (il dérive après le VAE), débordement vert neutralisé par G = min(G, max(R, B)) (l'or reste intact),
 miettes isolées retirées.
 
-Modèles : FLUX.2 Klein 4B (Apache-2.0), Wan 2.2 (Apache-2.0), LoRA lightx2v (à vérifier avant diffusion).
+Modèles : FLUX.2 Klein 4B (Apache-2.0), Wan 2.2 I2V A14B (Apache-2.0), LoRA lightx2v Wan2.2-Lightning (Apache-2.0), BiRefNet (MIT) — vérifiés sur Hugging Face le 2026-11-23, crédités dans `THIRD-PARTY-NOTICES.md`.
 
 ## Héros 11 à 30 : aux couleurs de l'écran d'accueil (néons)
 

@@ -127,6 +127,15 @@ plus haut), dont elles reprennent le style ; leurs regards et leurs réactions s
 Klein. Les images sont gardées sous `tools/mascottes_ia/personnes/` et assemblées par
 `tools/mascottes_personnes.py`.
 
+Les 30 super-héros de l'inactivité `heros-*` ont leurs portraits et leurs images de départ
+dessinés par **FLUX.2 [klein] 4B** (Black Forest Labs, **Apache-2.0**). Leurs animations (vol,
+approche, atterrissage, marche) sont des vidéos de **Wan 2.2 I2V A14B** (Wan-AI / Alibaba,
+**Apache-2.0**, encodeur de texte **UMT5-XXL**, Apache-2.0), accéléré par le LoRA
+**Wan2.2-Lightning** (lightx2v, **Apache-2.0**). Le détourage des images est fait par
+**BiRefNet** (ZhengPeng7, **MIT**). Tout est fait sur un serveur ComfyUI local, par les scripts
+de `tools/super_heros_vol/` ; les planches qui en sortent sont distribuées avec le programme
+sous la même GPLv3.
+
 ---
 
 ## 2. Police

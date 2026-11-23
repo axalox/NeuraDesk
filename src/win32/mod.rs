@@ -75,6 +75,9 @@ pub mod mascotte;
 pub mod super_heros;
 /// Le DNS de Windows : lire les serveurs des cartes actives, les changer (UAC).
 pub mod dns;
+/// L'adresse IPv4 d'une carte (automatique ou manuelle) : onglet de l'applet
+/// « Modifier réglages réseau » (voir `cef_dns`).
+pub mod reseau_ip;
 /// La FENÊTRE de l'applet DNS (voir `dns`).
 pub mod cef_dns;
 /// La FENÊTRE de l'applet « Capture d'écran » — même présentation que

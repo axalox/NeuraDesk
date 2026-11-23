@@ -23,7 +23,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
 use windows::Win32::NetworkManagement::IpHelper::{
-    GetAdaptersAddresses, GAA_FLAG_INCLUDE_GATEWAYS, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_UNICAST, IP_ADAPTER_ADDRESSES_LH,
+    GetAdaptersAddresses, GAA_FLAG_INCLUDE_GATEWAYS, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH,
+    IP_ADAPTER_DHCP_ENABLED,
 };
 use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
@@ -46,6 +47,12 @@ pub struct Carte {
     pub serveurs: Vec<String>,
     /// `true` : des serveurs posés à la main ; `false` : ceux du DHCP.
     pub manuel: bool,
+    /// `true` : l'adresse IPv4 vient du DHCP (onglet « Adresse IP »).
+    pub dhcp: bool,
+    /// L'adresse IPv4 et sa longueur de préfixe (hors lien local 169.254).
+    pub ipv4: Option<(Ipv4Addr, u8)>,
+    /// La première passerelle IPv4.
+    pub passerelle: Option<Ipv4Addr>,
 }
 
 /// Ce qu'on demande à Windows.
@@ -57,6 +64,8 @@ pub enum Demande {
     Serveurs(Vec<u32>, Vec<IpAddr>),
     /// Vider le cache DNS seulement.
     ViderCache,
+    /// L'adresse IPv4 d'une carte (voir `win32::reseau_ip`).
+    Ip(crate::win32::reseau_ip::DemandeIp),
 }
 
 /// L'issue d'une demande, rendue à la page.
@@ -79,7 +88,7 @@ impl Issue {
 
 /// Les cartes ACTIVES (connectées), hors bouclage et tunnels.
 pub fn cartes() -> Vec<Carte> {
-    let drapeaux = GAA_FLAG_SKIP_UNICAST | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_INCLUDE_GATEWAYS;
+    let drapeaux = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_INCLUDE_GATEWAYS;
     let mut taille: u32 = 16 * 1024;
     let mut tampon: Vec<u64> = Vec::new();
     for _ in 0..4 {
@@ -115,12 +124,35 @@ pub fn cartes() -> Vec<Carte> {
             }
             s = serveur.Next;
         }
+        let mut ipv4 = None;
+        let mut u = a.FirstUnicastAddress;
+        while !u.is_null() && ipv4.is_none() {
+            let unicast = unsafe { &*u };
+            if let Some(IpAddr::V4(v4)) = unsafe { adresse(unicast.Address.lpSockaddr as *const u8, unicast.Address.iSockaddrLength) } {
+                if !v4.is_link_local() {
+                    ipv4 = Some((v4, unicast.OnLinkPrefixLength));
+                }
+            }
+            u = unicast.Next;
+        }
+        let mut passerelle = None;
+        let mut g = a.FirstGatewayAddress;
+        while !g.is_null() && passerelle.is_none() {
+            let porte = unsafe { &*g };
+            if let Some(IpAddr::V4(v4)) = unsafe { adresse(porte.Address.lpSockaddr as *const u8, porte.Address.iSockaddrLength) } {
+                passerelle = Some(v4);
+            }
+            g = porte.Next;
+        }
         cartes.push(Carte {
             index,
             nom: unsafe { a.FriendlyName.to_string() }.unwrap_or_default(),
             description: unsafe { a.Description.to_string() }.unwrap_or_default(),
             serveurs,
             manuel: est_manuel(&guid),
+            dhcp: unsafe { a.Anonymous2.Flags } & IP_ADAPTER_DHCP_ENABLED != 0,
+            ipv4,
+            passerelle,
         });
     }
     cartes
@@ -220,6 +252,8 @@ pub fn script(demande: &Demande) -> String {
             format!("Set-DnsClientServerAddress -InterfaceIndex {} -ServerAddresses @({liste}); ", index(cartes))
         }
         Demande::ViderCache => String::new(),
+        // Un script à part : il ne vide pas le cache DNS.
+        Demande::Ip(ip) => return crate::win32::reseau_ip::script(ip),
     };
     format!("$ErrorActionPreference='Stop'; try {{ {action}Clear-DnsClientCache; exit 0 }} catch {{ exit 1 }}")
 }
@@ -358,7 +392,10 @@ mod sonde {
     #[ignore]
     fn lister_les_cartes() {
         for c in super::cartes() {
-            println!("{} {} | {} | {:?} manuel={}", c.index, c.nom, c.description, c.serveurs, c.manuel);
+            println!(
+                "{} {} | {} | {:?} manuel={} | dhcp={} {:?} passerelle {:?}",
+                c.index, c.nom, c.description, c.serveurs, c.manuel, c.dhcp, c.ipv4, c.passerelle
+            );
         }
     }
 }

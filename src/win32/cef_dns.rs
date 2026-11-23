@@ -9,6 +9,11 @@
 //! les cartes actives et leurs serveurs, des préréglages (automatique,
 //! Cloudflare, Google, Quad9…) et deux champs libres.
 //!
+//! DEMANDE (2026-11-23) : un onglet « Adresse IP » (automatique ou manuelle,
+//! passerelle) et le nom « Modifier réglages réseau » — voir `win32::reseau_ip`.
+//! Le verbe `ip/<carte>/<auto|adresse,masque,passerelle>` suit le même chemin
+//! que `appliquer` (relecture, validation, fil de travail, UAC).
+//!
 //! ⚠️ **L'APPLICATION BLOQUE** (invite UAC puis PowerShell) : elle part sur un
 //! FIL DE TRAVAIL. `SLOT` est `thread_local` — le fil ne peut pas parler à la
 //! page ; il dépose son issue dans `ISSUE`, que `refresh_if_visible` relève
@@ -27,7 +32,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::gfx::GfxDevice;
 use crate::win32::cef_popup::{self, PopupSlot, PopupSpec, PART_ECRAN};
-use crate::win32::dns;
+use crate::win32::{dns, reseau_ip};
 
 thread_local! {
     static SLOT: PopupSlot = PopupSlot::new();
@@ -48,7 +53,7 @@ const PREMIER_PLAN: &str = "dns_premier_plan";
 
 const SPEC: PopupSpec = PopupSpec {
     class_name: w!("NeuraDeskDnsWindow"),
-    window_title: w!("NeuraDesk — DNS"),
+    window_title: w!("NeuraDesk — Modifier réglages réseau"),
     html_file: "dns.html",
     wndproc: Some(wndproc),
     above_a_magnified_dock: false,
@@ -126,6 +131,10 @@ fn etat_json() -> String {
                     "description": carte.description,
                     "serveurs": carte.serveurs,
                     "manuel": carte.manuel,
+                    "dhcp": carte.dhcp,
+                    "ipv4": carte.ipv4.map(|(ip, _)| ip.to_string()),
+                    "masque": carte.ipv4.map(|(_, n)| crate::win32::reseau_ip::masque_du_prefixe(n).to_string()),
+                    "passerelle": carte.passerelle.map(|ip| ip.to_string()),
                 })
             })
             .collect()
@@ -207,7 +216,8 @@ fn lancer(demande: dns::Demande) {
 }
 
 /// **CE QUE LA PAGE DEMANDE** : les trois gestes de la fenêtre, plus
-/// `appliquer/<cartes>/<auto|adresses>`, `vider` et `actualiser`.
+/// `appliquer/<cartes>/<auto|adresses>`, `ip/<carte>/<auto|adresse,masque,passerelle>`,
+/// `vider` et `actualiser`.
 pub fn dispatch_actions() {
     for action in cef_popup::drain_actions(&SLOT) {
         let Some(verbe) = action.strip_prefix("dns/") else { continue };
@@ -251,6 +261,26 @@ pub fn dispatch_actions() {
                     Some(demande) => lancer(demande),
                     None => {
                         crate::diag!("[dns] demande refusée : {cartes:?} {quoi:?}");
+                        MESSAGE.with(|m| *m.borrow_mut() = "invalide".to_string());
+                        push_state();
+                    }
+                }
+            }
+            "ip" => {
+                let (carte, quoi) = (morceaux.next().unwrap_or(""), morceaux.next().unwrap_or(""));
+                relire();
+                let demande = CARTES.with(|c| {
+                    let cartes = c.borrow();
+                    let connues: Vec<reseau_ip::CarteConnue> = cartes
+                        .iter()
+                        .map(|carte| reseau_ip::CarteConnue { index: carte.index, serveurs: &carte.serveurs, dns_manuel: carte.manuel })
+                        .collect();
+                    reseau_ip::lire_demande(carte, &decoder(quoi), &connues)
+                });
+                match demande {
+                    Some(demande) => lancer(dns::Demande::Ip(demande)),
+                    None => {
+                        crate::diag!("[dns] demande d'adresse refusée : {carte:?} {quoi:?}");
                         MESSAGE.with(|m| *m.borrow_mut() = "invalide".to_string());
                         push_state();
                     }
@@ -324,8 +354,8 @@ fn code_pour_point(rect: [i32; 4], (x, y): (i32, i32)) -> i32 {
 mod tests {
     use super::*;
 
-    fn verbes_connus() -> [&'static str; 7] {
-        ["deplacer", "epingler", "fermer", "ready", "actualiser", "vider", "appliquer"]
+    fn verbes_connus() -> [&'static str; 8] {
+        ["deplacer", "epingler", "fermer", "ready", "actualiser", "vider", "appliquer", "ip"]
     }
 
     #[test]
