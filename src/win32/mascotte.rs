@@ -336,11 +336,68 @@ pub struct Reglages {
     pub visible: bool,
     /// Coin haut-gauche de la fenêtre, en pixels d'écran.
     pub position: Option<(i32, i32)>,
+    /// Un super-héros traverse l'écran après `heros_delai` minutes sans
+    /// clavier ni souris (voir `win32::super_heros`).
+    pub heros: bool,
+    pub heros_delai: u32,
+    pub heros_mode: ModeHeros,
+    /// Le héros choisi (`heros-NN`), ou 0 : au hasard à chaque départ.
+    pub heros_choix: u32,
+    /// Sa taille, en pour cent de la taille normale.
+    pub heros_taille: u32,
 }
+
+/// L'animation des super-héros — DEMANDE EXPLICITE (2026-11-23) : « un choix :
+/// Traversée, Atterrissage ou Au hasard ».
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModeHeros {
+    /// Il traverse l'écran en vol, en tourbillonnant.
+    Traversee,
+    /// Il arrive de loin en haut à droite, se pose en bas au centre, et repart
+    /// à pied d'un côté ou de l'autre.
+    Atterrissage,
+    /// L'une ou l'autre, tirée à chaque départ.
+    Hasard,
+}
+
+impl ModeHeros {
+    pub fn nom(self) -> &'static str {
+        match self {
+            ModeHeros::Traversee => "traversee",
+            ModeHeros::Atterrissage => "atterrissage",
+            ModeHeros::Hasard => "hasard",
+        }
+    }
+
+    pub fn lire(nom: &str) -> Option<ModeHeros> {
+        [ModeHeros::Traversee, ModeHeros::Atterrissage, ModeHeros::Hasard].into_iter().find(|m| m.nom() == nom)
+    }
+}
+
+/// Le délai d'inactivité des super-héros, en minutes.
+pub const HEROS_DELAI_MIN: u32 = 1;
+pub const HEROS_DELAI_MAX: u32 = 60;
+pub const HEROS_DELAI_DEFAUT: u32 = 5;
+/// La taille des super-héros, en pour cent — DEMANDE EXPLICITE (2026-11-23) :
+/// « changer sa taille pour l'agrandir ».
+pub const HEROS_TAILLE_MIN: u32 = 50;
+pub const HEROS_TAILLE_MAX: u32 = 300;
+pub const HEROS_TAILLE_DEFAUT: u32 = 100;
 
 impl Default for Reglages {
     fn default() -> Self {
-        Reglages { personnage: PAR_DEFAUT.into(), taille: TAILLE_DEFAUT, plein_ecran: false, visible: false, position: None }
+        Reglages {
+            personnage: PAR_DEFAUT.into(),
+            taille: TAILLE_DEFAUT,
+            plein_ecran: false,
+            visible: false,
+            position: None,
+            heros: false,
+            heros_delai: HEROS_DELAI_DEFAUT,
+            heros_mode: ModeHeros::Hasard,
+            heros_choix: 0,
+            heros_taille: HEROS_TAILLE_DEFAUT,
+        }
     }
 }
 
@@ -360,6 +417,27 @@ pub fn lire_reglages(texte: &str) -> Reglages {
             }
             "plein_ecran" => r.plein_ecran = valeur == "1",
             "visible" => r.visible = valeur == "1",
+            "heros" => r.heros = valeur == "1",
+            "heros_delai" => {
+                if let Ok(d) = valeur.parse::<u32>() {
+                    r.heros_delai = d.clamp(HEROS_DELAI_MIN, HEROS_DELAI_MAX);
+                }
+            }
+            "heros_choix" => {
+                if let Ok(n) = valeur.parse::<u32>() {
+                    r.heros_choix = n;
+                }
+            }
+            "heros_taille" => {
+                if let Ok(t) = valeur.parse::<u32>() {
+                    r.heros_taille = t.clamp(HEROS_TAILLE_MIN, HEROS_TAILLE_MAX);
+                }
+            }
+            "heros_mode" => {
+                if let Some(mode) = ModeHeros::lire(valeur) {
+                    r.heros_mode = mode;
+                }
+            }
             "x" => x = valeur.parse::<i32>().ok(),
             "y" => y = valeur.parse::<i32>().ok(),
             _ => {}
@@ -371,11 +449,16 @@ pub fn lire_reglages(texte: &str) -> Reglages {
 
 pub fn ecrire_reglages(r: &Reglages) -> String {
     let mut s = format!(
-        "personnage={}\ntaille={}\nplein_ecran={}\nvisible={}\n",
+        "personnage={}\ntaille={}\nplein_ecran={}\nvisible={}\nheros={}\nheros_delai={}\nheros_mode={}\nheros_choix={}\nheros_taille={}\n",
         r.personnage,
         r.taille,
         u8::from(r.plein_ecran),
-        u8::from(r.visible)
+        u8::from(r.visible),
+        u8::from(r.heros),
+        r.heros_delai,
+        r.heros_mode.nom(),
+        r.heros_choix,
+        r.heros_taille
     );
     if let Some((x, y)) = r.position {
         s.push_str(&format!("x={x}\ny={y}\n"));
@@ -387,7 +470,7 @@ pub fn reglages() -> Reglages {
     crate::config::load_mascotte().map(|t| lire_reglages(&t)).unwrap_or_default()
 }
 
-fn enregistrer(r: &Reglages) {
+pub(crate) fn enregistrer(r: &Reglages) {
     crate::config::save_mascotte(&ecrire_reglages(r));
 }
 
@@ -1190,8 +1273,33 @@ mod tests {
 
     #[test]
     fn les_reglages_font_l_aller_retour_et_bornent_la_taille() {
-        let r = Reglages { personnage: "owl".into(), taille: 200, plein_ecran: true, visible: true, position: Some((-1200, 340)) };
+        let r = Reglages {
+            personnage: "owl".into(),
+            taille: 200,
+            plein_ecran: true,
+            visible: true,
+            position: Some((-1200, 340)),
+            heros: true,
+            heros_delai: 12,
+            heros_mode: ModeHeros::Atterrissage,
+            heros_choix: 17,
+            heros_taille: 250,
+        };
         assert_eq!(lire_reglages(&ecrire_reglages(&r)), r);
+        for mode in [ModeHeros::Traversee, ModeHeros::Atterrissage, ModeHeros::Hasard] {
+            assert_eq!(ModeHeros::lire(mode.nom()), Some(mode));
+        }
+        assert_eq!(lire_reglages("heros_mode=nimporte\n").heros_mode, ModeHeros::Hasard, "inconnu : le défaut");
+        assert_eq!(lire_reglages("").heros_mode, ModeHeros::Hasard, "« au hasard » par défaut");
+        assert_eq!(lire_reglages("").heros_choix, 0, "héros au hasard par défaut");
+        assert_eq!(lire_reglages("").heros_taille, HEROS_TAILLE_DEFAUT);
+        assert_eq!(lire_reglages("heros_taille=5000\n").heros_taille, HEROS_TAILLE_MAX);
+        assert_eq!(lire_reglages("heros_taille=1\n").heros_taille, HEROS_TAILLE_MIN);
+        let bornes = lire_reglages("heros=1\nheros_delai=0\n");
+        assert!(bornes.heros);
+        assert_eq!(bornes.heros_delai, HEROS_DELAI_MIN, "un délai nul est remonté au minimum");
+        assert_eq!(lire_reglages("heros_delai=99999\n").heros_delai, HEROS_DELAI_MAX);
+        assert!(!lire_reglages("").heros, "les super-héros sont éteints par défaut");
         let lu = lire_reglages("personnage=inconnu\ntaille=9999\nx=5\n");
         assert_eq!(lu.personnage, PAR_DEFAUT, "un nom inconnu garde le défaut");
         assert_eq!(lu.taille, TAILLE_MAX);

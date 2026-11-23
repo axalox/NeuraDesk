@@ -637,6 +637,12 @@
     outline-color: rgb(var(--popup-accent-rgb));
   }
   .mascottes img { width: 48px; height: 48px; pointer-events: none; }
+ /* Les super-héros : vignettes DOUBLES — DEMANDE EXPLICITE (2026-11-23) :
+    « doubler la taille des vignettes des super héros ». Fichiers de 96 px. */
+ .mascottes.heros button { width: 112px; height: 112px; }
+ .mascottes.heros img { width: 96px; height: 96px; }
+ .mascottes.heros button.heros-hasard { font-size: 44px; }
+ .mascottes button.heros-hasard { font-size: 22px; font-weight: 600; color: rgb(var(--popup-accent-rgb)); }
   /* Onglets de navigation de haut niveau — "Interface" / "Écran N" (voir
      `renderMainTabs`), DEMANDE EXPLICITE : "je veux un onglet [...] intitulé
      Interface [...] d'autres onglets [...] intitulé Écran + numéro [...]".
@@ -3443,7 +3449,7 @@
         cartes: (state.cartesGraphiques || []).map((c) => c.id).join("|"),
         carteEnAttente: state.carteGraphique !== state.carteGraphiqueAuLancement,
         // La mascotte : le personnage entouré et les deux cases.
-        mascotte: [state.mascottePersonnage, state.mascotteAffichee, state.mascottePleinEcran, (state.mascottes || []).length].join("|"),
+        mascotte: [state.mascottePersonnage, state.mascotteAffichee, state.mascottePleinEcran, state.mascotteHeros, state.mascotteHerosChoix, (state.herosListe || []).length, (state.mascottes || []).length].join("|"),
       });
     }
 
@@ -6066,6 +6072,46 @@
           grille.appendChild(bouton);
         }
         box.appendChild(el("p", { class: "hint" }, ["Elle suit le pointeur du regard. Un clic la fait réagir (quatre clics rapides l'étourdissent), glisser la déplace, la molette change sa taille. Immobile deux minutes, elle s'endort. Personnages de page-mascot, par Kamran Ahmed (licence MIT)."]));
+        // Les super-héros de l'inactivité (voir `win32::super_heros`) —
+        // DEMANDE EXPLICITE (2026-11-23) : un héros traverse l'écran quand il
+        // ne se passe rien depuis un temps réglable.
+        box.appendChild(el("div", { class: "small-label" }, ["Super-héros"]));
+        checkboxRow(box, state.mascotteHeros, "Faire venir un super-héros quand l'ordinateur est inactif",
+          (checked) => go("mascotte-heros", checked ? "1" : "0"));
+        // DEMANDE EXPLICITE (2026-11-23) : « un choix : Traversée, Atterrissage ou Au hasard ».
+        segmented(box, {
+          label: "Animation",
+          options: [
+            { value: "traversee", label: "Traversée" },
+            { value: "atterrissage", label: "Atterrissage" },
+            { value: "hasard", label: "Au hasard" },
+          ],
+          value: state.mascotteHerosMode || "hasard",
+          dataKey: "mascotte-heros-mode",
+          onSelect: (v) => go("mascotte-heros-mode", v),
+        });
+        slider(box, { label: "Après", min: state.mascotteHerosDelaiMin || 1, max: state.mascotteHerosDelaiMax || 60, step: 1, value: state.mascotteHerosDelai || 5, valueLabel: (v) => v + " min", dataKey: "mascotte-heros-delai", onInput: (v) => go("mascotte-heros-delai", v) });
+        // DEMANDE EXPLICITE (2026-11-23) : « choisir le super héros et changer sa
+        // taille pour l'agrandir ». Le choix est dans `computeStructureKey`.
+        slider(box, { label: "Taille", min: state.mascotteHerosTailleMin || 50, max: state.mascotteHerosTailleMax || 300, step: 10, value: state.mascotteHerosTaille || 100, valueLabel: (v) => v + " %", dataKey: "mascotte-heros-taille", onInput: (v) => go("mascotte-heros-taille", v) });
+        box.appendChild(el("div", { class: "small-label" }, ["Héros"]));
+        const grilleHeros = el("div", { class: "mascottes heros" });
+        grilleHeros.appendChild(el("button", {
+          class: (state.mascotteHerosChoix || 0) === 0 ? "selected heros-hasard" : "heros-hasard",
+          title: "Au hasard",
+          onclick: () => go("mascotte-heros-choix", "0"),
+        }, ["?"]));
+        for (const n of state.herosListe || []) {
+          const nom = "heros-" + String(n).padStart(2, "0");
+          grilleHeros.appendChild(el("button", {
+            class: n === state.mascotteHerosChoix ? "selected" : "",
+            title: "Héros " + n,
+            onclick: () => go("mascotte-heros-choix", String(n)),
+          }, [el("img", { src: "mascottes/" + nom + "-vignette.webp", alt: "Héros " + n })]));
+        }
+        box.appendChild(grilleHeros);
+        box.appendChild(el("button", { class: "action", onclick: () => go("mascotte-heros-essai") }, ["Essayer maintenant"]));
+        box.appendChild(el("p", { class: "hint" }, ["Sans clavier ni souris pendant ce temps, un des super-héros vient sur l'écran du pointeur, puis un autre à chaque nouveau délai. Traversée : il passe d'un bord à l'autre en tourbillonnant. Atterrissage : il arrive de loin en haut à droite, se pose en bas au centre et repart à pied. Le moindre geste l'arrête. Jamais par-dessus une application en plein écran."]));
       });
 
       // Horloge plein écran — DEMANDE EXPLICITE ("quand s'affiche une
@@ -6499,6 +6545,9 @@
       updateSegmented("carte-graphique", state.carteGraphique);
       updateSlider("performances-cadence", state.performancesCadence || 144, (v) => v + " i/s");
       updateSlider("mascotte-taille", state.mascotteTaille || 140, (v) => v + " px");
+      updateSlider("mascotte-heros-delai", state.mascotteHerosDelai || 5, (v) => v + " min");
+      updateSegmented("mascotte-heros-mode", state.mascotteHerosMode || "hasard");
+      updateSlider("mascotte-heros-taille", state.mascotteHerosTaille || 100, (v) => v + " %");
       updateSlider("tooltip-scale", state.tooltipScalePercent, (v) => v + "%");
       updateSlider("tooltip-fade-ms", state.tooltipFadeMs, (v) => v + " ms");
       updateSlider("tooltip-delay", state.tooltipDelaySecs, (v) => v + " s");

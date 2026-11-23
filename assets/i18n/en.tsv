@@ -4052,3 +4052,12 @@ Adresse invalide.	Invalid address.
 Aucune carte réseau connectée.	No network adapter connected.
 ex. 1.1.1.1	e.g. 1.1.1.1
 facultatif	optional
+Super-héros	Superheroes
+Faire venir un super-héros quand l'ordinateur est inactif	Bring in a superhero when the computer is idle
+Après	After
+Essayer maintenant	Try it now
+Sans clavier ni souris pendant ce temps, un des super-héros vient sur l'écran du pointeur, puis un autre à chaque nouveau délai. Traversée : il passe d'un bord à l'autre en tourbillonnant. Atterrissage : il arrive de loin en haut à droite, se pose en bas au centre et repart à pied. Le moindre geste l'arrête. Jamais par-dessus une application en plein écran.	With no keyboard or mouse input for that long, one of the superheroes comes onto the screen under the pointer, then another one after each new delay. Crossing: it spins across from one edge to the other. Landing: it arrives from far away at the top right, lands at the bottom center and walks off. Any input stops it. Never over a full-screen application.
+Animation	Animation
+Traversée	Crossing
+Atterrissage	Landing
+Héros	Hero

@@ -1,0 +1,9 @@
+approche=32
+atterrissage=81
+marche=32
+largeur=291
+hauteur=301
+pieds=287
+debout=280
+foulee=206
+marche_des=58

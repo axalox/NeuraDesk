@@ -60,9 +60,13 @@ ALIENS = {
     "champignon-1": dict(cou=(550, 600)),
     "champignon-2": dict(cou=(560, 610)),
     "champignon-3": dict(cou=(470, 520), trous=[(504, 866)]),
-    "cristal-1": dict(cou=(555, 600)),
+    # `seuils` : le seuil du fond blanc d'une case. Le crane de cristal porte des
+    # reflets presque blancs (> 238) qui touchent le bord de la tete levee : le
+    # detourage les prenait pour du fond et entamait le crane (signale le
+    # 2026-11-23). A 245 la tete est entiere ; a 250, un halo blanc reste.
+    "cristal-1": dict(cou=(555, 600), seuils={"hautgauche": 245}),
     "cristal-2": dict(cou=(575, 620)),
-    "cristal-3": dict(cou=(570, 625)),
+    "cristal-3": dict(cou=(570, 625), seuils={"hautdroite": 245}),
     "cyclope-1": dict(cou=(510, 555)),
     "cyclope-2": dict(cou=(525, 565)),
     "cyclope-3": dict(cou=(495, 540)),
@@ -176,7 +180,7 @@ DESCENTE_BAS = 0.22
 
 
 def detourer(rgb: np.ndarray, trous=(), blancs: bool = False, petits: bool = False,
-             ombre: bool = False) -> np.ndarray:
+             ombre: bool = False, seuil: int = 238) -> np.ndarray:
     """Le masque du personnage (0..255). Fond VERT (les savants : leur blouse
     blanche touchait le fond blanc, Qwen les a reposes sur du vert) : par la
     distance a la couleur du fond. Fond blanc : les pixels quasi blancs
@@ -193,7 +197,7 @@ def detourer(rgb: np.ndarray, trous=(), blancs: bool = False, petits: bool = Fal
         dist = np.linalg.norm(rgb.astype(np.float32) - ref, axis=2)
         fond = dist < 60
     else:
-        fond = rgb.min(axis=2) >= 238
+        fond = rgb.min(axis=2) >= seuil
         if ombre:  # l'ombre grise sous les pieds (rendus 3D de Klein), dans le bas de l'image seulement
             f = rgb.astype(np.int16)
             gris = (f.min(axis=2) >= 175) & (f.max(axis=2) - f.min(axis=2) < 20)
@@ -293,13 +297,13 @@ def _sans_contour(rgb: np.ndarray, a: np.ndarray) -> np.ndarray:
     return np.where(trait, 0, a).astype(a.dtype)
 
 
-def _detourer_net(trous, blancs=False, contour=False, petits=False, ombre=False):
+def _detourer_net(trous, blancs=False, contour=False, petits=False, ombre=False, seuil=238):
     """Pour `mascottes_tetes.assembler` : (rgb sans liseré vert, alpha). Les
     `trous` (positions de la base) ne s'appliquent qu'a elle : ailleurs, les
     centres ne tombent sur rien."""
     def d(rgb):
         net = _despill(rgb) if fond_vert(rgb) else rgb
-        a = detourer(rgb, trous, blancs, petits, ombre)
+        a = detourer(rgb, trous, blancs, petits, ombre, seuil)
         return net, (_sans_contour(net, a) if contour else a)
     return d
 
@@ -335,10 +339,15 @@ def _planches_klein3(nom: str) -> dict:
     o = _image_entiere(os.path.join(CADRE, f"{nom}.webp"), d)
     dr = _detourer_net(trous, petits=True, ombre=ombre)
 
+    seuils = ALIENS[nom].get("seuils", {})
+
     def case(c, det):
         return o if c is None else _image_entiere(os.path.join(KLEIN3, f"{nom}-{c}.webp"), det)
 
-    imgs = {"directions": [case(c, d) for c in KLEIN_CASES], "reactions": [case(cle, dr) for cle, _ in REACTIONS]}
+    def det_regard(c):
+        return _detourer_net(trous, ombre=ombre, seuil=seuils[c]) if c in seuils else d
+
+    imgs = {"directions": [case(c, det_regard(c)) for c in KLEIN_CASES], "reactions": [case(cle, dr) for cle, _ in REACTIONS]}
     commune = tetes.boite_commune(*imgs.values())
     return {sorte: tetes.placer(i, commune) for sorte, i in imgs.items()}
 

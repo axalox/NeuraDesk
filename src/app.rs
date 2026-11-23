@@ -6970,6 +6970,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     crate::win32::automatisations::charger();
     // La mascotte revient à l'écran si elle y était à la fermeture.
     crate::win32::mascotte::demarrer();
+    // Les super-héros qui traversent l'écran après un temps d'inactivité
+    // (voir `win32::super_heros`) : sa fenêtre cachée et sa sonde.
+    crate::win32::super_heros::demarrer();
     // La météo : relit la ville retenue ET LANCE son fil d'interrogation, qui
     // fait la première requête tout de suite si une ville est configurée.
     crate::win32::meteo::charger();

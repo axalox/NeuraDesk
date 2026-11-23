@@ -2905,6 +2905,25 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
                 Err(_) => crate::diag!("[mascotte] taille refusée : {taille:?}"),
             },
             ["mascotte-plein-ecran", flag] => crate::win32::mascotte::choisir_plein_ecran(*flag == "1"),
+            // Les super-héros de l'inactivité (voir `win32::super_heros`).
+            ["mascotte-heros", flag] => crate::win32::super_heros::choisir_actif(*flag == "1"),
+            ["mascotte-heros-delai", minutes] => match minutes.parse::<u32>() {
+                Ok(minutes) => crate::win32::super_heros::choisir_delai(minutes),
+                Err(_) => crate::diag!("[heros] délai refusé : {minutes:?}"),
+            },
+            ["mascotte-heros-mode", nom] => match crate::win32::mascotte::ModeHeros::lire(nom) {
+                Some(mode) => crate::win32::super_heros::choisir_mode(mode),
+                None => crate::diag!("[heros] animation refusée : {nom:?}"),
+            },
+            ["mascotte-heros-choix", n] => match n.parse::<u32>() {
+                Ok(n) => crate::win32::super_heros::choisir_heros(n),
+                Err(_) => crate::diag!("[heros] héros refusé : {n:?}"),
+            },
+            ["mascotte-heros-taille", pour_cent] => match pour_cent.parse::<u32>() {
+                Ok(pour_cent) => crate::win32::super_heros::choisir_taille(pour_cent),
+                Err(_) => crate::diag!("[heros] taille refusée : {pour_cent:?}"),
+            },
+            ["mascotte-heros-essai"] => crate::win32::super_heros::essayer(),
             ["dash-icon-scale", percent] => {
                 if let Ok(percent) = percent.parse::<u32>() {
                     let scale = percent as f32 / 100.0;
@@ -5796,6 +5815,16 @@ fn push_state(refs: &SettingsRefs) {
         objet.insert("mascotteTailleMax".into(), json!(crate::win32::mascotte::TAILLE_MAX));
         objet.insert("mascottePleinEcran".into(), json!(mascotte.plein_ecran));
         objet.insert("mascotteAffichee".into(), json!(crate::win32::mascotte::est_affichee()));
+        objet.insert("mascotteHeros".into(), json!(mascotte.heros));
+        objet.insert("mascotteHerosDelai".into(), json!(mascotte.heros_delai));
+        objet.insert("mascotteHerosMode".into(), json!(mascotte.heros_mode.nom()));
+        objet.insert("mascotteHerosChoix".into(), json!(mascotte.heros_choix));
+        objet.insert("mascotteHerosTaille".into(), json!(mascotte.heros_taille));
+        objet.insert("mascotteHerosTailleMin".into(), json!(crate::win32::mascotte::HEROS_TAILLE_MIN));
+        objet.insert("mascotteHerosTailleMax".into(), json!(crate::win32::mascotte::HEROS_TAILLE_MAX));
+        objet.insert("herosListe".into(), json!(crate::win32::super_heros::tous_les_heros()));
+        objet.insert("mascotteHerosDelaiMin".into(), json!(crate::win32::mascotte::HEROS_DELAI_MIN));
+        objet.insert("mascotteHerosDelaiMax".into(), json!(crate::win32::mascotte::HEROS_DELAI_MAX));
     }
     // Lit le dock : hors d'`etat_ajoute`, qui n'a pas `refs`.
     if let Some(objet) = payload.as_object_mut() {
@@ -6133,7 +6162,7 @@ mod tests {
                 "la rangée « {cle} » n'est jamais rafraîchie par `updateSegmented`"
             );
         }
-        assert_eq!(vues, 15, "nombre de rangées de boutons dans la page (la LANGUE, le 2026-11-15 ; la texture de l'interface, puis celle des terminaux, le 2026-10-15 ; la couleur des ombres, le 2026-10-19 ; les coins du centre de la barre du haut, le 2026-10-31 ; les quatre formes des effets de fenêtres RETIRÉES le 2026-11-22 ; le PROFIL de performances, le 2026-11-11 ; la CARTE GRAPHIQUE, le 2026-11-14)");
+        assert_eq!(vues, 16, "nombre de rangées de boutons dans la page (l'ANIMATION des super-héros, le 2026-11-23 ; la LANGUE, le 2026-11-15 ; la texture de l'interface, puis celle des terminaux, le 2026-10-15 ; la couleur des ombres, le 2026-10-19 ; les coins du centre de la barre du haut, le 2026-10-31 ; les quatre formes des effets de fenêtres RETIRÉES le 2026-11-22 ; le PROFIL de performances, le 2026-11-11 ; la CARTE GRAPHIQUE, le 2026-11-14)");
     }
 
     #[test]
