@@ -3450,7 +3450,7 @@
         cartes: (state.cartesGraphiques || []).map((c) => c.id).join("|"),
         carteEnAttente: state.carteGraphique !== state.carteGraphiqueAuLancement,
         // La mascotte : le personnage entouré et les deux cases.
-        mascotte: [state.mascottePersonnage, state.mascotteAffichee, state.mascottePleinEcran, state.mascotteHeros, state.mascotteHerosChoix, (state.herosListe || []).length, (state.mascottes || []).length].join("|"),
+        mascotte: [state.mascottePersonnage, state.mascotteAffichee, state.mascottePleinEcran, state.mascotteHeros, state.mascotteHerosChoix, Object.entries(state.insectesActifs || {}).filter(([, oui]) => oui).map(([nom]) => nom).join(","), state.insectesSon, (state.herosListe || []).length, (state.mascottes || []).length].join("|"),
       });
     }
 
@@ -6126,6 +6126,49 @@
         box.appendChild(grilleHeros);
         box.appendChild(el("button", { class: "action", onclick: () => go("mascotte-heros-essai") }, ["Essayer maintenant"]));
         box.appendChild(el("p", { class: "hint" }, ["Sans clavier ni souris pendant ce temps, un des super-héros vient sur l'écran du pointeur, puis un autre à chaque nouveau délai. Traversée : il passe d'un bord à l'autre en tourbillonnant. Atterrissage : il arrive de loin en haut à droite, se pose en bas au centre et repart à pied. Le moindre geste l'arrête. Jamais par-dessus une application en plein écran."]));
+        // Les insectes (voir `win32::insectes`) — DEMANDE EXPLICITE (2026-11-24) :
+        // « une mouche, un moustique et un papillon qui volent et se posent
+        // aléatoirement à l'écran […] pouvoir les activer individuellement ».
+        // Les insectes activés sont dans `computeStructureKey`.
+        // DEMANDE EXPLICITE (2026-11-24) : « jusqu'à 5 papillons », puis « 5
+        // mouches et 5 moustiques ». Une vignette par espèce, allumée = il
+        // vole ; noms dans l'ordre de `insectes::ESPECES`.
+        const actifs = state.insectesActifs || {};
+        const familles = [
+          ["Mouches", "mouche", "-pose", ["Mouche domestique", "Mouche verte", "Mouche bleue", "Mouche à damier", "Syrphe"]],
+          ["Moustiques", "moustique", "-pose", ["Moustique commun", "Moustique tigre", "Anophèle", "Moustique annelé", "Aedes vexans"]],
+          ["Papillons", "papillon", "", ["Paon du jour", "Vulcain", "Machaon", "Papillon citron", "Azuré"]],
+        ];
+        const choisis = [];
+        familles.forEach(([titre, famille, suffixe, libelles]) => {
+          box.appendChild(el("div", { class: "small-label" }, [titre]));
+          const grille = el("div", { class: "mascottes" });
+          libelles.forEach((libelle, i) => {
+            const nom = famille + "-" + (i + 1);
+            const actif = actifs[nom] === true;
+            if (actif) choisis.push([nom, libelle]);
+            grille.appendChild(el("button", {
+              class: actif ? "selected" : "",
+              title: libelle,
+              onclick: () => go("mascotte-insecte", nom, actif ? "0" : "1"),
+            }, [el("img", { src: "mascottes/insecte-" + nom + suffixe + ".webp", alt: libelle })]));
+          });
+          box.appendChild(grille);
+        });
+        // DEMANDE EXPLICITE (2026-11-24) : « agrandir les insectes
+        // individuellement ». Une glissière par insecte ACTIVÉ.
+        box.appendChild(el("div", { class: "small-label" }, ["Taille des insectes"]));
+        const tailles = state.insecteTailles || {};
+        if (!choisis.length) box.appendChild(el("p", { class: "hint" }, ["Activez un insecte pour régler sa taille."]));
+        choisis
+          .forEach(([nom, libelle]) => slider(box, {
+            label: libelle, min: state.insecteTailleMin || 50, max: state.insecteTailleMax || 400, step: 10,
+            value: tailles[nom] || 100, valueLabel: (v) => v + " %", dataKey: "insecte-taille-" + nom,
+            onInput: (v) => go("mascotte-insecte-taille", nom, v),
+          }));
+        checkboxRow(box, state.insectesSon, "Bourdonnement des mouches et des moustiques en vol",
+          (checked) => go("mascotte-insectes-son", checked ? "1" : "0"));
+        box.appendChild(el("p", { class: "hint" }, ["Ils volent, se posent au hasard sur l'écran et s'envolent dès que le pointeur les frôle. Les clics passent au travers. Jamais par-dessus une application en plein écran."]));
       });
 
       // Horloge plein écran — DEMANDE EXPLICITE ("quand s'affiche une
@@ -6559,6 +6602,9 @@
       updateSegmented("carte-graphique", state.carteGraphique);
       updateSlider("performances-cadence", state.performancesCadence || 144, (v) => v + " i/s");
       updateSlider("mascotte-taille", state.mascotteTaille || 140, (v) => v + " px");
+      for (const [nom, pourCent] of Object.entries(state.insecteTailles || {})) {
+        updateSlider("insecte-taille-" + nom, pourCent, (v) => v + " %");
+      }
       updateSlider("mascotte-heros-delai", state.mascotteHerosDelai || 5, (v) => v + " min");
       updateSegmented("mascotte-heros-mode", state.mascotteHerosMode || "hasard");
       updateSegmented("mascotte-heros-style", state.mascotteHerosStyle || "origine");

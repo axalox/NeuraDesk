@@ -6973,6 +6973,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     // Les super-héros qui traversent l'écran après un temps d'inactivité
     // (voir `win32::super_heros`) : sa fenêtre cachée et sa sonde.
     crate::win32::super_heros::demarrer();
+    // La mouche, le moustique et le papillon (voir `win32::insectes`).
+    crate::win32::insectes::demarrer();
     // La météo : relit la ville retenue ET LANCE son fil d'interrogation, qui
     // fait la première requête tout de suite si une ville est configurée.
     crate::win32::meteo::charger();

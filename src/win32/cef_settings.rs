@@ -2928,6 +2928,18 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
                 Err(_) => crate::diag!("[heros] taille refusée : {pour_cent:?}"),
             },
             ["mascotte-heros-essai"] => crate::win32::super_heros::essayer(),
+            // Les insectes (voir `win32::insectes`), chacun activé à part.
+            ["mascotte-insecte", nom, flag] => match crate::win32::insectes::Espece::lire(nom) {
+                Some(espece) => crate::win32::insectes::choisir(espece, *flag == "1"),
+                None => crate::diag!("[insectes] insecte refusé : {nom:?}"),
+            },
+            ["mascotte-insecte-taille", nom, pour_cent] => {
+                match (crate::win32::insectes::Espece::lire(nom), pour_cent.parse::<u32>()) {
+                    (Some(espece), Ok(p)) => crate::win32::insectes::choisir_taille(espece, p),
+                    _ => crate::diag!("[insectes] taille refusée : {nom:?} {pour_cent:?}"),
+                }
+            }
+            ["mascotte-insectes-son", flag] => crate::win32::insectes::choisir_son(*flag == "1"),
             ["dash-icon-scale", percent] => {
                 if let Ok(percent) = percent.parse::<u32>() {
                     let scale = percent as f32 / 100.0;
@@ -5830,6 +5842,23 @@ fn push_state(refs: &SettingsRefs) {
         objet.insert("herosListe".into(), json!(crate::win32::super_heros::tous_les_heros()));
         objet.insert("mascotteHerosDelaiMin".into(), json!(crate::win32::mascotte::HEROS_DELAI_MIN));
         objet.insert("mascotteHerosDelaiMax".into(), json!(crate::win32::mascotte::HEROS_DELAI_MAX));
+        objet.insert(
+            "insectesActifs".into(),
+            json!(crate::win32::insectes::ESPECES
+                .iter()
+                .map(|e| (e.nom().to_string(), json!(mascotte.insecte(*e))))
+                .collect::<serde_json::Map<_, _>>()),
+        );
+        objet.insert("insectesSon".into(), json!(mascotte.insectes_son));
+        objet.insert(
+            "insecteTailles".into(),
+            json!(crate::win32::insectes::ESPECES
+                .iter()
+                .map(|e| (e.nom().to_string(), json!(mascotte.insecte_taille(*e))))
+                .collect::<serde_json::Map<_, _>>()),
+        );
+        objet.insert("insecteTailleMin".into(), json!(crate::win32::mascotte::INSECTE_TAILLE_MIN));
+        objet.insert("insecteTailleMax".into(), json!(crate::win32::mascotte::INSECTE_TAILLE_MAX));
     }
     // Lit le dock : hors d'`etat_ajoute`, qui n'a pas `refs`.
     if let Some(objet) = payload.as_object_mut() {

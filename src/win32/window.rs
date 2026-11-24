@@ -557,6 +557,61 @@ pub(crate) fn fullscreen_window_on_monitor(exclude: HWND, monitor: HMONITOR) -> 
 /// détecté et en revérifiant CE HWND précis (plutôt que le focus courant)
 /// tant qu'on est masqué, on ne réaffiche plus qu'une fois l'appli plein
 /// écran réellement fermée ou redimensionnée.
+/// **LES ÉCRANS QU'OCCUPE UNE FENÊTRE PLEIN ÉCRAN, QU'ELLE AIT LE FOCUS OU
+/// NON** — pour les insectes (voir `win32::insectes`), DEMANDE EXPLICITE
+/// (2026-11-24) : « ne jamais mettre les papillons sur une fenêtre en plein
+/// écran ». `fullscreen_window_on_monitor` ne regarde que le PREMIER PLAN :
+/// une vidéo plein écran sur un écran pendant qu'on travaille sur l'autre lui
+/// échappait. Ici, toutes les fenêtres de premier niveau visibles, non
+/// réduites, non voilées par DWM (celles des autres bureaux virtuels le sont),
+/// hors surfaces du shell et hors nos fenêtres (sauf le lecteur vidéo et la
+/// visionneuse en plein écran), avec le même critère géométrique
+/// (`window_is_still_fullscreen`).
+pub(crate) fn ecrans_en_plein_ecran() -> Vec<HMONITOR> {
+    unsafe extern "system" fn chaque(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        unsafe { (*(lparam.0 as *mut Vec<HWND>)).push(hwnd) };
+        BOOL(1)
+    }
+    let mut fenetres: Vec<HWND> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(chaque), LPARAM(&mut fenetres as *mut _ as isize));
+    }
+    let nous = std::process::id();
+    let mut ecrans: Vec<HMONITOR> = Vec::new();
+    for hwnd in fenetres {
+        if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            continue;
+        }
+        let mut voile = 0u32;
+        unsafe {
+            let _ = windows::Win32::Graphics::Dwm::DwmGetWindowAttribute(
+                hwnd,
+                windows::Win32::Graphics::Dwm::DWMWA_CLOAKED,
+                &mut voile as *mut u32 as *mut _,
+                4,
+            );
+        }
+        if voile != 0 {
+            continue;
+        }
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        if pid == nous
+            && !crate::win32::lecteur_video::est_en_plein_ecran(hwnd)
+            && !crate::win32::cef_visionneuse::est_en_plein_ecran(hwnd)
+        {
+            continue;
+        }
+        if window_is_still_fullscreen(hwnd) {
+            let m = hwnd_monitor(hwnd);
+            if !ecrans.contains(&m) {
+                ecrans.push(m);
+            }
+        }
+    }
+    ecrans
+}
+
 fn window_is_still_fullscreen(hwnd: HWND) -> bool {
     // ⛔ **LA SURFACE DU SHELL EST ÉCARTÉE ICI AUSSI, ET CE N'EST PAS REDONDANT** :
     // c'est CE test que `sync_fullscreen_visibility` rejoue à chaque frame sur le

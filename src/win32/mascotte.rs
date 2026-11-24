@@ -530,6 +530,37 @@ pub struct Reglages {
     pub heros_taille: u32,
     /// Le style de dessin des super-héros.
     pub heros_style: StyleHeros,
+    /// Les insectes qui volent et se posent à l'écran (voir `win32::insectes`),
+    /// chacun activé à part — DEMANDE EXPLICITE (2026-11-24) : 5 mouches, 5
+    /// moustiques, 5 papillons, dans l'ordre de `insectes::ESPECES`.
+    pub insectes_actifs: [bool; crate::win32::insectes::NB_ESPECES],
+    /// Le bourdonnement des mouches et des moustiques en vol.
+    pub insectes_son: bool,
+    /// La taille de chaque insecte en pour cent, dans l'ordre de
+    /// `insectes::ESPECES` — DEMANDE EXPLICITE (2026-11-24).
+    pub insecte_tailles: [u32; crate::win32::insectes::NB_ESPECES],
+}
+
+impl Reglages {
+    pub fn insecte(&self, espece: crate::win32::insectes::Espece) -> bool {
+        self.insectes_actifs.get(espece.rang()).copied().unwrap_or(false)
+    }
+
+    pub fn insecte_taille(&self, espece: crate::win32::insectes::Espece) -> u32 {
+        self.insecte_tailles.get(espece.rang()).copied().unwrap_or(INSECTE_TAILLE_DEFAUT)
+    }
+
+    pub fn choisir_insecte_taille(&mut self, espece: crate::win32::insectes::Espece, pour_cent: u32) {
+        if let Some(t) = self.insecte_tailles.get_mut(espece.rang()) {
+            *t = pour_cent.clamp(INSECTE_TAILLE_MIN, INSECTE_TAILLE_MAX);
+        }
+    }
+
+    pub fn choisir_insecte(&mut self, espece: crate::win32::insectes::Espece, oui: bool) {
+        if let Some(p) = self.insectes_actifs.get_mut(espece.rang()) {
+            *p = oui;
+        }
+    }
 }
 
 /// Le style des super-héros — DEMANDE EXPLICITE (2026-11-23) : « super héros
@@ -593,6 +624,11 @@ impl ModeHeros {
     }
 }
 
+/// La taille des insectes, en pour cent.
+pub const INSECTE_TAILLE_MIN: u32 = 50;
+pub const INSECTE_TAILLE_MAX: u32 = 400;
+pub const INSECTE_TAILLE_DEFAUT: u32 = 100;
+
 /// Le délai d'inactivité des super-héros, en minutes.
 pub const HEROS_DELAI_MIN: u32 = 1;
 pub const HEROS_DELAI_MAX: u32 = 60;
@@ -617,6 +653,9 @@ impl Default for Reglages {
             heros_choix: 0,
             heros_taille: HEROS_TAILLE_DEFAUT,
             heros_style: StyleHeros::Origine,
+            insectes_actifs: [false; crate::win32::insectes::NB_ESPECES],
+            insecte_tailles: [INSECTE_TAILLE_DEFAUT; crate::win32::insectes::NB_ESPECES],
+            insectes_son: true,
         }
     }
 }
@@ -663,6 +702,22 @@ pub fn lire_reglages(texte: &str) -> Reglages {
                     r.heros_mode = mode;
                 }
             }
+            "insectes_son" => r.insectes_son = valeur == "1",
+            cle if cle.starts_with("insecte_taille_") => {
+                let espece = crate::win32::insectes::Espece::lire(&cle["insecte_taille_".len()..]);
+                if let (Some(espece), Ok(t)) = (espece, valeur.parse::<u32>()) {
+                    r.choisir_insecte_taille(espece, t);
+                }
+            }
+            // `insecte_<nom>` ; avant les familles : `insecte_mouche`,
+            // `insecte_moustique`, `insecte_papillon` (le premier de chaque)
+            // et `insecte_papillon_N`.
+            cle if cle.starts_with("insecte_") => {
+                let nom = cle["insecte_".len()..].replace('_', "-");
+                if let Some(espece) = crate::win32::insectes::Espece::lire(&nom) {
+                    r.choisir_insecte(espece, valeur == "1");
+                }
+            }
             "x" => x = valeur.parse::<i32>().ok(),
             "y" => y = valeur.parse::<i32>().ok(),
             _ => {}
@@ -686,6 +741,11 @@ pub fn ecrire_reglages(r: &Reglages) -> String {
         r.heros_taille,
         r.heros_style.nom()
     );
+    s.push_str(&format!("insectes_son={}\n", u8::from(r.insectes_son)));
+    for espece in crate::win32::insectes::ESPECES {
+        s.push_str(&format!("insecte_{}={}\n", espece.nom(), u8::from(r.insecte(espece))));
+        s.push_str(&format!("insecte_taille_{}={}\n", espece.nom(), r.insecte_taille(espece)));
+    }
     if let Some((x, y)) = r.position {
         s.push_str(&format!("x={x}\ny={y}\n"));
     }
@@ -1514,8 +1574,35 @@ mod tests {
             heros_choix: 17,
             heros_taille: 250,
             heros_style: StyleHeros::Pixels,
+            insectes_actifs: [true, false, true, false, false, false, true, false, false, true, true, false, true, true, false],
+            insecte_tailles: [50, 400, 100, 250, 180, 100, 75, 60, 70, 80, 90, 110, 120, 130, 140],
+            insectes_son: false,
         };
         assert_eq!(lire_reglages(&ecrire_reglages(&r)), r);
+        // Chaque insecte se relit seul : aucun ne recopie un voisin.
+        for (n, espece) in crate::win32::insectes::ESPECES.into_iter().enumerate() {
+            let mut seul = Reglages::default();
+            seul.choisir_insecte(espece, true);
+            let relu = lire_reglages(&ecrire_reglages(&seul));
+            for (k, autre) in crate::win32::insectes::ESPECES.into_iter().enumerate() {
+                assert_eq!(relu.insecte(autre), k == n, "{espece:?} activé, {autre:?} relu");
+            }
+        }
+        assert!(lire_reglages("").insectes_son, "le bourdonnement est activé par défaut");
+        assert!(!lire_reglages("").insectes_actifs.contains(&true), "aucun insecte par défaut");
+        assert_eq!(lire_reglages("insecte_taille_papillon-3=900").insecte_tailles[12], INSECTE_TAILLE_MAX, "bornée");
+        assert_eq!(lire_reglages("").insecte_tailles, [INSECTE_TAILLE_DEFAUT; crate::win32::insectes::NB_ESPECES]);
+        // Les réglages d'avant les familles : le premier de chaque.
+        {
+            use crate::win32::insectes::Espece;
+            let ancien = lire_reglages(
+                "insecte_mouche=1\ninsecte_moustique=1\ninsecte_papillon_3=1\ninsecte_taille_mouche=250\n",
+            );
+            assert!(ancien.insecte(Espece::Mouche(0)) && ancien.insecte(Espece::Moustique(0)));
+            assert!(ancien.insecte(Espece::Papillon(2)) && !ancien.insecte(Espece::Mouche(1)));
+            assert_eq!(ancien.insecte_taille(Espece::Mouche(0)), 250);
+            assert!(lire_reglages("insecte_papillon=1").insecte(Espece::Papillon(0)));
+        }
         for mode in [ModeHeros::Traversee, ModeHeros::Atterrissage, ModeHeros::Hasard] {
             assert_eq!(ModeHeros::lire(mode.nom()), Some(mode));
         }
