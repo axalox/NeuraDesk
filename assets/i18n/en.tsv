@@ -4063,6 +4063,74 @@ Adresse invalide.	Invalid address.
 Aucune carte réseau connectée.	No network adapter connected.
 ex. 1.1.1.1	e.g. 1.1.1.1
 facultatif	optional
+Connexion	Connection
+Proxy	Proxy
+Adresse MAC	MAC address
+Chiffrement	Encryption
+Non chiffré	Unencrypted
+DNS classique	Plain DNS
+Chiffré	Encrypted
+DNS over HTTPS	DNS over HTTPS
+Seuls les serveurs des préréglages peuvent être chiffrés.	Only the preset servers can be encrypted.
+IPv4	IPv4
+IPv6	IPv6
+Adresse IPv6	IPv6 address
+Annoncée par le routeur	Announced by the router
+Préfixe	Prefix
+Automatique retire seulement les adresses posées à la main : celles que le routeur annonce restent.	Automatic only removes addresses set by hand: the ones the router announces stay.
+Type de réseau	Network type
+Privé	Private
+Visible sur le réseau local (partage, imprimantes)	Visible on the local network (sharing, printers)
+Public	Public
+Caché des autres appareils	Hidden from other devices
+Domaine	Domain
+Ce réseau appartient à un domaine : son type est réglé par l'administrateur.	This network belongs to a domain: its type is set by the administrator.
+Connexion limitée	Metered connection
+Limitée	Metered
+Moins de téléchargements en arrière-plan	Fewer background downloads
+Illimitée	Unmetered
+Comportement habituel	Usual behavior
+Seules les cartes Ethernet et Wi-Fi ont ce réglage.	Only Ethernet and Wi-Fi adapters have this setting.
+Dépannage	Troubleshooting
+Renouveler l'adresse (DHCP)	Renew address (DHCP)
+Vider le cache DNS	Flush DNS cache
+Configuration automatique	Automatic configuration
+Détecter automatiquement les paramètres	Automatically detect settings
+Utiliser un script de configuration	Use a setup script
+Adresse du script	Script address
+Proxy manuel	Manual proxy
+Utiliser un serveur proxy	Use a proxy server
+Exceptions	Exceptions
+Ne pas utiliser le proxy pour les adresses locales	Don't use the proxy for local addresses
+Le proxy est un réglage de votre session : aucune autorisation administrateur n'est demandée.	The proxy is a setting of your session: no administrator permission is asked.
+Adresse actuelle	Current address
+Nouvelle adresse	New address
+Revenir à l'adresse d'origine	Restore original address
+Le 2ᵉ chiffre doit être 2, 6, A ou E (adresse locale) : sinon la plupart des pilotes, surtout Wi-Fi, l'ignorent.	The 2nd digit must be 2, 6, A or E (locally administered): otherwise most drivers, Wi-Fi ones especially, ignore it.
+La carte redémarre : la connexion se coupe quelques secondes.	The adapter restarts: the connection drops for a few seconds.
+En Wi-Fi, Windows peut aussi utiliser une adresse aléatoire par réseau (Paramètres › Réseau › Wi-Fi).	On Wi-Fi, Windows can also use a random address per network (Settings › Network › Wi-Fi).
+Modifiée	Changed
+D'usine	Factory
+Adresse modifiée (posée à la main).	Changed address (set by hand).
+Adresse d'usine.	Factory address.
+Adresse, préfixe ou passerelle invalide.	Invalid address, prefix or gateway.
+Serveur, adresse du script ou exceptions invalides.	Invalid server, script address or exceptions.
+Adresse MAC invalide : 12 chiffres hexadécimaux, le 2ᵉ étant 2, 6, A ou E.	Invalid MAC address: 12 hexadecimal digits, the 2nd being 2, 6, A or E.
+Adresse IPv6 mise à jour.	IPv6 address updated.
+Type de réseau changé.	Network type changed.
+Connexion limitée mise à jour.	Metered connection updated.
+Adresse renouvelée.	Address renewed.
+Cache DNS vidé.	DNS cache flushed.
+Proxy mis à jour.	Proxy updated.
+Adresse MAC changée.	MAC address changed.
+Le pilote de la carte a ignoré cette adresse MAC.	The adapter's driver ignored this MAC address.
+Demande refusée : valeur ou carte invalide.	Request refused: invalid value or adapter.
+ex. 2001:db8::50	e.g. 2001:db8::50
+ex. 64	e.g. 64
+ex. http://wpad/proxy.pac	e.g. http://wpad/proxy.pac
+ex. proxy.exemple.fr:8080	e.g. proxy.example.com:8080
+ex. *.local;intranet	e.g. *.local;intranet
+ex. 02:1A:2B:3C:4D:5E	e.g. 02:1A:2B:3C:4D:5E
 Super-héros	Superheroes
 Faire venir un super-héros quand l'ordinateur est inactif	Bring in a superhero when the computer is idle
 Après	After

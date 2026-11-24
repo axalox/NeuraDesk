@@ -14,6 +14,13 @@
 //! Le verbe `ip/<carte>/<auto|adresse,masque,passerelle>` suit le même chemin
 //! que `appliquer` (relecture, validation, fil de travail, UAC).
 //!
+//! DEMANDE (2026-11-24) : les autres réglages réseau de Windows, en onglets, et
+//! l'adresse MAC. Verbes : `appliquer/<cartes>/<quoi>/<0|1 chiffré>`,
+//! `ip6/<carte>/<auto|adresse,préfixe,passerelle>`,
+//! `connexion/<carte>/<categorie/…|limitee/…|renouveler>`,
+//! `mac/<carte>/<adresse|origine>` (élevés, même chemin que `appliquer`) et
+//! `proxy/<json>` (réglage de l'utilisateur, SANS UAC, appliqué ici même).
+//!
 //! ⚠️ **L'APPLICATION BLOQUE** (invite UAC puis PowerShell) : elle part sur un
 //! FIL DE TRAVAIL. `SLOT` est `thread_local` — le fil ne peut pas parler à la
 //! page ; il dépose son issue dans `ISSUE`, que `refresh_if_visible` relève
@@ -32,16 +39,24 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::gfx::GfxDevice;
 use crate::win32::cef_popup::{self, PopupSlot, PopupSpec, PART_ECRAN};
-use crate::win32::{dns, reseau_ip};
+use crate::win32::{dns, reseau_connexion, reseau_ip, reseau_mac, reseau_proxy};
 
 thread_local! {
     static SLOT: PopupSlot = PopupSlot::new();
     static PAYLOAD: RefCell<Option<String>> = const { RefCell::new(None) };
     static RAFALE: Cell<u32> = const { Cell::new(0) };
     static CARTES: RefCell<Vec<dns::Carte>> = const { RefCell::new(Vec::new()) };
+    static PROXY: RefCell<Option<reseau_proxy::Proxy>> = const { RefCell::new(None) };
     /// La dernière issue montrée par la page (`""` = aucune).
     static MESSAGE: RefCell<String> = const { RefCell::new(String::new()) };
+    /// Relectures DIFFEREES apres une issue : une carte redemarree (adresse MAC)
+    /// ou un bail renouvele n'a pas encore sa passerelle quand le script rend la
+    /// main, et la premiere relecture la croirait deconnectee.
+    static RELIRE_A: RefCell<Vec<std::time::Instant>> = const { RefCell::new(Vec::new()) };
 }
+
+/// Les delais des relectures differees, apres l'issue.
+const RELECTURES_MS: [u64; 3] = [3_000, 8_000, 20_000];
 
 /// Une application en cours sur le fil de travail.
 static EN_COURS: AtomicBool = AtomicBool::new(false);
@@ -65,9 +80,10 @@ const SPEC: PopupSpec = PopupSpec {
 /// Unités de page → pixels physiques : le zoom `CONTENT_ZOOM_FACTOR` (3×).
 const PX_PAR_UNITE: i32 = 3;
 /// La taille VISÉE, en unités de page : la liste des cartes, les préréglages,
-/// les deux champs et les boutons. Plafonnée à `PART_ECRAN`.
-const LARGEUR: i32 = 460;
-const HAUTEUR: i32 = 600;
+/// les deux champs et les boutons. Plafonnée à `PART_ECRAN`. Cinq onglets
+/// depuis le 2026-11-24 : la barre des onglets doit tenir en largeur.
+const LARGEUR: i32 = 520;
+const HAUTEUR: i32 = 720;
 
 fn taille_pour_tout_le_contenu(largeur_ecran: i32, hauteur_ecran: i32) -> [i32; 2] {
     let plafond_l = (largeur_ecran * PART_ECRAN / 100) / PX_PAR_UNITE;
@@ -118,6 +134,7 @@ fn relire() {
     let cartes = dns::cartes();
     crate::diag!("[dns] {} carte(s) active(s)", cartes.len());
     CARTES.with(|c| *c.borrow_mut() = cartes);
+    PROXY.with(|p| *p.borrow_mut() = Some(reseau_proxy::lire()));
 }
 
 fn etat_json() -> String {
@@ -135,6 +152,17 @@ fn etat_json() -> String {
                     "ipv4": carte.ipv4.map(|(ip, _)| ip.to_string()),
                     "masque": carte.ipv4.map(|(_, n)| crate::win32::reseau_ip::masque_du_prefixe(n).to_string()),
                     "passerelle": carte.passerelle.map(|ip| ip.to_string()),
+                    "wifi": carte.type_if == reseau_connexion::IF_TYPE_WIFI,
+                    "cable": carte.type_if == reseau_connexion::IF_TYPE_ETHERNET,
+                    "ipv6": carte.ipv6.map(|(ip, _)| ip.to_string()),
+                    "prefixe6": carte.ipv6.map(|(_, n)| n),
+                    "passerelle6": carte.passerelle6.map(|ip| ip.to_string()),
+                    "ipv6Manuel": carte.ipv6_manuel,
+                    "doh": carte.doh,
+                    "categorie": carte.connexion.and_then(|c| c.categorie).map(|c| c.code()),
+                    "limitee": carte.connexion.map(|c| c.limitee),
+                    "mac": carte.mac,
+                    "macPosee": carte.mac_posee.is_some(),
                 })
             })
             .collect()
@@ -142,6 +170,7 @@ fn etat_json() -> String {
     serde_json::json!({
         "epingle": crate::config::load_bool_setting_or(PREMIER_PLAN, false),
         "cartes": cartes,
+        "proxy": PROXY.with(|p| p.borrow().as_ref().map(reseau_proxy::Proxy::en_json)),
         "enCours": EN_COURS.load(Ordering::SeqCst),
         "message": MESSAGE.with(|m| m.borrow().clone()),
     })
@@ -171,6 +200,21 @@ pub fn refresh_if_visible() {
     if let Some(issue) = issue {
         EN_COURS.store(false, Ordering::SeqCst);
         MESSAGE.with(|m| *m.borrow_mut() = issue.code().to_string());
+        relire();
+        push_state();
+        let maintenant = std::time::Instant::now();
+        RELIRE_A.with(|r| {
+            *r.borrow_mut() = RELECTURES_MS.iter().map(|ms| maintenant + std::time::Duration::from_millis(*ms)).collect()
+        });
+    }
+    let echue = RELIRE_A.with(|r| {
+        let mut r = r.borrow_mut();
+        let avant = r.len();
+        let maintenant = std::time::Instant::now();
+        r.retain(|t| *t > maintenant);
+        r.len() != avant
+    });
+    if echue {
         relire();
         push_state();
     }
@@ -215,9 +259,16 @@ fn lancer(demande: dns::Demande) {
     }
 }
 
+/// Une demande refusée par la validation : rien ne part, la page le dit.
+fn refuser(quoi: &str) {
+    crate::diag!("[dns] demande refusée : {quoi}");
+    MESSAGE.with(|m| *m.borrow_mut() = "invalide".to_string());
+    push_state();
+}
+
 /// **CE QUE LA PAGE DEMANDE** : les trois gestes de la fenêtre, plus
-/// `appliquer/<cartes>/<auto|adresses>`, `ip/<carte>/<auto|adresse,masque,passerelle>`,
-/// `vider` et `actualiser`.
+/// `appliquer/<cartes>/<auto|adresses>/<0|1>`, `ip/…`, `ip6/…`, `connexion/…`,
+/// `mac/…`, `proxy/<json>`, `vider` et `actualiser`.
 pub fn dispatch_actions() {
     for action in cef_popup::drain_actions(&SLOT) {
         let Some(verbe) = action.strip_prefix("dns/") else { continue };
@@ -253,17 +304,83 @@ pub fn dispatch_actions() {
             }
             "vider" => lancer(dns::Demande::ViderCache),
             "appliquer" => {
-                let (cartes, quoi) = (morceaux.next().unwrap_or(""), morceaux.next().unwrap_or(""));
+                let cartes = morceaux.next().unwrap_or("");
+                // `<quoi>/<0|1>` : l'adresse encodée ne contient jamais de `/`.
+                let (quoi, chiffrer) = morceaux.next().unwrap_or("").split_once('/').unwrap_or(("", ""));
                 // Relue AVANT de valider : une carte débranchée entre-temps est refusée.
                 relire();
-                let connues: Vec<u32> = CARTES.with(|c| c.borrow().iter().map(|carte| carte.index).collect());
-                match dns::lire_demande(cartes, &decoder(quoi), &connues) {
+                let connues: Vec<dns::Cible> =
+                    CARTES.with(|c| c.borrow().iter().map(|carte| dns::Cible { index: carte.index, guid: carte.guid.clone() }).collect());
+                match dns::lire_demande(cartes, &decoder(quoi), chiffrer, &connues) {
                     Some(demande) => lancer(demande),
-                    None => {
-                        crate::diag!("[dns] demande refusée : {cartes:?} {quoi:?}");
-                        MESSAGE.with(|m| *m.borrow_mut() = "invalide".to_string());
+                    None => refuser(&format!("{cartes:?} {quoi:?} {chiffrer:?}")),
+                }
+            }
+            "ip6" => {
+                let (carte, quoi) = (morceaux.next().unwrap_or(""), morceaux.next().unwrap_or(""));
+                relire();
+                let demande = CARTES.with(|c| {
+                    let cartes = c.borrow();
+                    let connues: Vec<reseau_ip::CarteConnue> = cartes
+                        .iter()
+                        .map(|carte| reseau_ip::CarteConnue { index: carte.index, serveurs: &carte.serveurs, dns_manuel: carte.manuel })
+                        .collect();
+                    reseau_ip::lire_demande6(carte, &decoder(quoi), &connues)
+                });
+                match demande {
+                    Some(demande) => lancer(dns::Demande::Ip(demande)),
+                    None => refuser(&format!("ip6 {carte:?} {quoi:?}")),
+                }
+            }
+            "connexion" => {
+                let (carte, quoi) = (morceaux.next().unwrap_or(""), morceaux.next().unwrap_or(""));
+                relire();
+                let demande = CARTES.with(|c| {
+                    let cartes = c.borrow();
+                    let connues: Vec<reseau_connexion::CarteConnue> = cartes
+                        .iter()
+                        .map(|carte| reseau_connexion::CarteConnue {
+                            index: carte.index,
+                            guid: &carte.guid,
+                            type_if: carte.type_if,
+                            categorie: carte.connexion.and_then(|e| e.categorie),
+                            dhcp: carte.dhcp,
+                        })
+                        .collect();
+                    reseau_connexion::lire_demande(carte, quoi, &connues)
+                });
+                match demande {
+                    Some(demande) => lancer(dns::Demande::Connexion(demande)),
+                    None => refuser(&format!("connexion {carte:?} {quoi:?}")),
+                }
+            }
+            "mac" => {
+                let (carte, quoi) = (morceaux.next().unwrap_or(""), morceaux.next().unwrap_or(""));
+                relire();
+                let guid = CARTES.with(|c| {
+                    let index: Option<u32> = carte.trim().parse().ok();
+                    c.borrow().iter().find(|x| Some(x.index) == index).map(|x| x.guid.clone())
+                });
+                match guid.and_then(|g| reseau_mac::lire_demande(&g, &decoder(quoi))) {
+                    Some(demande) => lancer(dns::Demande::Mac(demande)),
+                    None => refuser(&format!("mac {carte:?} {quoi:?}")),
+                }
+            }
+            "proxy" => {
+                // Le reste ENTIER : le JSON encodé peut contenir des `/` encodés.
+                let reste = [morceaux.next().unwrap_or(""), morceaux.next().unwrap_or("")].iter().filter(|m| !m.is_empty()).copied().collect::<Vec<_>>().join("/");
+                match reseau_proxy::lire_demande(&decoder(&reste)) {
+                    Some(proxy) => {
+                        // Vider d'abord : deux succes de suite donneraient le
+                        // MEME etat, que `push_state` ne renverrait pas.
+                        MESSAGE.with(|m| m.borrow_mut().clear());
+                        push_state();
+                        let reussi = reseau_proxy::appliquer(&proxy);
+                        relire();
+                        MESSAGE.with(|m| *m.borrow_mut() = if reussi { "reussi" } else { "echec" }.to_string());
                         push_state();
                     }
+                    None => refuser("proxy"),
                 }
             }
             "ip" => {
@@ -354,8 +471,8 @@ fn code_pour_point(rect: [i32; 4], (x, y): (i32, i32)) -> i32 {
 mod tests {
     use super::*;
 
-    fn verbes_connus() -> [&'static str; 8] {
-        ["deplacer", "epingler", "fermer", "ready", "actualiser", "vider", "appliquer", "ip"]
+    fn verbes_connus() -> [&'static str; 12] {
+        ["deplacer", "epingler", "fermer", "ready", "actualiser", "vider", "appliquer", "ip", "ip6", "connexion", "mac", "proxy"]
     }
 
     #[test]
@@ -406,7 +523,10 @@ mod tests {
         for ligne in page[debut..fin].lines().filter(|l| l.contains("adresses:")) {
             let liste = ligne.split("adresses: [").nth(1).unwrap().split(']').next().unwrap();
             let liste = liste.replace(['"', ' '], "");
-            assert!(dns::lire_demande("1", &liste, &[1]).is_some(), "préréglage invalide : {ligne}");
+            let connue = [dns::Cible { index: 1, guid: "{01234567-89AB-CDEF-0123-456789ABCDEF}".into() }];
+            assert!(dns::lire_demande("1", &liste, "0", &connue).is_some(), "préréglage invalide : {ligne}");
+            // Chaque préréglage se chiffre : son modèle DoH est connu.
+            assert!(dns::lire_demande("1", &liste, "1", &connue).is_some(), "préréglage sans modèle DoH : {ligne}");
             n += 1;
         }
         assert!(n >= 4, "au moins quatre préréglages, vu {n}");

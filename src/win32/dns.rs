@@ -17,6 +17,14 @@
 //! énumération, les adresses sont PARSÉES (`std::net::IpAddr`) et réécrites
 //! depuis la valeur parsée ; le script part en `-EncodedCommand` (base64
 //! UTF-16), donc aucun guillemet à échapper.
+//!
+//! DEMANDE (2026-11-24) : les autres réglages réseau de Windows dans la même
+//! fenêtre. La carte porte maintenant tout ce que les onglets montrent (GUID,
+//! adresse MAC, IPv6, catégorie, coût, DNS chiffré) et `Demande` les gestes
+//! de chaque onglet : `dns_doh`, `reseau_ip`, `reseau_connexion`,
+//! `reseau_mac` (le proxy, sans droit, ne passe pas par ici :
+//! `reseau_proxy`). ⛔ Tout se LIT sans PowerShell (`relire` tourne sur le fil
+//! de l'interface) ; seul l'ÉCRIT passe par le PowerShell élevé.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -35,8 +43,9 @@ use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 /// `IF_TYPE_SOFTWARE_LOOPBACK` et `IF_TYPE_TUNNEL` : jamais montrées.
 const IF_TYPE_LOOPBACK: u32 = 24;
 const IF_TYPE_TUNNEL: u32 = 131;
-/// Le délai maximal d'attente du PowerShell élevé (il prend ~1 s).
-const ATTENTE_MAX_MS: u32 = 60_000;
+/// Le délai maximal d'attente du PowerShell élevé (~1 s d'ordinaire ; un
+/// renouvellement DHCP sans réponse ou une carte qui redémarre prennent plus).
+const ATTENTE_MAX_MS: u32 = 120_000;
 
 /// Une carte réseau active et ses serveurs DNS.
 #[derive(Clone, Debug, PartialEq)]
@@ -53,19 +62,57 @@ pub struct Carte {
     pub ipv4: Option<(Ipv4Addr, u8)>,
     /// La première passerelle IPv4.
     pub passerelle: Option<Ipv4Addr>,
+    /// `{XXXXXXXX-…}`, validé (`guid_valide`) — vide sinon.
+    pub guid: String,
+    /// `IfType` : 6 = câble, 71 = Wi-Fi (voir `reseau_connexion`).
+    pub type_if: u32,
+    /// L'adresse MAC actuelle (`AA:BB:…`).
+    pub mac: Option<String>,
+    /// L'adresse posée à la main dans le registre (`reseau_mac`), s'il y en a.
+    pub mac_posee: Option<String>,
+    /// L'adresse IPv6 globale montrée (une posée à la main d'abord).
+    pub ipv6: Option<(Ipv6Addr, u8)>,
+    /// La première passerelle IPv6 (souvent de lien local).
+    pub passerelle6: Option<Ipv6Addr>,
+    /// `true` : une adresse IPv6 posée à la main.
+    pub ipv6_manuel: bool,
+    /// Les serveurs que cette carte chiffre (`dns_doh`).
+    pub doh: Vec<String>,
+    /// Ce que le gestionnaire des réseaux en dit (`reseau_connexion`).
+    pub connexion: Option<crate::win32::reseau_connexion::EtatConnexion>,
+}
+
+/// Une carte visée par une demande DNS : son index ET son GUID (validé), pour
+/// les clés du DNS chiffré.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cible {
+    pub index: u32,
+    pub guid: String,
+}
+
+/// `{8-4-4-4-12}` en chiffres hexadécimaux : le SEUL format de GUID qui entre
+/// dans un script ou une clé de registre.
+pub fn guid_valide(g: &str) -> bool {
+    let Some(corps) = g.strip_prefix('{').and_then(|r| r.strip_suffix('}')) else { return false };
+    let longueurs: Vec<usize> = corps.split('-').map(str::len).collect();
+    longueurs == [8, 4, 4, 4, 12] && corps.chars().all(|c| c == '-' || c.is_ascii_hexdigit())
 }
 
 /// Ce qu'on demande à Windows.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Demande {
-    /// Revenir aux serveurs donnés par le réseau (DHCP).
-    Automatique(Vec<u32>),
-    /// Poser ces serveurs (dans l'ordre) sur ces cartes.
-    Serveurs(Vec<u32>, Vec<IpAddr>),
+    /// Revenir aux serveurs donnés par le réseau (DHCP), sans chiffrement.
+    Automatique(Vec<Cible>),
+    /// Poser ces serveurs (dans l'ordre) sur ces cartes ; `true` : chiffrés.
+    Serveurs(Vec<Cible>, Vec<IpAddr>, bool),
     /// Vider le cache DNS seulement.
     ViderCache,
-    /// L'adresse IPv4 d'une carte (voir `win32::reseau_ip`).
+    /// L'adresse IPv4 ou IPv6 d'une carte (voir `win32::reseau_ip`).
     Ip(crate::win32::reseau_ip::DemandeIp),
+    /// Catégorie, coût, renouvellement (voir `win32::reseau_connexion`).
+    Connexion(crate::win32::reseau_connexion::DemandeConnexion),
+    /// L'adresse MAC (voir `win32::reseau_mac`).
+    Mac(crate::win32::reseau_mac::DemandeMac),
 }
 
 /// L'issue d'une demande, rendue à la page.
@@ -74,6 +121,8 @@ pub enum Issue {
     Reussi,
     Annule,
     Echec,
+    /// Le pilote a ignoré l'adresse MAC (`reseau_mac::CODE_IGNOREE`).
+    Ignoree,
 }
 
 impl Issue {
@@ -82,6 +131,7 @@ impl Issue {
             Issue::Reussi => "reussi",
             Issue::Annule => "annule",
             Issue::Echec => "echec",
+            Issue::Ignoree => "ignoree",
         }
     }
 }
@@ -102,6 +152,7 @@ pub fn cartes() -> Vec<Carte> {
         }
     }
     let mut cartes = Vec::new();
+    let etats = crate::win32::reseau_connexion::etats();
     let mut courante = tampon.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
     while !courante.is_null() {
         let a = unsafe { &*courante };
@@ -135,15 +186,23 @@ pub fn cartes() -> Vec<Carte> {
             }
             u = unicast.Next;
         }
+        let (ipv6, ipv6_manuel) = unsafe { ipv6_de(a.FirstUnicastAddress) };
         let mut passerelle = None;
+        let mut passerelle6 = None;
         let mut g = a.FirstGatewayAddress;
-        while !g.is_null() && passerelle.is_none() {
+        while !g.is_null() {
             let porte = unsafe { &*g };
-            if let Some(IpAddr::V4(v4)) = unsafe { adresse(porte.Address.lpSockaddr as *const u8, porte.Address.iSockaddrLength) } {
-                passerelle = Some(v4);
+            match unsafe { adresse(porte.Address.lpSockaddr as *const u8, porte.Address.iSockaddrLength) } {
+                Some(IpAddr::V4(v4)) if passerelle.is_none() => passerelle = Some(v4),
+                Some(IpAddr::V6(v6)) if passerelle6.is_none() => passerelle6 = Some(v6),
+                _ => {}
             }
             g = porte.Next;
         }
+        let guid = if guid_valide(&guid) { guid.to_ascii_uppercase() } else { String::new() };
+        let longueur_mac = (a.PhysicalAddressLength as usize).min(a.PhysicalAddress.len());
+        let mac = (longueur_mac == 6).then(|| crate::win32::reseau_mac::texte(&a.PhysicalAddress[..6]));
+        let connexion = etats.iter().find(|(g, _)| g.eq_ignore_ascii_case(&guid)).map(|(_, e)| *e);
         cartes.push(Carte {
             index,
             nom: unsafe { a.FriendlyName.to_string() }.unwrap_or_default(),
@@ -153,9 +212,42 @@ pub fn cartes() -> Vec<Carte> {
             dhcp: unsafe { a.Anonymous2.Flags } & IP_ADAPTER_DHCP_ENABLED != 0,
             ipv4,
             passerelle,
+            type_if: a.IfType,
+            mac,
+            mac_posee: crate::win32::reseau_mac::adresse_posee(&guid),
+            ipv6,
+            passerelle6,
+            ipv6_manuel,
+            doh: crate::win32::dns_doh::serveurs_chiffres(&guid),
+            connexion,
+            guid,
         });
     }
     cartes
+}
+
+/// L'adresse IPv6 globale à montrer (une posée à la main d'abord, puis une
+/// stable, puis n'importe laquelle hors lien local) et « une est manuelle ».
+unsafe fn ipv6_de(mut u: *mut windows::Win32::NetworkManagement::IpHelper::IP_ADAPTER_UNICAST_ADDRESS_LH) -> (Option<(Ipv6Addr, u8)>, bool) {
+    // `IpPrefixOriginManual` = 1 ; `IpSuffixOriginRandom` = 5 (temporaire).
+    let (mut manuelle, mut stable, mut autre) = (None, None, None);
+    while !u.is_null() {
+        let unicast = unsafe { &*u };
+        if let Some(IpAddr::V6(v6)) = unsafe { adresse(unicast.Address.lpSockaddr as *const u8, unicast.Address.iSockaddrLength) } {
+            if v6.segments()[0] & 0xffc0 != 0xfe80 && !v6.is_loopback() {
+                let une = Some((v6, unicast.OnLinkPrefixLength));
+                if unicast.PrefixOrigin.0 == 1 {
+                    manuelle = manuelle.or(une);
+                } else if unicast.SuffixOrigin.0 != 5 {
+                    stable = stable.or(une);
+                } else {
+                    autre = autre.or(une);
+                }
+            }
+        }
+        u = unicast.Next;
+    }
+    (manuelle.or(stable).or(autre), manuelle.is_some())
 }
 
 /// L'adresse d'un `SOCKADDR` lu en octets : famille aux octets 0..2, IPv4 aux
@@ -198,24 +290,29 @@ fn est_manuel(guid: &str) -> bool {
 
 /// **LIRE CE QUE LA PAGE DEMANDE**, sans rien en croire :
 /// - `cartes` : des index séparés par des virgules, gardés seulement s'ils
-///   figurent dans `connues` (notre propre énumération) ;
-/// - `quoi` : `auto`, ou des adresses IP séparées par des virgules (1 à 8).
-pub fn lire_demande(cartes: &str, quoi: &str, connues: &[u32]) -> Option<Demande> {
-    let mut index = Vec::new();
+///   figurent dans `connues` (notre propre énumération, GUID validé) ;
+/// - `quoi` : `auto`, ou des adresses IP séparées par des virgules (1 à 8) ;
+/// - `chiffrer` : `1` pour le DNS chiffré — seulement si TOUTES les adresses
+///   ont un modèle connu (`dns_doh`), `0` sinon ; rien d'autre.
+pub fn lire_demande(cartes: &str, quoi: &str, chiffrer: &str, connues: &[Cible]) -> Option<Demande> {
+    let mut cibles: Vec<Cible> = Vec::new();
     for morceau in cartes.split(',') {
         let i: u32 = morceau.trim().parse().ok()?;
-        if !connues.contains(&i) {
-            return None;
-        }
-        if !index.contains(&i) {
-            index.push(i);
+        let carte = connues.iter().find(|c| c.index == i && guid_valide(&c.guid))?;
+        if !cibles.iter().any(|c| c.index == i) {
+            cibles.push(carte.clone());
         }
     }
-    if index.is_empty() {
+    if cibles.is_empty() {
         return None;
     }
+    let chiffrer = match chiffrer {
+        "1" => true,
+        "0" => false,
+        _ => return None,
+    };
     if quoi == "auto" {
-        return Some(Demande::Automatique(index));
+        return (!chiffrer).then_some(Demande::Automatique(cibles));
     }
     let mut adresses = Vec::new();
     for morceau in quoi.split(',') {
@@ -233,27 +330,32 @@ pub fn lire_demande(cartes: &str, quoi: &str, connues: &[u32]) -> Option<Demande
             adresses.push(ip);
         }
     }
-    if adresses.is_empty() || adresses.len() > 8 {
+    if adresses.is_empty() || adresses.len() > 8 || (chiffrer && !crate::win32::dns_doh::chiffrable(&adresses)) {
         return None;
     }
-    Some(Demande::Serveurs(index, adresses))
+    Some(Demande::Serveurs(cibles, adresses, chiffrer))
 }
 
 /// Le script PowerShell d'une demande. N'y entrent que des `u32` et des
 /// adresses RÉÉCRITES depuis leur valeur parsée.
 pub fn script(demande: &Demande) -> String {
-    let index = |liste: &[u32]| liste.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    let index = |liste: &[Cible]| liste.iter().map(|c| c.index.to_string()).collect::<Vec<_>>().join(",");
+    let guids = |liste: &[Cible]| liste.iter().map(|c| c.guid.clone()).collect::<Vec<_>>();
     let action = match demande {
         Demande::Automatique(cartes) => {
-            format!("Set-DnsClientServerAddress -InterfaceIndex {} -ResetServerAddresses; ", index(cartes))
+            let doh = crate::win32::dns_doh::script(&guids(cartes).iter().map(String::as_str).collect::<Vec<_>>(), &[], false);
+            format!("Set-DnsClientServerAddress -InterfaceIndex {} -ResetServerAddresses; {doh}", index(cartes))
         }
-        Demande::Serveurs(cartes, adresses) => {
+        Demande::Serveurs(cartes, adresses, chiffrer) => {
             let liste = adresses.iter().map(|ip| format!("'{ip}'")).collect::<Vec<_>>().join(",");
-            format!("Set-DnsClientServerAddress -InterfaceIndex {} -ServerAddresses @({liste}); ", index(cartes))
+            let doh = crate::win32::dns_doh::script(&guids(cartes).iter().map(String::as_str).collect::<Vec<_>>(), adresses, *chiffrer);
+            format!("Set-DnsClientServerAddress -InterfaceIndex {} -ServerAddresses @({liste}); {doh}", index(cartes))
         }
         Demande::ViderCache => String::new(),
-        // Un script à part : il ne vide pas le cache DNS.
+        // Des scripts à part : ils ne vident pas le cache DNS.
         Demande::Ip(ip) => return crate::win32::reseau_ip::script(ip),
+        Demande::Connexion(c) => return crate::win32::reseau_connexion::script(c),
+        Demande::Mac(m) => return crate::win32::reseau_mac::script(m),
     };
     format!("$ErrorActionPreference='Stop'; try {{ {action}Clear-DnsClientCache; exit 0 }} catch {{ exit 1 }}")
 }
@@ -300,10 +402,10 @@ pub fn appliquer(demande: &Demande) -> Issue {
         let _ = CloseHandle(info.hProcess);
     }
     crate::diag!("[dns] PowerShell élevé : code {code}");
-    if code == 0 {
-        Issue::Reussi
-    } else {
-        Issue::Echec
+    match code {
+        0 => Issue::Reussi,
+        crate::win32::reseau_mac::CODE_IGNOREE if matches!(demande, Demande::Mac(_)) => Issue::Ignoree,
+        _ => Issue::Echec,
     }
 }
 
@@ -311,22 +413,53 @@ pub fn appliquer(demande: &Demande) -> Issue {
 mod tests {
     use super::*;
 
+    const G12: &str = "{01234567-89AB-CDEF-0123-456789ABCD12}";
+    const G7: &str = "{01234567-89AB-CDEF-0123-456789ABCD07}";
+
+    fn cible(index: u32, guid: &str) -> Cible {
+        Cible { index, guid: guid.to_string() }
+    }
+
+    fn connues() -> Vec<Cible> {
+        vec![cible(12, G12), cible(7, G7)]
+    }
+
     #[test]
     fn une_demande_valide_est_lue() {
-        let d = lire_demande("12", "1.1.1.1, 1.0.0.1,2606:4700:4700::1111", &[12, 7]).unwrap();
+        let d = lire_demande("12", "1.1.1.1, 1.0.0.1,2606:4700:4700::1111", "0", &connues()).unwrap();
         assert_eq!(
             d,
             Demande::Serveurs(
-                vec![12],
-                vec!["1.1.1.1".parse().unwrap(), "1.0.0.1".parse().unwrap(), "2606:4700:4700::1111".parse().unwrap()]
+                vec![cible(12, G12)],
+                vec!["1.1.1.1".parse().unwrap(), "1.0.0.1".parse().unwrap(), "2606:4700:4700::1111".parse().unwrap()],
+                false
             )
         );
-        assert_eq!(lire_demande("7,12,7", "auto", &[12, 7]), Some(Demande::Automatique(vec![7, 12])));
+        assert_eq!(lire_demande("7,12,7", "auto", "0", &connues()), Some(Demande::Automatique(vec![cible(7, G7), cible(12, G12)])));
+    }
+
+    #[test]
+    fn le_chiffrement_ne_vaut_que_pour_des_serveurs_connus() {
+        assert!(matches!(lire_demande("12", "9.9.9.9,149.112.112.112", "1", &connues()), Some(Demande::Serveurs(_, _, true))));
+        assert_eq!(lire_demande("12", "9.9.9.9,192.168.1.1", "1", &connues()), None, "serveur sans modèle");
+        assert_eq!(lire_demande("12", "auto", "1", &connues()), None, "l'automatique ne se chiffre pas");
+        assert_eq!(lire_demande("12", "9.9.9.9", "oui", &connues()), None);
+        // Une carte sans GUID lisible ne reçoit rien.
+        assert_eq!(lire_demande("3", "9.9.9.9", "0", &[cible(3, "")]), None);
+    }
+
+    #[test]
+    fn un_guid_a_la_forme_exacte() {
+        assert!(guid_valide(G12));
+        assert!(guid_valide("{abcdef01-2345-6789-abcd-ef0123456789}"));
+        for faux in ["01234567-89AB-CDEF-0123-456789ABCD12", "{01234567-89AB-CDEF-0123-456789ABCD1}", "{0123456789AB-CDEF-0123-456789ABCD12-}", "{01234567-89AB-CDEF-0123-456789ABCD1Z}", "{'; calc; '}", ""] {
+            assert!(!guid_valide(faux), "accepté à tort : {faux:?}");
+        }
     }
 
     #[test]
     fn une_injection_est_refusee() {
-        let connues = [12];
+        let connues = [cible(12, G12)];
         for quoi in [
             "1.1.1.1'; Remove-Item C:\\ -Recurse; '",
             "1.1.1.1;calc",
@@ -339,24 +472,30 @@ mod tests {
             "",
             "localhost",
         ] {
-            assert_eq!(lire_demande("12", quoi, &connues), None, "accepté à tort : {quoi:?}");
+            assert_eq!(lire_demande("12", quoi, "0", &connues), None, "accepté à tort : {quoi:?}");
         }
-        assert_eq!(lire_demande("13", "1.1.1.1", &connues), None, "carte inconnue");
-        assert_eq!(lire_demande("12;calc", "1.1.1.1", &connues), None);
-        assert_eq!(lire_demande("", "1.1.1.1", &connues), None);
+        assert_eq!(lire_demande("13", "1.1.1.1", "0", &connues), None, "carte inconnue");
+        assert_eq!(lire_demande("12;calc", "1.1.1.1", "0", &connues), None);
+        assert_eq!(lire_demande("", "1.1.1.1", "0", &connues), None);
         let trop = (1..=9).map(|i| format!("10.0.0.{i}")).collect::<Vec<_>>().join(",");
-        assert_eq!(lire_demande("12", &trop, &connues), None, "plus de huit serveurs");
+        assert_eq!(lire_demande("12", &trop, "0", &connues), None, "plus de huit serveurs");
     }
 
     #[test]
     fn le_script_ne_porte_que_des_valeurs_reecrites() {
-        let d = lire_demande("12,7", "8.8.8.8,2001:4860:4860::8888", &[7, 12]).unwrap();
-        assert_eq!(
-            script(&d),
+        let d = lire_demande("12,7", "8.8.8.8,2001:4860:4860::8888", "0", &connues()).unwrap();
+        let s = script(&d);
+        assert!(s.starts_with(
             "$ErrorActionPreference='Stop'; try { Set-DnsClientServerAddress -InterfaceIndex 12,7 \
-             -ServerAddresses @('8.8.8.8','2001:4860:4860::8888'); Clear-DnsClientCache; exit 0 } catch { exit 1 }"
-        );
-        assert!(script(&Demande::Automatique(vec![3])).contains("-InterfaceIndex 3 -ResetServerAddresses"));
+             -ServerAddresses @('8.8.8.8','2001:4860:4860::8888'); "
+        ));
+        // Sans chiffrement : l'ancien chiffrement des DEUX cartes est effacé.
+        assert!(s.contains(&format!("{G12}\\DohInterfaceSettings\\Doh'")) && s.contains(&format!("{G7}\\DohInterfaceSettings\\Doh6'")));
+        assert!(!s.contains("CreateSubKey"));
+        assert!(s.ends_with("Clear-DnsClientCache; exit 0 } catch { exit 1 }"));
+        let c = script(&lire_demande("12", "8.8.8.8", "1", &connues()).unwrap());
+        assert!(c.contains(&format!("{G12}\\DohInterfaceSettings\\Doh\\8.8.8.8')")));
+        assert!(script(&Demande::Automatique(vec![cible(3, G7)])).contains("-InterfaceIndex 3 -ResetServerAddresses; [Microsoft.Win32.Registry]"));
         assert!(script(&Demande::ViderCache).contains("try { Clear-DnsClientCache; exit 0 }"));
     }
 
@@ -393,8 +532,9 @@ mod sonde {
     fn lister_les_cartes() {
         for c in super::cartes() {
             println!(
-                "{} {} | {} | {:?} manuel={} | dhcp={} {:?} passerelle {:?}",
-                c.index, c.nom, c.description, c.serveurs, c.manuel, c.dhcp, c.ipv4, c.passerelle
+                "{} {} | {} | {:?} manuel={} | dhcp={} {:?} passerelle {:?}\n   guid {} type {} mac {:?} posée {:?} | v6 {:?} manuel={} passerelle {:?} | doh {:?} | {:?}",
+                c.index, c.nom, c.description, c.serveurs, c.manuel, c.dhcp, c.ipv4, c.passerelle,
+                c.guid, c.type_if, c.mac, c.mac_posee, c.ipv6, c.ipv6_manuel, c.passerelle6, c.doh, c.connexion
             );
         }
     }

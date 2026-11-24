@@ -78,6 +78,14 @@ pub mod dns;
 /// L'adresse IPv4 d'une carte (automatique ou manuelle) : onglet de l'applet
 /// « Modifier réglages réseau » (voir `cef_dns`).
 pub mod reseau_ip;
+/// Le DNS chiffré (DNS over HTTPS) d'une carte : onglet DNS (voir `dns`).
+pub mod dns_doh;
+/// Catégorie, coût et renouvellement DHCP d'une carte : onglet Connexion.
+pub mod reseau_connexion;
+/// L'adresse MAC d'une carte : onglet Adresse MAC.
+pub mod reseau_mac;
+/// Le proxy de l'utilisateur (WinINet, sans UAC) : onglet Proxy.
+pub mod reseau_proxy;
 /// La FENÊTRE de l'applet DNS (voir `dns`).
 pub mod cef_dns;
 /// La FENÊTRE de l'applet « Capture d'écran » — même présentation que

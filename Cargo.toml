@@ -122,6 +122,10 @@ windows = { version = "0.62", features = [
     # `win32::envoi_image`) : livré avec Windows, il évite une pile HTTP/TLS en
     # dépendance et suit le proxy du système.
     "Win32_Networking_WinHttp",
+    # Applet « Modifier réglages réseau » (2026-11-24) : proxy de l'utilisateur
+    # (WinINet) et catégorie / coût de chaque connexion (gestionnaire des réseaux).
+    "Win32_Networking_WinInet",
+    "Win32_Networking_NetworkListManager",
     # `IcmpSendEcho` — le PING de la surveillance de serveurs (voir
     # `win32::surveillance`) : un écho ICMP SANS droits d'administrateur, là
     # où une socket brute les exigerait.

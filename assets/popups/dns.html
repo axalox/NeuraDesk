@@ -1,23 +1,34 @@
 <!doctype html>
 <!--
-  win32::cef_dns — changer les serveurs DNS de Windows, en applet de la zone
-  Intégrés.
+  win32::cef_dns — « Modifier réglages réseau », en applet de la zone Intégrés.
 
   DEMANDE (2026-11-22) : « dans intégrés je voudrais une applet pour modifier le
   dns de windows ».
 
-  La page montre les cartes réseau ACTIVES (nom, serveurs, automatique ou
-  manuel), laisse choisir une carte (ou toutes), un préréglage ou deux adresses
-  libres, puis demande à Rust d'appliquer. Rust REVALIDE tout (index relus dans
-  sa propre énumération, adresses parsées) avant le PowerShell élevé : la page
-  n'est qu'une commodité, jamais une garde.
+  La page montre les cartes réseau ACTIVES et demande à Rust d'appliquer. Rust
+  REVALIDE tout (index et GUID relus dans sa propre énumération, adresses
+  parsées) avant le PowerShell élevé : la page n'est qu'une commodité, jamais
+  une garde.
 
   DEMANDE (2026-11-23) : un onglet « Adresse IP » (automatique ou manuelle, avec
-  la passerelle) et le nom « Modifier réglages réseau ». La liste des cartes est
-  COMMUNE aux deux onglets ; l'onglet IP ne règle qu'UNE carte à la fois
-  (`ip/<carte>/<auto|adresse,masque,passerelle>`, revalidé par
-  `win32::reseau_ip`). Ses champs sont remplis depuis la carte à chaque
-  changement de carte, pas à chaque `setState` (la rafale effacerait la saisie).
+  la passerelle) et le nom « Modifier réglages réseau ». Les champs d'un onglet
+  sont remplis depuis la carte à chaque changement de carte, pas à chaque
+  `setState` (la rafale effacerait la saisie).
+
+  DEMANDE (2026-11-24) : les autres réglages réseau de Windows, en onglets, et
+  l'adresse MAC :
+  - DNS : chiffrement (DNS over HTTPS), seulement pour les serveurs des
+    préréglages (Rust connaît leurs modèles ; la page n'envoie qu'un drapeau) ;
+  - Adresse IP : IPv4 OU IPv6 (adresse, préfixe, passerelle facultative) ;
+  - Connexion : réseau privé ou public, connexion limitée, renouveler
+    l'adresse, vider le cache DNS — des gestes IMMÉDIATS, sans « Appliquer » ;
+  - Proxy : le réglage de la SESSION (sans autorisation administrateur), pas
+    celui d'une carte : la liste des cartes est cachée ;
+  - Adresse MAC : poser une adresse (2ᵉ chiffre 2, 6, A ou E) ou revenir à
+    celle d'usine ; la carte redémarre.
+
+  ⛔ AUCUN `<select>` : hors écran, CEF ne déroule pas sa liste. Tous les choix
+  sont des boutons.
 
   ⚠️ **LA FACTURE DE `lightsoff.html`** — bande de titre qui DÉPLACE la fenêtre,
   punaise, croix, et les MÊMES trois verbes de fenêtre (`deplacer`, `epingler`,
@@ -97,7 +108,7 @@
   .carte .desc { font-size: 11px; opacity: .6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .carte .serveurs { margin-top: 4px; font-family: var(--nd-police-mono, Consolas, monospace); font-size: 12px; opacity: .9; word-break: break-all; user-select: text; }
   #vide { opacity: .7; font-style: italic; }
-  #prereglages { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .grille { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .prereglage {
     all: unset;
     padding: 7px 10px;
@@ -107,10 +118,14 @@
   }
   .prereglage:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.18 * var(--popup-fond-alpha, 1))); }
   .prereglage[aria-pressed="true"] { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.45 * var(--popup-fond-alpha, 1))); }
+  .prereglage[aria-disabled="true"] { opacity: .4; cursor: default; }
+  .prereglage[aria-disabled="true"]:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.10 * var(--popup-fond-alpha, 1))); }
   .prereglage .p-nom { display: block; font-weight: 700; }
-  .prereglage .p-adr { display: block; font-size: 11px; opacity: .7; font-family: var(--nd-police-mono, Consolas, monospace); }
-  #perso { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; }
-  #perso input {
+  .prereglage .p-adr { display: block; font-size: 11px; opacity: .7; }
+  .mono { font-family: var(--nd-police-mono, Consolas, monospace); }
+  .champs { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; }
+  .champs[aria-disabled="true"] { opacity: .45; }
+  .champs input {
     all: unset;
     padding: 5px 8px;
     border-radius: var(--nd-rayon-petit, 6px);
@@ -120,8 +135,38 @@
     background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.10 * var(--popup-fond-alpha, 1)));
     box-shadow: inset 0 0 0 1px rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.18 * var(--popup-fond-alpha, 1)));
   }
-  #perso input:focus { box-shadow: inset 0 0 0 2px rgba(var(--popup-accent-rgb, 255, 255, 255), .9); }
-  #perso input.faux { box-shadow: inset 0 0 0 2px rgba(230, 80, 80, .9); }
+  .champs input:focus { box-shadow: inset 0 0 0 2px rgba(var(--popup-accent-rgb, 255, 255, 255), .9); }
+  .champs input.faux { box-shadow: inset 0 0 0 2px rgba(230, 80, 80, .9); }
+  /* Un interrupteur : un bouton qui porte une case. */
+  .interrupteur {
+    all: unset;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 2px;
+    cursor: pointer;
+  }
+  .interrupteur .case {
+    flex: 0 0 auto;
+    width: 30px;
+    height: 16px;
+    border-radius: 8px;
+    position: relative;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.22 * var(--popup-fond-alpha, 1)));
+  }
+  .interrupteur .case::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: rgba(var(--popup-fg-rgb, 255, 255, 255), .9);
+  }
+  .interrupteur[aria-pressed="true"] .case { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.8 * var(--popup-fond-alpha, 1))); }
+  .interrupteur[aria-pressed="true"] .case::after { left: 16px; }
+  .interrupteur[aria-disabled="true"] { opacity: .4; cursor: default; }
   #pied {
     flex: 0 0 auto;
     display: flex;
@@ -141,6 +186,7 @@
     border-radius: var(--nd-rayon-controle, 8px);
     cursor: pointer;
     white-space: nowrap;
+    text-align: center;
     background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.14 * var(--popup-fond-alpha, 1)));
   }
   .action:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.24 * var(--popup-fond-alpha, 1))); }
@@ -149,36 +195,23 @@
   .action:disabled, .action[aria-disabled="true"] { opacity: .4; cursor: default; }
   /* `all: unset` remet `display` : sans ceci, `hidden` ne cache pas le bouton. */
   .action[hidden] { display: none; }
+  .actions { display: flex; flex-wrap: wrap; gap: 6px; }
   .note { font-size: 11px; opacity: .6; }
-  #onglets { flex: 0 0 auto; display: flex; gap: 4px; padding: 8px 12px 0; }
+  #onglets { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 12px 0; }
   .onglet {
     all: unset;
-    padding: 6px 14px;
+    padding: 6px 12px;
     font-size: 12px;
     font-weight: 700;
     border-radius: var(--nd-rayon-controle, 8px);
     cursor: pointer;
+    white-space: nowrap;
     background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.08 * var(--popup-fond-alpha, 1)));
   }
   .onglet:hover { background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.16 * var(--popup-fond-alpha, 1))); }
   .onglet[aria-selected="true"] { background: rgba(var(--popup-accent-rgb, 255, 255, 255), calc(0.50 * var(--popup-fond-alpha, 1))); }
   .vue { display: flex; flex-direction: column; gap: 12px; }
-  .vue[hidden] { display: none; }
-  #modes-ip { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  #ip-champs { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; }
-  #ip-champs[aria-disabled="true"] { opacity: .45; }
-  #ip-champs input {
-    all: unset;
-    padding: 5px 8px;
-    border-radius: var(--nd-rayon-petit, 6px);
-    font-family: var(--nd-police-mono, Consolas, monospace);
-    font-size: 12px;
-    user-select: text;
-    background: rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.10 * var(--popup-fond-alpha, 1)));
-    box-shadow: inset 0 0 0 1px rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.18 * var(--popup-fond-alpha, 1)));
-  }
-  #ip-champs input:focus { box-shadow: inset 0 0 0 2px rgba(var(--popup-accent-rgb, 255, 255, 255), .9); }
-  #ip-champs input.faux { box-shadow: inset 0 0 0 2px rgba(230, 80, 80, .9); }
+  .vue[hidden], section[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -189,40 +222,57 @@
     <button id="fermer" class="bouton" title="Fermer"><span class="ico ico-x"></span></button>
   </div>
   <div id="onglets" role="tablist">
-    <button id="onglet-dns" class="onglet" role="tab" aria-selected="true">DNS</button>
-    <button id="onglet-ip" class="onglet" role="tab" aria-selected="false">Adresse IP</button>
+    <button class="onglet" role="tab" data-onglet="dns" aria-selected="true">DNS</button>
+    <button class="onglet" role="tab" data-onglet="ip" aria-selected="false">Adresse IP</button>
+    <button class="onglet" role="tab" data-onglet="connexion" aria-selected="false">Connexion</button>
+    <button class="onglet" role="tab" data-onglet="proxy" aria-selected="false">Proxy</button>
+    <button class="onglet" role="tab" data-onglet="mac" aria-selected="false">Adresse MAC</button>
   </div>
   <div id="corps">
-    <section>
+    <section id="section-cartes">
       <h2>Carte réseau</h2>
       <div id="cartes"></div>
       <div id="vide" hidden>Aucune carte réseau connectée.</div>
     </section>
+
+    <!-- ── DNS ── -->
     <div id="vue-dns" class="vue">
-    <section>
-      <h2>Serveurs</h2>
-      <div id="prereglages"></div>
-    </section>
-    <section>
-      <h2>Adresses personnalisées</h2>
-      <div id="perso">
-        <label for="primaire">Préféré</label>
-        <input id="primaire" spellcheck="false" placeholder="ex. 1.1.1.1" data-no-i18n>
-        <label for="secondaire">Auxiliaire</label>
-        <input id="secondaire" spellcheck="false" placeholder="facultatif" data-no-i18n>
-      </div>
-    </section>
-    </div>
-    <div id="vue-ip" class="vue" hidden>
       <section>
-        <h2>Adresse IPv4</h2>
-        <div id="modes-ip">
-          <button id="ip-auto" class="prereglage"><span class="p-nom">Automatique</span><span class="p-adr">Donnée par le réseau (DHCP)</span></button>
-          <button id="ip-manuelle" class="prereglage"><span class="p-nom">Manuelle</span><span class="p-adr">Adresse fixe</span></button>
+        <h2>Serveurs</h2>
+        <div id="prereglages" class="grille"></div>
+      </section>
+      <section>
+        <h2>Adresses personnalisées</h2>
+        <div id="perso" class="champs">
+          <label for="primaire">Préféré</label>
+          <input id="primaire" spellcheck="false" placeholder="ex. 1.1.1.1" data-no-i18n>
+          <label for="secondaire">Auxiliaire</label>
+          <input id="secondaire" spellcheck="false" placeholder="facultatif" data-no-i18n>
         </div>
       </section>
       <section>
-        <div id="ip-champs">
+        <h2>Chiffrement</h2>
+        <div class="grille">
+          <button id="doh-non" class="prereglage"><span class="p-nom">Non chiffré</span><span class="p-adr">DNS classique</span></button>
+          <button id="doh-oui" class="prereglage"><span class="p-nom">Chiffré</span><span class="p-adr">DNS over HTTPS</span></button>
+        </div>
+        <div id="doh-note" class="note">Seuls les serveurs des préréglages peuvent être chiffrés.</div>
+      </section>
+    </div>
+
+    <!-- ── Adresse IP ── -->
+    <div id="vue-ip" class="vue" hidden>
+      <div class="grille">
+        <button id="famille-4" class="prereglage"><span class="p-nom">IPv4</span></button>
+        <button id="famille-6" class="prereglage"><span class="p-nom">IPv6</span></button>
+      </div>
+      <section id="ip4">
+        <h2>Adresse IPv4</h2>
+        <div class="grille">
+          <button id="ip-auto" class="prereglage"><span class="p-nom">Automatique</span><span class="p-adr">Donnée par le réseau (DHCP)</span></button>
+          <button id="ip-manuelle" class="prereglage"><span class="p-nom">Manuelle</span><span class="p-adr">Adresse fixe</span></button>
+        </div>
+        <div id="ip-champs" class="champs" style="margin-top: 10px">
           <label for="ip-adresse">Adresse IP</label>
           <input id="ip-adresse" spellcheck="false" placeholder="ex. 192.168.1.50" data-no-i18n>
           <label for="ip-masque">Masque</label>
@@ -230,19 +280,111 @@
           <label for="ip-passerelle">Passerelle</label>
           <input id="ip-passerelle" spellcheck="false" placeholder="ex. 192.168.1.1" data-no-i18n>
         </div>
+        <div class="note" style="margin-top: 8px">Une adresse manuelle garde les serveurs DNS actuels de la carte.</div>
       </section>
-      <div class="note">Une adresse manuelle garde les serveurs DNS actuels de la carte.</div>
+      <section id="ip6" hidden>
+        <h2>Adresse IPv6</h2>
+        <div class="grille">
+          <button id="ip6-auto" class="prereglage"><span class="p-nom">Automatique</span><span class="p-adr">Annoncée par le routeur</span></button>
+          <button id="ip6-manuelle" class="prereglage"><span class="p-nom">Manuelle</span><span class="p-adr">Adresse fixe</span></button>
+        </div>
+        <div id="ip6-champs" class="champs" style="margin-top: 10px">
+          <label for="ip6-adresse">Adresse IPv6</label>
+          <input id="ip6-adresse" spellcheck="false" placeholder="ex. 2001:db8::50" data-no-i18n>
+          <label for="ip6-prefixe">Préfixe</label>
+          <input id="ip6-prefixe" spellcheck="false" placeholder="ex. 64" data-no-i18n>
+          <label for="ip6-passerelle">Passerelle</label>
+          <input id="ip6-passerelle" spellcheck="false" placeholder="facultatif" data-no-i18n>
+        </div>
+        <div class="note" style="margin-top: 8px">Automatique retire seulement les adresses posées à la main : celles que le routeur annonce restent.</div>
+      </section>
     </div>
-    <div class="note">Windows demande l'autorisation administrateur à chaque changement.</div>
+
+    <!-- ── Connexion ── -->
+    <div id="vue-connexion" class="vue" hidden>
+      <section>
+        <h2>Type de réseau</h2>
+        <div class="grille">
+          <button id="cat-prive" class="prereglage"><span class="p-nom">Privé</span><span class="p-adr">Visible sur le réseau local (partage, imprimantes)</span></button>
+          <button id="cat-public" class="prereglage"><span class="p-nom">Public</span><span class="p-adr">Caché des autres appareils</span></button>
+        </div>
+        <div id="cat-note" class="note" hidden>Ce réseau appartient à un domaine : son type est réglé par l'administrateur.</div>
+      </section>
+      <section>
+        <h2>Connexion limitée</h2>
+        <div class="grille">
+          <button id="lim-oui" class="prereglage"><span class="p-nom">Limitée</span><span class="p-adr">Moins de téléchargements en arrière-plan</span></button>
+          <button id="lim-non" class="prereglage"><span class="p-nom">Illimitée</span><span class="p-adr">Comportement habituel</span></button>
+        </div>
+        <div id="lim-note" class="note" hidden>Seules les cartes Ethernet et Wi-Fi ont ce réglage.</div>
+      </section>
+      <section>
+        <h2>Dépannage</h2>
+        <div class="actions">
+          <button id="renouveler" class="action">Renouveler l'adresse (DHCP)</button>
+          <button id="vider" class="action">Vider le cache DNS</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- ── Proxy ── -->
+    <div id="vue-proxy" class="vue" hidden>
+      <section>
+        <h2>Configuration automatique</h2>
+        <button id="px-detection" class="interrupteur"><span class="case"></span><span>Détecter automatiquement les paramètres</span></button>
+        <button id="px-script-actif" class="interrupteur"><span class="case"></span><span>Utiliser un script de configuration</span></button>
+        <div class="champs" id="px-script-champs">
+          <label for="px-script">Adresse du script</label>
+          <input id="px-script" spellcheck="false" placeholder="ex. http://wpad/proxy.pac" data-no-i18n>
+        </div>
+      </section>
+      <section>
+        <h2>Proxy manuel</h2>
+        <button id="px-manuel" class="interrupteur"><span class="case"></span><span>Utiliser un serveur proxy</span></button>
+        <div class="champs" id="px-manuel-champs">
+          <label for="px-serveur">Serveur</label>
+          <input id="px-serveur" spellcheck="false" placeholder="ex. proxy.exemple.fr:8080" data-no-i18n>
+          <label for="px-exceptions">Exceptions</label>
+          <input id="px-exceptions" spellcheck="false" placeholder="ex. *.local;intranet" data-no-i18n>
+        </div>
+        <button id="px-local" class="interrupteur"><span class="case"></span><span>Ne pas utiliser le proxy pour les adresses locales</span></button>
+      </section>
+      <div class="note">Le proxy est un réglage de votre session : aucune autorisation administrateur n'est demandée.</div>
+    </div>
+
+    <!-- ── Adresse MAC ── -->
+    <div id="vue-mac" class="vue" hidden>
+      <section>
+        <h2>Adresse actuelle</h2>
+        <div id="mac-actuelle" class="mono" data-no-i18n>—</div>
+        <div id="mac-origine-note" class="note"></div>
+      </section>
+      <section>
+        <h2>Nouvelle adresse</h2>
+        <div class="champs">
+          <label for="mac-adresse">Adresse MAC</label>
+          <input id="mac-adresse" spellcheck="false" placeholder="ex. 02:1A:2B:3C:4D:5E" data-no-i18n>
+        </div>
+        <div class="actions" style="margin-top: 8px">
+          <button id="mac-hasard" class="action">Au hasard</button>
+          <button id="mac-origine" class="action">Revenir à l'adresse d'origine</button>
+        </div>
+      </section>
+      <div class="note">Le 2ᵉ chiffre doit être 2, 6, A ou E (adresse locale) : sinon la plupart des pilotes, surtout Wi-Fi, l'ignorent.</div>
+      <div class="note">La carte redémarre : la connexion se coupe quelques secondes.</div>
+      <div id="mac-wifi-note" class="note" hidden>En Wi-Fi, Windows peut aussi utiliser une adresse aléatoire par réseau (Paramètres › Réseau › Wi-Fi).</div>
+    </div>
+
+    <div id="note-admin" class="note">Windows demande l'autorisation administrateur à chaque changement.</div>
   </div>
   <div id="pied">
     <span id="message"></span>
-    <button id="vider" class="action">Vider le cache</button>
     <button id="appliquer" class="action principale">Appliquer</button>
   </div>
 <script>
   "use strict";
-  // Les préréglages : IPv4 puis IPv6. Rust revalide chaque adresse.
+  // Les préréglages : IPv4 puis IPv6. Rust revalide chaque adresse et connaît
+  // le modèle DoH de chacune (`dns_doh::MODELES`).
   const PREREGLAGES = [
     { id: "auto", nom: "Automatique", detail: "Donnés par le réseau (DHCP)" },
     { id: "cloudflare", nom: "Cloudflare", adresses: ["1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"] },
@@ -251,25 +393,33 @@
     { id: "adguard", nom: "AdGuard", adresses: ["94.140.14.14", "94.140.15.15", "2a10:50c0::ad1:ff", "2a10:50c0::ad2:ff"] },
     { id: "opendns", nom: "OpenDNS", adresses: ["208.67.222.222", "208.67.220.220", "2620:119:35::35", "2620:119:53::53"] },
   ];
+  const CHIFFRABLES = [];
+  for (const p of PREREGLAGES) for (const a of p.adresses || []) CHIFFRABLES.push(a.toLowerCase());
   const TOUTES = "toutes";
+  const ONGLETS = ["dns", "ip", "connexion", "proxy", "mac"];
 
   function go(action) { location.href = "neuradesk://dns/" + action; }
-  document.getElementById("barre").addEventListener("mousedown", function (e) {
+  function $(id) { return document.getElementById(id); }
+  $("barre").addEventListener("mousedown", function (e) {
     if (e.target.closest("button")) return;
     go("deplacer");
   });
-  document.getElementById("epingle").addEventListener("click", function () { go("epingler"); });
-  document.getElementById("fermer").addEventListener("click", function () { go("fermer"); });
-  document.getElementById("actualiser").addEventListener("click", function () { go("actualiser"); });
-  document.getElementById("vider").addEventListener("click", function () { if (!etat.enCours) { derniereAction = "dns"; go("vider"); } });
+  $("epingle").addEventListener("click", function () { go("epingler"); });
+  $("fermer").addEventListener("click", function () { go("fermer"); });
+  $("actualiser").addEventListener("click", function () { go("actualiser"); });
 
-  let etat = { cartes: [], enCours: false, message: "" };
+  let etat = { cartes: [], enCours: false, message: "", proxy: null };
   let carteChoisie = null;     // un index, ou TOUTES
   let prereglageChoisi = null; // un id de PREREGLAGES, ou null (champs libres)
-  let onglet = "dns";          // "dns" ou "ip"
-  let ipManuelle = false;      // le mode choisi dans l'onglet IP
-  let ipRemplieDe = null;      // la carte dont les champs IP ont été remplis
-  let derniereAction = "dns";  // l'onglet qui a demandé la dernière application
+  let chiffrer = false;        // DNS chiffré demandé
+  let onglet = "dns";
+  let famille = "4";           // l'adresse réglée dans l'onglet IP
+  let ipManuelle = false;
+  let ip6Manuelle = false;
+  let rempliDe = null;         // la carte dont les champs ont été remplis
+  let proxyRempli = false;     // les champs du proxy ont été remplis
+  let proxyScript = false;
+  let derniereAction = "dns";  // ce qui a demandé la dernière application
 
   function el(tag, attrs, enfants) {
     const n = document.createElement(tag);
@@ -281,225 +431,491 @@
     for (const e of enfants || []) n.appendChild(e);
     return n;
   }
+  function presse(id, oui) { $(id).setAttribute("aria-pressed", String(Boolean(oui))); }
+  function eteint(id, oui) { $(id).setAttribute("aria-disabled", String(Boolean(oui))); }
+  function estEteint(id) { return $(id).getAttribute("aria-disabled") === "true"; }
 
+  function carteCourante() {
+    return (etat.cartes || []).find(function (c) { return c.index === carteChoisie; }) || null;
+  }
+
+  // ── La liste des cartes : ce que chaque onglet en montre ──
+  // Des MORCEAUX, chacun dans son élément : le dictionnaire anglais traduit
+  // un texte entier, pas « Privé · Limitée ».
+  function ligneMode(c) {
+    switch (onglet) {
+      case "ip":
+        if (famille === "6") return [c.ipv6Manuel ? "Manuelle" : "Automatique"];
+        return [c.dhcp ? "Automatique" : "Manuelle"];
+      case "connexion": {
+        const cat = { prive: "Privé", public: "Public", domaine: "Domaine" }[c.categorie] || "—";
+        return c.limitee ? [cat, "Limitée"] : [cat];
+      }
+      case "mac":
+        return [c.macPosee ? "Modifiée" : "D'usine"];
+      default:
+        return c.doh && c.doh.length ? [c.manuel ? "Manuel" : "Automatique", "Chiffré"] : [c.manuel ? "Manuel" : "Automatique"];
+    }
+  }
+  function morceauxMode(c) {
+    const enfants = [];
+    for (const m of ligneMode(c)) {
+      if (enfants.length) enfants.push(el("span", { texte: " · ", "data-no-i18n": "" }));
+      enfants.push(el("span", { texte: m }));
+    }
+    return el("span", { class: "mode" }, enfants);
+  }
+  function ligneDetail(c) {
+    switch (onglet) {
+      case "ip":
+        if (famille === "6") return [c.ipv6 ? c.ipv6 + "/" + c.prefixe6 : "—", "→ " + (c.passerelle6 || "—")].join("  ·  ");
+        return [c.ipv4 || "—", c.masque || "—", "→ " + (c.passerelle || "—")].join("  ·  ");
+      case "connexion":
+        return c.ipv4 || "—";
+      case "mac":
+        return c.mac || "—";
+      default:
+        return c.serveurs.length ? c.serveurs.join("  ·  ") : "—";
+    }
+  }
   function dessinerCartes() {
-    const boite = document.getElementById("cartes");
+    const boite = $("cartes");
     boite.textContent = "";
     const cartes = etat.cartes || [];
-    document.getElementById("vide").hidden = cartes.length > 0;
-    if (onglet === "ip" && carteChoisie === TOUTES) carteChoisie = null;
-    if (carteChoisie !== TOUTES && !cartes.some(function (c) { return c.index === carteChoisie; })) {
+    $("vide").hidden = cartes.length > 0;
+    if (onglet !== "dns" && carteChoisie === TOUTES) carteChoisie = null;
+    if (carteChoisie !== TOUTES && cartes.every(function (c) { return c.index !== carteChoisie; })) {
       carteChoisie = cartes.length ? cartes[0].index : null;
     }
     for (const c of cartes) {
       const b = el("button", { class: "carte", "aria-pressed": String(carteChoisie === c.index) }, [
         el("div", { class: "ligne" }, [
           el("span", { class: "nom", texte: c.nom, "data-no-i18n": "" }),
-          onglet === "ip"
-            ? el("span", { class: "mode", texte: c.dhcp ? "Automatique" : "Manuelle" })
-            : el("span", { class: "mode", texte: c.manuel ? "Manuel" : "Automatique" }),
+          morceauxMode(c),
         ]),
         el("div", { class: "desc", texte: c.description, "data-no-i18n": "" }),
-        onglet === "ip"
-          ? el("div", { class: "serveurs", texte: [c.ipv4 || "—", c.masque || "—", "→ " + (c.passerelle || "—")].join("  ·  "), "data-no-i18n": "" })
-          : el("div", { class: "serveurs", texte: c.serveurs.length ? c.serveurs.join("  ·  ") : "—", "data-no-i18n": "" }),
+        el("div", { class: "serveurs", texte: ligneDetail(c), "data-no-i18n": "" }),
       ]);
-      b.addEventListener("click", function () { carteChoisie = c.index; dessinerCartes(); remplirIp(false); });
+      b.addEventListener("click", function () { carteChoisie = c.index; dessinerCartes(); remplir(false); dessinerTout(); });
       boite.appendChild(b);
     }
     if (cartes.length > 1 && onglet === "dns") {
       const toutes = el("button", { class: "carte", "aria-pressed": String(carteChoisie === TOUTES) }, [
         el("div", { class: "ligne" }, [el("span", { class: "nom", texte: "Toutes les cartes actives" })]),
       ]);
-      toutes.addEventListener("click", function () { carteChoisie = TOUTES; dessinerCartes(); });
+      toutes.addEventListener("click", function () { carteChoisie = TOUTES; dessinerCartes(); dessinerDns(); });
       boite.appendChild(toutes);
     }
   }
 
+  // ── Onglet DNS ──
   function dessinerPrereglages() {
-    const boite = document.getElementById("prereglages");
+    const boite = $("prereglages");
     boite.textContent = "";
     for (const p of PREREGLAGES) {
       const detail = p.adresses ? p.adresses.slice(0, 2).join(", ") : p.detail;
       const b = el("button", { class: "prereglage", "aria-pressed": String(prereglageChoisi === p.id) }, [
         el("span", { class: "p-nom", texte: p.nom }),
-        el("span", p.adresses ? { class: "p-adr", texte: detail, "data-no-i18n": "" } : { class: "p-adr", texte: detail }),
+        el("span", p.adresses ? { class: "p-adr mono", texte: detail, "data-no-i18n": "" } : { class: "p-adr", texte: detail }),
       ]);
       b.addEventListener("click", function () {
         prereglageChoisi = p.id;
-        document.getElementById("primaire").value = p.adresses ? p.adresses[0] : "";
-        document.getElementById("secondaire").value = p.adresses ? p.adresses[1] : "";
+        $("primaire").value = p.adresses ? p.adresses[0] : "";
+        $("secondaire").value = p.adresses ? p.adresses[1] : "";
         verifierChamps();
         dessinerPrereglages();
+        dessinerDns();
       });
       boite.appendChild(b);
     }
   }
 
   // Une vérification de COMMODITÉ (Rust revalide) : IPv4 pointée ou IPv6.
-  function ressembleAUneAdresse(s) {
-    if (/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(s)) {
-      return s.split(".").every(function (x) { return Number(x) <= 255; });
-    }
+  function ressembleAUneIpv4(s) {
+    return /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(s) && s.split(".").every(function (x) { return Number(x) <= 255; });
+  }
+  function ressembleAUneIpv6(s) {
     return /^[0-9a-fA-F:]+$/.test(s) && s.indexOf(":") >= 0 && s.length <= 39;
   }
+  function ressembleAUneAdresse(s) { return ressembleAUneIpv4(s) || ressembleAUneIpv6(s); }
 
   function verifierChamps() {
     let bon = true;
     for (const id of ["primaire", "secondaire"]) {
-      const champ = document.getElementById(id);
+      const champ = $(id);
       const v = champ.value.trim();
-      const faux = v !== "" && !ressembleAUneAdresse(v);
+      const faux = v !== "" && ressembleAUneAdresse(v) === false;
       champ.classList.toggle("faux", faux);
       if (faux) bon = false;
     }
     return bon;
   }
-
   for (const id of ["primaire", "secondaire"]) {
-    document.getElementById(id).addEventListener("input", function () {
+    $(id).addEventListener("input", function () {
       prereglageChoisi = null;
       verifierChamps();
       dessinerPrereglages();
+      dessinerDns();
     });
   }
 
-  function montrerMessage(texte, classe) {
-    const m = document.getElementById("message");
-    m.textContent = texte;
-    m.className = classe || "";
+  // Les serveurs que « Appliquer » enverrait (null = automatique).
+  function serveursChoisis() {
+    if (prereglageChoisi === "auto") return null;
+    const p = PREREGLAGES.find(function (x) { return x.id === prereglageChoisi; });
+    if (p) return p.adresses;
+    return [$("primaire").value.trim(), $("secondaire").value.trim()].filter(Boolean);
   }
+  function peutChiffrer() {
+    const s = serveursChoisis();
+    return Boolean(s && s.length) && s.every(function (a) { return CHIFFRABLES.indexOf(a.toLowerCase()) >= 0; });
+  }
+  function dessinerDns() {
+    const possible = peutChiffrer();
+    if (possible === false) chiffrer = false;
+    presse("doh-non", chiffrer === false);
+    presse("doh-oui", chiffrer);
+    eteint("doh-oui", possible === false);
+  }
+  $("doh-non").addEventListener("click", function () { chiffrer = false; dessinerDns(); });
+  $("doh-oui").addEventListener("click", function () { if (peutChiffrer()) { chiffrer = true; dessinerDns(); } });
 
-  // ── Onglets ──
-  function montrerOnglet(quel) {
-    onglet = quel;
-    document.getElementById("onglet-dns").setAttribute("aria-selected", String(quel === "dns"));
-    document.getElementById("onglet-ip").setAttribute("aria-selected", String(quel === "ip"));
-    document.getElementById("vue-dns").hidden = quel !== "dns";
-    document.getElementById("vue-ip").hidden = quel !== "ip";
-    document.getElementById("vider").hidden = quel !== "dns";
-    dessinerCartes();
-    remplirIp(false);
+  function appliquerDns() {
+    if (carteChoisie === null) { montrerMessage("Choisissez une carte réseau.", "ko"); return; }
+    const cartes = carteChoisie === TOUTES ? etat.cartes.map(function (c) { return c.index; }) : [carteChoisie];
+    const liste = serveursChoisis();
+    let quoi = "auto";
+    if (liste !== null) {
+      if (liste.length === 0) { montrerMessage("Choisissez des serveurs ou saisissez une adresse.", "ko"); return; }
+      if (prereglageChoisi === null && verifierChamps() === false) { montrerMessage("Adresse invalide.", "ko"); return; }
+      quoi = liste.join(",");
+    }
+    derniereAction = "dns";
+    go("appliquer/" + cartes.join(",") + "/" + encodeURIComponent(quoi) + "/" + (liste !== null && chiffrer ? "1" : "0"));
   }
-  document.getElementById("onglet-dns").addEventListener("click", function () { montrerOnglet("dns"); });
-  document.getElementById("onglet-ip").addEventListener("click", function () { montrerOnglet("ip"); });
 
   // ── Onglet Adresse IP ──
   const CHAMPS_IP = ["ip-adresse", "ip-masque", "ip-passerelle"];
-  function carteCourante() {
-    return (etat.cartes || []).find(function (c) { return c.index === carteChoisie; }) || null;
-  }
-  // Remplit les champs depuis la carte choisie — seulement quand la carte
-  // change (ou `force`), pour ne pas écraser une saisie en cours.
-  function remplirIp(force) {
+  const CHAMPS_IP6 = ["ip6-adresse", "ip6-prefixe", "ip6-passerelle"];
+
+  // Remplit les champs de tous les onglets depuis la carte choisie —
+  // seulement quand la carte change (ou `force`), pour ne pas écraser une
+  // saisie en cours.
+  function remplir(force) {
     const c = carteCourante();
     const index = c ? c.index : null;
-    if (!force && index === ipRemplieDe) { dessinerIp(); return; }
-    ipRemplieDe = index;
-    ipManuelle = c ? !c.dhcp : false;
-    document.getElementById("ip-adresse").value = c && c.ipv4 ? c.ipv4 : "";
-    document.getElementById("ip-masque").value = c && c.masque ? c.masque : "";
-    document.getElementById("ip-passerelle").value = c && c.passerelle ? c.passerelle : "";
+    if (force === false && index === rempliDe) return;
+    rempliDe = index;
+    ipManuelle = c ? c.dhcp === false : false;
+    $("ip-adresse").value = c && c.ipv4 ? c.ipv4 : "";
+    $("ip-masque").value = c && c.masque ? c.masque : "";
+    $("ip-passerelle").value = c && c.passerelle ? c.passerelle : "";
+    // L'IPv6 annoncée par le routeur n'est PAS reprise dans les champs : la
+    // reposer à la main échouerait (elle existe déjà sur la carte).
+    ip6Manuelle = c ? Boolean(c.ipv6Manuel) : false;
+    $("ip6-adresse").value = ip6Manuelle && c.ipv6 ? c.ipv6 : "";
+    $("ip6-prefixe").value = ip6Manuelle && c.prefixe6 ? String(c.prefixe6) : "64";
+    $("ip6-passerelle").value = ip6Manuelle && c.passerelle6 ? c.passerelle6 : "";
+    chiffrer = c ? Boolean(c.doh && c.doh.length) : false;
+    $("mac-adresse").value = "";
     verifierIp();
-    dessinerIp();
+    verifierIp6();
   }
   function dessinerIp() {
-    document.getElementById("ip-auto").setAttribute("aria-pressed", String(!ipManuelle));
-    document.getElementById("ip-manuelle").setAttribute("aria-pressed", String(ipManuelle));
-    document.getElementById("ip-champs").setAttribute("aria-disabled", String(!ipManuelle));
-    for (const id of CHAMPS_IP) document.getElementById(id).disabled = !ipManuelle;
+    presse("famille-4", famille === "4");
+    presse("famille-6", famille === "6");
+    $("ip4").hidden = famille !== "4";
+    $("ip6").hidden = famille !== "6";
+    presse("ip-auto", ipManuelle === false);
+    presse("ip-manuelle", ipManuelle);
+    $("ip-champs").setAttribute("aria-disabled", String(ipManuelle === false));
+    for (const id of CHAMPS_IP) $(id).disabled = ipManuelle === false;
+    presse("ip6-auto", ip6Manuelle === false);
+    presse("ip6-manuelle", ip6Manuelle);
+    $("ip6-champs").setAttribute("aria-disabled", String(ip6Manuelle === false));
+    for (const id of CHAMPS_IP6) $(id).disabled = ip6Manuelle === false;
   }
-  document.getElementById("ip-auto").addEventListener("click", function () { ipManuelle = false; dessinerIp(); });
-  document.getElementById("ip-manuelle").addEventListener("click", function () { ipManuelle = true; dessinerIp(); });
+  $("famille-4").addEventListener("click", function () { famille = "4"; dessinerIp(); dessinerCartes(); });
+  $("famille-6").addEventListener("click", function () { famille = "6"; dessinerIp(); dessinerCartes(); });
+  $("ip-auto").addEventListener("click", function () { ipManuelle = false; dessinerIp(); });
+  $("ip-manuelle").addEventListener("click", function () { ipManuelle = true; dessinerIp(); });
+  $("ip6-auto").addEventListener("click", function () { ip6Manuelle = false; dessinerIp(); });
+  $("ip6-manuelle").addEventListener("click", function () { ip6Manuelle = true; dessinerIp(); });
 
-  // Des vérifications de COMMODITÉ : Rust (`reseau_ip`) revalide tout.
-  function ressembleAUneIpv4(s) {
-    return /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(s) && s.split(".").every(function (x) { return Number(x) <= 255; });
-  }
   function ressembleAUnMasque(s) {
     const n = s.replace(/^\//, "");
     if (/^\d{1,2}$/.test(n)) return Number(n) >= 1 && Number(n) <= 30;
-    if (!ressembleAUneIpv4(s)) return false;
+    if (ressembleAUneIpv4(s) === false) return false;
     const bits = s.split(".").map(function (x) { return Number(x).toString(2).padStart(8, "0"); }).join("");
     const zero = bits.indexOf("0");
     return /^1+0+$/.test(bits) && zero >= 1 && zero <= 30;
   }
+  function marquer(id, faux) {
+    const v = $(id).value.trim();
+    $(id).classList.toggle("faux", faux && v !== "");
+    return faux === false;
+  }
   function verifierIp() {
     let bon = true;
     for (const id of CHAMPS_IP) {
-      const champ = document.getElementById(id);
-      const v = champ.value.trim();
-      const faux = v === "" || !(id === "ip-masque" ? ressembleAUnMasque(v) : ressembleAUneIpv4(v));
-      champ.classList.toggle("faux", faux && v !== "");
-      if (faux) bon = false;
+      const v = $(id).value.trim();
+      const faux = v === "" || (id === "ip-masque" ? ressembleAUnMasque(v) : ressembleAUneIpv4(v)) === false;
+      if (marquer(id, faux) === false) bon = false;
     }
     return bon;
   }
-  for (const id of CHAMPS_IP) document.getElementById(id).addEventListener("input", verifierIp);
+  function verifierIp6() {
+    const a = $("ip6-adresse").value.trim();
+    const p = $("ip6-prefixe").value.trim().replace(/^\//, "");
+    const g = $("ip6-passerelle").value.trim();
+    const bons = [
+      marquer("ip6-adresse", a === "" || ressembleAUneIpv6(a) === false),
+      marquer("ip6-prefixe", /^\d{1,3}$/.test(p) === false || Number(p) < 1 || Number(p) > 128),
+      marquer("ip6-passerelle", g !== "" && ressembleAUneIpv6(g) === false),
+    ];
+    return bons.every(Boolean);
+  }
+  for (const id of CHAMPS_IP) $(id).addEventListener("input", verifierIp);
+  for (const id of CHAMPS_IP6) $(id).addEventListener("input", verifierIp6);
 
   function appliquerIp() {
     const c = carteCourante();
-    if (!c) { montrerMessage("Choisissez une carte réseau.", "ko"); return; }
+    if (c === null) { montrerMessage("Choisissez une carte réseau.", "ko"); return; }
     let quoi = "auto";
+    if (famille === "6") {
+      if (ip6Manuelle) {
+        if (verifierIp6() === false) { montrerMessage("Adresse, préfixe ou passerelle invalide.", "ko"); return; }
+        quoi = CHAMPS_IP6.map(function (id) { return $(id).value.trim(); }).join(",");
+      }
+      derniereAction = "ip6";
+      go("ip6/" + c.index + "/" + encodeURIComponent(quoi));
+      return;
+    }
     if (ipManuelle) {
-      if (!verifierIp()) { montrerMessage("Adresse, masque ou passerelle invalide.", "ko"); return; }
-      quoi = CHAMPS_IP.map(function (id) { return document.getElementById(id).value.trim(); }).join(",");
+      if (verifierIp() === false) { montrerMessage("Adresse, masque ou passerelle invalide.", "ko"); return; }
+      quoi = CHAMPS_IP.map(function (id) { return $(id).value.trim(); }).join(",");
     }
     derniereAction = "ip";
     go("ip/" + c.index + "/" + encodeURIComponent(quoi));
   }
 
-  document.getElementById("appliquer").addEventListener("click", function () {
+  // ── Onglet Connexion : des gestes immédiats ──
+  function dessinerConnexion() {
+    const c = carteCourante();
+    const categorie = c ? c.categorie : null;
+    const reglable = categorie === "prive" || categorie === "public";
+    presse("cat-prive", categorie === "prive");
+    presse("cat-public", categorie === "public");
+    eteint("cat-prive", reglable === false);
+    eteint("cat-public", reglable === false);
+    $("cat-note").hidden = categorie !== "domaine";
+    const coutReglable = Boolean(c && (c.wifi || c.cable));
+    presse("lim-oui", Boolean(c && c.limitee));
+    presse("lim-non", Boolean(c && c.limitee === false));
+    eteint("lim-oui", coutReglable === false);
+    eteint("lim-non", coutReglable === false);
+    $("lim-note").hidden = coutReglable || c === null;
+    eteint("renouveler", c === null || c.dhcp === false);
+  }
+  function connexion(quoi, action, id) {
+    const c = carteCourante();
+    if (etat.enCours || c === null || estEteint(id)) return;
+    if ($(id).getAttribute("aria-pressed") === "true") return;
+    derniereAction = action;
+    go("connexion/" + c.index + "/" + quoi);
+  }
+  $("cat-prive").addEventListener("click", function () { connexion("categorie/prive", "categorie", "cat-prive"); });
+  $("cat-public").addEventListener("click", function () { connexion("categorie/public", "categorie", "cat-public"); });
+  $("lim-oui").addEventListener("click", function () { connexion("limitee/oui", "limitee", "lim-oui"); });
+  $("lim-non").addEventListener("click", function () { connexion("limitee/non", "limitee", "lim-non"); });
+  $("renouveler").addEventListener("click", function () { connexion("renouveler", "renouveler", "renouveler"); });
+  $("vider").addEventListener("click", function () { if (etat.enCours === false) { derniereAction = "vider"; go("vider"); } });
+
+  // ── Onglet Proxy ──
+  let proxy = { detection: false, manuel: false, local: false };
+  function remplirProxy(force) {
+    if (proxyRempli && force === false) return;
+    const p = etat.proxy;
+    if (p === null || p === undefined) return;
+    proxyRempli = true;
+    proxy = { detection: p.detection, manuel: p.manuel, local: p.local };
+    proxyScript = Boolean(p.script);
+    $("px-script").value = p.script || "";
+    $("px-serveur").value = p.serveur || "";
+    $("px-exceptions").value = p.exceptions || "";
+    verifierProxy();
+  }
+  function dessinerProxy() {
+    presse("px-detection", proxy.detection);
+    presse("px-script-actif", proxyScript);
+    presse("px-manuel", proxy.manuel);
+    presse("px-local", proxy.local);
+    $("px-script-champs").setAttribute("aria-disabled", String(proxyScript === false));
+    $("px-script").disabled = proxyScript === false;
+    $("px-manuel-champs").setAttribute("aria-disabled", String(proxy.manuel === false));
+    $("px-serveur").disabled = proxy.manuel === false;
+    $("px-exceptions").disabled = proxy.manuel === false;
+    eteint("px-local", proxy.manuel === false);
+  }
+  $("px-detection").addEventListener("click", function () { proxy.detection = proxy.detection === false; dessinerProxy(); });
+  $("px-script-actif").addEventListener("click", function () { proxyScript = proxyScript === false; dessinerProxy(); verifierProxy(); });
+  $("px-manuel").addEventListener("click", function () { proxy.manuel = proxy.manuel === false; dessinerProxy(); verifierProxy(); });
+  $("px-local").addEventListener("click", function () { if (proxy.manuel) { proxy.local = proxy.local === false; dessinerProxy(); } });
+  function verifierProxy() {
+    const script = $("px-script").value.trim();
+    const serveur = $("px-serveur").value.trim();
+    const exceptions = $("px-exceptions").value.trim();
+    const bons = [
+      marquer("px-script", proxyScript && /^https?:\/\/[^\s]+$/.test(script) === false),
+      marquer("px-serveur", proxy.manuel && /^(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+):\d{1,5}$/.test(serveur) === false),
+      marquer("px-exceptions", /^[A-Za-z0-9.*:\[\]_;, -]*$/.test(exceptions) === false),
+    ];
+    return bons.every(Boolean);
+  }
+  for (const id of ["px-script", "px-serveur", "px-exceptions"]) $(id).addEventListener("input", verifierProxy);
+  function appliquerProxy() {
+    if (verifierProxy() === false) { montrerMessage("Serveur, adresse du script ou exceptions invalides.", "ko"); return; }
+    const demande = {
+      detection: proxy.detection,
+      script: proxyScript ? $("px-script").value.trim() : "",
+      manuel: proxy.manuel,
+      serveur: $("px-serveur").value.trim(),
+      exceptions: $("px-exceptions").value.trim(),
+      local: proxy.manuel && proxy.local,
+    };
+    derniereAction = "proxy";
+    go("proxy/" + encodeURIComponent(JSON.stringify(demande)));
+  }
+
+  // ── Onglet Adresse MAC ──
+  function dessinerMac() {
+    const c = carteCourante();
+    $("mac-actuelle").textContent = c && c.mac ? c.mac : "—";
+    $("mac-origine-note").textContent = c ? (c.macPosee ? "Adresse modifiée (posée à la main)." : "Adresse d'usine.") : "";
+    eteint("mac-origine", c === null || c.macPosee === false);
+    $("mac-wifi-note").hidden = Boolean(c && c.wifi) === false;
+  }
+  function lireMac(s) {
+    const t = s.trim();
+    if (/^[0-9a-fA-F]{12}$/.test(t) === false && /^[0-9a-fA-F]{2}([:-][0-9a-fA-F]{2}){5}$/.test(t) === false) return null;
+    return t.replace(/[:-]/g, "").toUpperCase();
+  }
+  function verifierMac() {
+    const brut = $("mac-adresse").value.trim();
+    const hex = lireMac(brut);
+    // 2ᵉ chiffre 2, 6, A ou E : administrée localement, monodiffusion.
+    const bonne = hex !== null && "26AE".indexOf(hex[1]) >= 0 && hex !== "000000000000";
+    marquer("mac-adresse", bonne === false);
+    return bonne;
+  }
+  $("mac-adresse").addEventListener("input", verifierMac);
+  $("mac-hasard").addEventListener("click", function () {
+    const octets = new Uint8Array(6);
+    crypto.getRandomValues(octets);
+    octets[0] = (octets[0] & 0xfc) | 0x02;
+    $("mac-adresse").value = Array.from(octets).map(function (o) { return o.toString(16).padStart(2, "0").toUpperCase(); }).join(":");
+    verifierMac();
+  });
+  $("mac-origine").addEventListener("click", function () {
+    const c = carteCourante();
+    if (etat.enCours || c === null || estEteint("mac-origine")) return;
+    derniereAction = "mac";
+    go("mac/" + c.index + "/origine");
+  });
+  function appliquerMac() {
+    const c = carteCourante();
+    if (c === null) { montrerMessage("Choisissez une carte réseau.", "ko"); return; }
+    if (verifierMac() === false) { montrerMessage("Adresse MAC invalide : 12 chiffres hexadécimaux, le 2ᵉ étant 2, 6, A ou E.", "ko"); return; }
+    derniereAction = "mac";
+    go("mac/" + c.index + "/" + encodeURIComponent($("mac-adresse").value.trim()));
+  }
+
+  // ── Onglets ──
+  function montrerOnglet(quel) {
+    onglet = quel;
+    for (const b of document.querySelectorAll(".onglet")) b.setAttribute("aria-selected", String(b.dataset.onglet === quel));
+    for (const nom of ONGLETS) $("vue-" + nom).hidden = nom !== quel;
+    // Le proxy est un réglage de la SESSION : ni carte, ni autorisation.
+    $("section-cartes").hidden = quel === "proxy";
+    $("note-admin").hidden = quel === "proxy";
+    // La Connexion n'a que des gestes immédiats.
+    $("appliquer").hidden = quel === "connexion";
+    if (quel === "proxy") remplirProxy(false);
+    dessinerCartes();
+    remplir(false);
+    dessinerTout();
+  }
+  for (const b of document.querySelectorAll(".onglet")) b.addEventListener("click", function () { montrerOnglet(b.dataset.onglet); });
+
+  $("appliquer").addEventListener("click", function () {
     if (etat.enCours) return;
-    if (onglet === "ip") { appliquerIp(); return; }
-    if (carteChoisie === null) { montrerMessage("Choisissez une carte réseau.", "ko"); return; }
-    const cartes = carteChoisie === TOUTES ? etat.cartes.map(function (c) { return c.index; }) : [carteChoisie];
-    let quoi;
-    if (prereglageChoisi === "auto") {
-      quoi = "auto";
-    } else {
-      const p = PREREGLAGES.find(function (x) { return x.id === prereglageChoisi; });
-      const liste = p ? p.adresses : [document.getElementById("primaire").value.trim(), document.getElementById("secondaire").value.trim()].filter(Boolean);
-      if (!liste.length) { montrerMessage("Choisissez des serveurs ou saisissez une adresse.", "ko"); return; }
-      if (!p && !verifierChamps()) { montrerMessage("Adresse invalide.", "ko"); return; }
-      quoi = liste.join(",");
+    switch (onglet) {
+      case "ip": appliquerIp(); break;
+      case "proxy": appliquerProxy(); break;
+      case "mac": appliquerMac(); break;
+      default: appliquerDns();
     }
-    derniereAction = "dns";
-    go("appliquer/" + cartes.join(",") + "/" + encodeURIComponent(quoi));
   });
 
+  const REUSSITES = {
+    dns: "Serveurs DNS mis à jour.",
+    ip: "Adresse IP mise à jour.",
+    ip6: "Adresse IPv6 mise à jour.",
+    categorie: "Type de réseau changé.",
+    limitee: "Connexion limitée mise à jour.",
+    renouveler: "Adresse renouvelée.",
+    vider: "Cache DNS vidé.",
+    proxy: "Proxy mis à jour.",
+    mac: "Adresse MAC changée.",
+  };
+  function montrerMessage(texte, classe) {
+    const m = $("message");
+    m.textContent = texte;
+    m.className = classe || "";
+  }
   function dessinerPied() {
-    const enCours = !!etat.enCours;
-    for (const id of ["appliquer", "vider"]) document.getElementById(id).setAttribute("aria-disabled", String(enCours));
+    const enCours = Boolean(etat.enCours);
+    for (const id of ["appliquer", "vider", "renouveler", "mac-hasard"]) $(id).setAttribute("aria-disabled", String(enCours));
+    if (enCours === false) dessinerConnexion();
     if (enCours) { montrerMessage("En attente de l'autorisation…"); return; }
     switch (etat.message) {
-      case "reussi": montrerMessage(derniereAction === "ip" ? "Adresse IP mise à jour." : "Serveurs DNS mis à jour.", "ok"); break;
+      case "reussi": montrerMessage(REUSSITES[derniereAction] || REUSSITES.dns, "ok"); break;
       case "annule": montrerMessage("Annulé.", ""); break;
       case "echec": montrerMessage("Échec du changement.", "ko"); break;
-      case "invalide": montrerMessage("Demande refusée : adresse ou carte invalide.", "ko"); break;
+      case "ignoree": montrerMessage("Le pilote de la carte a ignoré cette adresse MAC.", "ko"); break;
+      case "invalide": montrerMessage("Demande refusée : valeur ou carte invalide.", "ko"); break;
       default: montrerMessage("", "");
     }
+  }
+  function dessinerTout() {
+    dessinerDns();
+    dessinerIp();
+    dessinerConnexion();
+    dessinerProxy();
+    dessinerMac();
+    dessinerPied();
   }
 
   window.setState = function (state) {
     const messageAvant = etat.message;
     etat = state || etat;
-    const epingle = document.getElementById("epingle");
-    epingle.setAttribute("aria-pressed", String(!!etat.epingle));
+    const epingle = $("epingle");
+    epingle.setAttribute("aria-pressed", String(Boolean(etat.epingle)));
     epingle.innerHTML = etat.epingle ? '<span class="ico ico-push-pin-fill"></span>' : '<span class="ico ico-push-pin"></span>';
     epingle.title = etat.epingle ? "Ne plus rester au premier plan" : "Rester au premier plan";
-    // Après une application réussie, les champs IP reprennent la carte relue
-    // — une fois, quand le message ARRIVE (pas à chaque envoi qui suit).
-    const relue = etat.message === "reussi" && messageAvant !== "reussi" && derniereAction === "ip";
+    // Après une application réussie, les champs reprennent la carte relue —
+    // une fois, quand le message ARRIVE (pas à chaque envoi qui suit).
+    const relue = etat.message === "reussi" && messageAvant !== "reussi";
     dessinerCartes();
-    remplirIp(relue);
-    dessinerPied();
+    remplir(relue);
+    if (onglet === "proxy" || proxyRempli === false) remplirProxy(relue && derniereAction === "proxy");
+    dessinerTout();
   };
 
   dessinerPrereglages();
   dessinerCartes();
-  remplirIp(true);
-  dessinerPied();
+  remplir(true);
+  dessinerTout();
   // L'état poussé à l'ouverture précède ce script : le redemander.
   go("ready");
 </script>

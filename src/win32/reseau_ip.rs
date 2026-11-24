@@ -20,8 +20,17 @@
 //! ⛔ Même garde que `dns` : rien de la page n'entre tel quel dans le script —
 //! index relu dans notre énumération, adresses parsées en `Ipv4Addr` et
 //! réécrites, préfixe en `u8`.
+//!
+//! DEMANDE (2026-11-24) : « peux tu ajouter ces réglages » — dont l'adresse
+//! IPv6 manuelle. Même schéma que l'IPv4, avec deux différences :
+//! - « automatique » ne retire QUE les adresses posées à la main
+//!   (`PrefixOrigin Manual`) et la route par défaut posée à la main
+//!   (`Protocol NetMgmt`) : celles que le routeur annonce (SLAAC, adresses
+//!   temporaires) ne sont jamais touchées ;
+//! - la passerelle est facultative et peut être une adresse de LIEN LOCAL
+//!   (`fe80::1` : c'est le cas de la plupart des box).
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Ce qu'on demande pour l'adresse IPv4 d'UNE carte.
 #[derive(Clone, Debug, PartialEq)]
@@ -31,6 +40,10 @@ pub enum DemandeIp {
     /// Adresse fixe. `dns` : les serveurs à poser à la main (vide = garder
     /// ceux déjà posés à la main).
     Manuelle { index: u32, adresse: Ipv4Addr, prefixe: u8, passerelle: Ipv4Addr, dns: Vec<IpAddr> },
+    /// IPv6 : seulement les adresses que le réseau annonce.
+    Automatique6 { index: u32 },
+    /// IPv6 : une adresse fixe, et une passerelle si elle est donnée.
+    Manuelle6 { index: u32, adresse: Ipv6Addr, prefixe: u8, passerelle: Option<Ipv6Addr> },
 }
 
 /// Ce que `lire_demande` doit savoir d'une carte connue.
@@ -108,6 +121,47 @@ pub fn lire_demande(index: &str, quoi: &str, connues: &[CarteConnue]) -> Option<
     Some(DemandeIp::Manuelle { index, adresse, prefixe, passerelle, dns })
 }
 
+/// `fe80::/10`.
+fn est_lien_local6(ip: &Ipv6Addr) -> bool {
+    ip.segments()[0] & 0xffc0 == 0xfe80
+}
+
+/// **LIRE UNE DEMANDE IPv6** : `quoi` = `auto`, ou `adresse,préfixe,passerelle`
+/// (passerelle vide permise). Même garde que `lire_demande`.
+pub fn lire_demande6(index: &str, quoi: &str, connues: &[CarteConnue]) -> Option<DemandeIp> {
+    let index: u32 = index.trim().parse().ok()?;
+    connues.iter().find(|c| c.index == index)?;
+    if quoi == "auto" {
+        return Some(DemandeIp::Automatique6 { index });
+    }
+    let mut morceaux = quoi.split(',');
+    let (adresse, prefixe, passerelle) = (morceaux.next()?, morceaux.next()?, morceaux.next()?);
+    if morceaux.next().is_some() {
+        return None;
+    }
+    // `Ipv6Addr::from_str` refuse espaces, guillemets et zones `%`.
+    let adresse: Ipv6Addr = adresse.trim().parse().ok()?;
+    let prefixe: u8 = prefixe.trim().trim_start_matches('/').parse().ok()?;
+    if !(1..=128).contains(&prefixe) {
+        return None;
+    }
+    let speciale = |ip: &Ipv6Addr| ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() || ip.to_ipv4_mapped().is_some();
+    if speciale(&adresse) || est_lien_local6(&adresse) {
+        return None;
+    }
+    let passerelle = match passerelle.trim() {
+        "" => None,
+        p => {
+            let p: Ipv6Addr = p.parse().ok()?;
+            if speciale(&p) || p == adresse {
+                return None;
+            }
+            Some(p)
+        }
+    };
+    Some(DemandeIp::Manuelle6 { index, adresse, prefixe, passerelle })
+}
+
 /// Le script PowerShell (élevé) d'une demande. N'y entrent qu'un `u32`, un
 /// `u8` et des adresses RÉÉCRITES depuis leur valeur parsée.
 pub fn script(demande: &DemandeIp) -> String {
@@ -137,7 +191,40 @@ pub fn script(demande: &DemandeIp) -> String {
                  exit 0 }} catch {{ try {{ Set-NetIPInterface -InterfaceIndex {index} -AddressFamily IPv4 -Dhcp Enabled }} catch {{ }}; exit 1 }}"
             )
         }
+        DemandeIp::Automatique6 { index } => {
+            format!("$ErrorActionPreference='Stop'; try {{ {} exit 0 }} catch {{ exit 1 }}", retirer_le_manuel6(*index))
+        }
+        DemandeIp::Manuelle6 { index, adresse, prefixe, passerelle } => {
+            // ⛔ PAS de `-DefaultGateway` : la route `::/0` que le routeur annonce
+            // passe souvent par la MÊME passerelle, et la recréer échouerait
+            // (« existe déjà »). La route n'est posée que si elle manque.
+            let porte = passerelle
+                .map(|p| {
+                    format!(
+                        "if (-not (Get-NetRoute -InterfaceIndex {index} -DestinationPrefix '::/0' -NextHop '{p}' -ErrorAction SilentlyContinue)) {{ \
+                         New-NetRoute -InterfaceIndex {index} -DestinationPrefix '::/0' -NextHop '{p}' | Out-Null }}; "
+                    )
+                })
+                .unwrap_or_default();
+            let retirer = retirer_le_manuel6(*index);
+            format!(
+                "$ErrorActionPreference='Stop'; try {{ {retirer} \
+                 New-NetIPAddress -InterfaceIndex {index} -AddressFamily IPv6 -IPAddress '{adresse}' -PrefixLength {prefixe} | Out-Null; \
+                 {porte}exit 0 }} catch {{ try {{ {retirer} }} catch {{ }}; exit 1 }}"
+            )
+        }
     }
+}
+
+/// Retire les adresses IPv6 et la route par défaut POSÉES À LA MAIN — jamais
+/// celles que le routeur annonce.
+fn retirer_le_manuel6(index: u32) -> String {
+    format!(
+        "Get-NetIPAddress -InterfaceIndex {index} -AddressFamily IPv6 -ErrorAction SilentlyContinue | \
+         Where-Object {{ $_.PrefixOrigin -eq 'Manual' }} | Remove-NetIPAddress -Confirm:$false; \
+         Get-NetRoute -InterfaceIndex {index} -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | \
+         Where-Object {{ $_.Protocol -eq 'NetMgmt' }} | Remove-NetRoute -Confirm:$false;"
+    )
 }
 
 #[cfg(test)]
@@ -223,5 +310,54 @@ mod tests {
         let auto = script(&DemandeIp::Automatique { index: 7 });
         assert!(auto.contains(".Dhcp -eq 'Disabled') {"), "la route n'est retirée que si le DHCP était coupé");
         assert!(auto.contains("-Dhcp Enabled"));
+    }
+
+    #[test]
+    fn une_demande_ipv6_est_lue_sans_rien_croire() {
+        let connues = [carte(12, &[], false)];
+        assert_eq!(
+            lire_demande6("12", "2001:db8::50,64,fe80::1", &connues),
+            Some(DemandeIp::Manuelle6 {
+                index: 12,
+                adresse: "2001:db8::50".parse().unwrap(),
+                prefixe: 64,
+                passerelle: Some("fe80::1".parse().unwrap())
+            })
+        );
+        assert!(matches!(lire_demande6("12", "2001:db8::50,/64,", &connues), Some(DemandeIp::Manuelle6 { passerelle: None, .. })));
+        assert_eq!(lire_demande6("12", "auto", &connues), Some(DemandeIp::Automatique6 { index: 12 }));
+        for quoi in [
+            "fe80::50,64,fe80::1",          // lien local
+            "::1,128,",                     // bouclage
+            "ff02::1,64,",                  // multidiffusion
+            "::ffff:192.168.1.5,96,",       // IPv4 déguisée
+            "2001:db8::50,0,",              // préfixe nul
+            "2001:db8::50,129,",            // préfixe trop long
+            "2001:db8::50,64,2001:db8::50", // passerelle = adresse
+            "2001:db8::50%12,64,",          // zone
+            "2001:db8::50,64",              // morceau manquant
+            "2001:db8::50',64,",
+            "192.168.1.5,24,192.168.1.1",
+        ] {
+            assert_eq!(lire_demande6("12", quoi, &connues), None, "accepté à tort : {quoi:?}");
+        }
+        assert_eq!(lire_demande6("13", "auto", &connues), None, "carte inconnue");
+    }
+
+    #[test]
+    fn le_script_ipv6_ne_touche_pas_aux_adresses_annoncees() {
+        let auto = script(&DemandeIp::Automatique6 { index: 7 });
+        assert!(auto.contains("Where-Object { $_.PrefixOrigin -eq 'Manual' }"));
+        assert!(auto.contains("Where-Object { $_.Protocol -eq 'NetMgmt' }"));
+        assert!(!auto.contains("-Dhcp"), "le DHCP IPv4 n'est pas concerné");
+        let d = lire_demande6("7", "2001:db8::50,64,fe80::1", &[carte(7, &[], false)]).unwrap();
+        let s = script(&d);
+        assert!(s.contains("-AddressFamily IPv6 -IPAddress '2001:db8::50' -PrefixLength 64 | Out-Null"));
+        assert!(!s.contains("-DefaultGateway"), "la route du routeur existe souvent déjà");
+        assert!(s.contains("if (-not (Get-NetRoute -InterfaceIndex 7 -DestinationPrefix '::/0' -NextHop 'fe80::1' -ErrorAction SilentlyContinue)) {"));
+        assert!(s.contains("New-NetRoute -InterfaceIndex 7 -DestinationPrefix '::/0' -NextHop 'fe80::1'"));
+        assert!(s.find("PrefixOrigin").unwrap() < s.find("New-NetIPAddress").unwrap(), "l'ancienne adresse manuelle part d'abord");
+        let sans = script(&lire_demande6("7", "2001:db8::50,64,", &[carte(7, &[], false)]).unwrap());
+        assert!(!sans.contains("New-NetRoute"));
     }
 }
