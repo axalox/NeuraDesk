@@ -215,8 +215,36 @@ struct Etat {
     dernier_tic: Instant,
 }
 
+/// ⛔ **UN BOURDON NE SE REFERME JAMAIS DANS LA DESTRUCTION DU `thread_local`**
+/// — MESURÉ le 2026-11-24 : dix insectes bourdonnants, l'appli fermée restait
+/// « Ne répond pas », UN fil, 0 % de processeur. Le `thread_local` se détruit à
+/// la sortie du fil, sous le verrou du chargeur de Windows, et
+/// `waveOutReset`/`waveOutClose` y attendent le fil audio de winmm : interblocage.
+/// `arreter` (appelée à la fin de `app::run`) les referme AVANT ; ceux qui
+/// resteraient (sortie par panique) sont abandonnés au système, qui libère tout
+/// à la fin du processus.
+impl Drop for Etat {
+    fn drop(&mut self) {
+        for i in &mut self.insectes {
+            if let Some(b) = i.bourdon.take() {
+                std::mem::forget(b);
+            }
+        }
+    }
+}
+
 thread_local! {
     static ETAT: RefCell<Option<Etat>> = const { RefCell::new(None) };
+}
+
+/// À la fermeture de l'appli : referme les bourdons pendant que le fil vit
+/// encore (voir `impl Drop for Etat`).
+pub fn arreter() {
+    avec(|e| {
+        for i in &mut e.insectes {
+            i.bourdon = None;
+        }
+    });
 }
 
 fn avec<R>(f: impl FnOnce(&mut Etat) -> R) -> Option<R> {

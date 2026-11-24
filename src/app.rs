@@ -18619,6 +18619,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     // Referme les shells du panneau Terminal plutôt que de les laisser
     // tourner sans fenêtre (voir `win32::pty::fermer_tout`).
     crate::win32::pty::fermer_tout();
+    // Les bourdons des insectes, AVANT la destruction des `thread_local`
+    // (voir `win32::insectes::arreter`).
+    crate::win32::insectes::arreter();
 
     Ok(())
 }
