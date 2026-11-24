@@ -2915,6 +2915,10 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
                 Some(mode) => crate::win32::super_heros::choisir_mode(mode),
                 None => crate::diag!("[heros] animation refusée : {nom:?}"),
             },
+            ["mascotte-heros-style", nom] => match crate::win32::mascotte::StyleHeros::lire(nom) {
+                Some(style) => crate::win32::super_heros::choisir_style(style),
+                None => crate::diag!("[heros] style refusé : {nom:?}"),
+            },
             ["mascotte-heros-choix", n] => match n.parse::<u32>() {
                 Ok(n) => crate::win32::super_heros::choisir_heros(n),
                 Err(_) => crate::diag!("[heros] héros refusé : {n:?}"),
@@ -5818,6 +5822,7 @@ fn push_state(refs: &SettingsRefs) {
         objet.insert("mascotteHeros".into(), json!(mascotte.heros));
         objet.insert("mascotteHerosDelai".into(), json!(mascotte.heros_delai));
         objet.insert("mascotteHerosMode".into(), json!(mascotte.heros_mode.nom()));
+        objet.insert("mascotteHerosStyle".into(), json!(mascotte.heros_style.nom()));
         objet.insert("mascotteHerosChoix".into(), json!(mascotte.heros_choix));
         objet.insert("mascotteHerosTaille".into(), json!(mascotte.heros_taille));
         objet.insert("mascotteHerosTailleMin".into(), json!(crate::win32::mascotte::HEROS_TAILLE_MIN));
@@ -6162,7 +6167,7 @@ mod tests {
                 "la rangée « {cle} » n'est jamais rafraîchie par `updateSegmented`"
             );
         }
-        assert_eq!(vues, 16, "nombre de rangées de boutons dans la page (l'ANIMATION des super-héros, le 2026-11-23 ; la LANGUE, le 2026-11-15 ; la texture de l'interface, puis celle des terminaux, le 2026-10-15 ; la couleur des ombres, le 2026-10-19 ; les coins du centre de la barre du haut, le 2026-10-31 ; les quatre formes des effets de fenêtres RETIRÉES le 2026-11-22 ; le PROFIL de performances, le 2026-11-11 ; la CARTE GRAPHIQUE, le 2026-11-14)");
+        assert_eq!(vues, 17, "nombre de rangées de boutons dans la page (le STYLE des super-héros, puis leur ANIMATION, le 2026-11-23 ; la LANGUE, le 2026-11-15 ; la texture de l'interface, puis celle des terminaux, le 2026-10-15 ; la couleur des ombres, le 2026-10-19 ; les coins du centre de la barre du haut, le 2026-10-31 ; les quatre formes des effets de fenêtres RETIRÉES le 2026-11-22 ; le PROFIL de performances, le 2026-11-11 ; la CARTE GRAPHIQUE, le 2026-11-14)");
     }
 
     #[test]

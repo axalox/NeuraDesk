@@ -6091,6 +6091,19 @@
           dataKey: "mascotte-heros-mode",
           onSelect: (v) => go("mascotte-heros-mode", v),
         });
+        // DEMANDE EXPLICITE (2026-11-23) : « super héros en style pixels et à
+        // l'encre en plus du style d'origine ».
+        segmented(box, {
+          label: "Style",
+          options: [
+            { value: "origine", label: "D'origine" },
+            { value: "encre", label: "À l'encre" },
+            { value: "pixels", label: "En pixels" },
+          ],
+          value: state.mascotteHerosStyle || "origine",
+          dataKey: "mascotte-heros-style",
+          onSelect: (v) => go("mascotte-heros-style", v),
+        });
         slider(box, { label: "Après", min: state.mascotteHerosDelaiMin || 1, max: state.mascotteHerosDelaiMax || 60, step: 1, value: state.mascotteHerosDelai || 5, valueLabel: (v) => v + " min", dataKey: "mascotte-heros-delai", onInput: (v) => go("mascotte-heros-delai", v) });
         // DEMANDE EXPLICITE (2026-11-23) : « choisir le super héros et changer sa
         // taille pour l'agrandir ». Le choix est dans `computeStructureKey`.
@@ -6548,6 +6561,7 @@
       updateSlider("mascotte-taille", state.mascotteTaille || 140, (v) => v + " px");
       updateSlider("mascotte-heros-delai", state.mascotteHerosDelai || 5, (v) => v + " min");
       updateSegmented("mascotte-heros-mode", state.mascotteHerosMode || "hasard");
+      updateSegmented("mascotte-heros-style", state.mascotteHerosStyle || "origine");
       updateSlider("mascotte-heros-taille", state.mascotteHerosTaille || 100, (v) => v + " %");
       updateSlider("tooltip-scale", state.tooltipScalePercent, (v) => v + "%");
       updateSlider("tooltip-fade-ms", state.tooltipFadeMs, (v) => v + " ms");

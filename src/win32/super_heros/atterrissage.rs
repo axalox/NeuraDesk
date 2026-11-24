@@ -22,7 +22,8 @@ use windows::Win32::Foundation::{POINT, RECT};
 
 use std::borrow::Cow;
 
-use super::{decouper, mettre_a_taille, miroir, IMAGES_PAR_SECONDE};
+use super::{a_taille, chemin_planche, decouper, en_blocs, miroir, BLOC_PIXELS, IMAGES_PAR_SECONDE};
+use crate::win32::mascotte::StyleHeros;
 
 /// L'approche dure ce nombre de boucles de sa vidéo : elle FINIT sur sa
 /// première image, qui est aussi la première de l'atterrissage.
@@ -173,11 +174,13 @@ pub struct Atterrisseur {
     /// Pieds et foulée à l'écran.
     pub pieds: u32,
     pub foulee: f32,
+    /// En pixels : `source` est la grille des blocs, agrandie au plus proche voisin.
+    pub nette: bool,
 }
 
 /// Décode le héros `n` pour qu'il mesure `debout` pixels physiques une fois
 /// posé. Dans un fil à part : ~150 images.
-pub fn preparer(dossier: &std::path::Path, n: u32, debout: u32, vers_la_droite: bool) -> Option<Atterrisseur> {
+pub fn preparer(dossier: &std::path::Path, n: u32, debout: u32, vers_la_droite: bool, style: StyleHeros) -> Option<Atterrisseur> {
     let chemin = dossier.join(format!("heros-{n:02}-atterrissage.txt"));
     let texte = std::fs::read_to_string(&chemin)
         .map_err(|e| crate::diag!("[heros] {} illisible : {e}", chemin.display()))
@@ -189,9 +192,17 @@ pub fn preparer(dossier: &std::path::Path, n: u32, debout: u32, vers_la_droite: 
     let k = debout as f32 / fiche.debout as f32;
     let a_l_echelle = |k: f32| (((fiche.largeur as f32 * k).round() as u32).max(8), ((fiche.hauteur as f32 * k).round() as u32).max(8));
     let taille = a_l_echelle(k);
-    let source = a_l_echelle(k.min(1.0));
+    // Un style pour les trois clips (les raccords) : celui demandé s'il a été
+    // fabriqué pour ce héros, sinon l'origine.
+    let style = chemin_planche(dossier, n, style, "-atterrissage").1;
+    let nette = style == StyleHeros::Pixels;
+    let source = if nette {
+        (fiche.largeur.div_ceil(BLOC_PIXELS), fiche.hauteur.div_ceil(BLOC_PIXELS))
+    } else {
+        a_l_echelle(k.min(1.0))
+    };
     let planche = |nom: &str, combien: u32| -> Option<Vec<Vec<u8>>> {
-        let chemin = dossier.join(format!("heros-{n:02}-{nom}.webp"));
+        let chemin = chemin_planche(dossier, n, style, &format!("-{nom}")).0;
         let octets = std::fs::read(&chemin).map_err(|e| crate::diag!("[heros] {} illisible : {e}", chemin.display())).ok()?;
         let image = image::load_from_memory_with_format(&octets, image::ImageFormat::WebP)
             .map_err(|e| crate::diag!("[heros] {} non décodée : {e}", chemin.display()))
@@ -206,8 +217,12 @@ pub fn preparer(dossier: &std::path::Path, n: u32, debout: u32, vers_la_droite: 
         let images = decouper(image.as_raw(), l, (cl, ch), combien)
             .iter()
             .map(|rgba| {
-                let bgra = crate::win32::epingle::premultiplier_bgra(rgba);
-                let petite = crate::win32::epingle::reechantillonner(&bgra, cl, ch, source.0, source.1);
+                let petite = if nette {
+                    crate::win32::epingle::premultiplier_bgra(&en_blocs(rgba, (cl, ch), BLOC_PIXELS).0)
+                } else {
+                    let bgra = crate::win32::epingle::premultiplier_bgra(rgba);
+                    crate::win32::epingle::reechantillonner(&bgra, cl, ch, source.0, source.1)
+                };
                 if vers_la_droite { petite } else { miroir(&petite, source.0) }
             })
             .collect();
@@ -222,12 +237,13 @@ pub fn preparer(dossier: &std::path::Path, n: u32, debout: u32, vers_la_droite: 
         pieds: (fiche.pieds as f32 * k).round() as u32,
         foulee: fiche.foulee as f32 * k,
         fiche,
+        nette,
     })
 }
 
 /// Une image gardée, à la taille de l'écran (copiée seulement s'il faut l'agrandir).
 fn a_l_ecran<'a>(a: &Atterrisseur, px: &'a [u8]) -> Cow<'a, [u8]> {
-    if a.source == a.taille { Cow::Borrowed(px) } else { Cow::Owned(mettre_a_taille(px, a.source, a.taille)) }
+    if a.source == a.taille { Cow::Borrowed(px) } else { Cow::Owned(a_taille(px, a.source, a.taille, a.nette)) }
 }
 
 /// Ce qu'il faut montrer à l'instant `ecoule` : `(clé de l'image, coin
@@ -246,7 +262,7 @@ pub fn cadre(
             let (coin, echelle) = approche(avance, zone, a.taille, pose);
             let l = ((a.taille.0 as f32 * echelle).round() as u32).max(2);
             let h = ((a.taille.1 as f32 * echelle).round() as u32).max(2);
-            let px = mettre_a_taille(&a.approche[image], a.source, (l, h));
+            let px = a_taille(&a.approche[image], a.source, (l, h), a.nette);
             let cle = (1 << 48) | ((image as u64) << 32) | ((l as u64) << 16) | h as u64;
             Some((cle, coin, (l, h), Cow::Owned(px)))
         }
@@ -373,12 +389,20 @@ mod tests {
         let noms: Vec<String> =
             std::fs::read_dir(&dossier).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         for n in heros_atterrisseurs(noms.iter().map(String::as_str)) {
-            let a = preparer(&dossier, n, 10_000, true).unwrap_or_else(|| panic!("héros {n} : illisible"));
-            assert_eq!(a.source, (a.fiche.largeur, a.fiche.hauteur), "gardé à la taille de la planche, agrandi à l'affichage");
-            assert!(a.taille.1 > a.source.1 * 10);
-            for (nom, images) in [("approche", &a.approche), ("atterrissage", &a.atterrissage), ("marche", &a.marche)] {
-                for (k, im) in images.iter().enumerate() {
-                    assert!(im.chunks_exact(4).any(|p| p[3] > 128), "héros {n} : {nom} {k} vide");
+            for style in [StyleHeros::Origine, StyleHeros::Encre, StyleHeros::Pixels] {
+                let a = preparer(&dossier, n, 10_000, true, style).unwrap_or_else(|| panic!("héros {n} {style:?} : illisible"));
+                assert_eq!(a.nette, style == StyleHeros::Pixels, "héros {n} : style {style:?} pas livré");
+                let attendu = if a.nette {
+                    (a.fiche.largeur.div_ceil(BLOC_PIXELS), a.fiche.hauteur.div_ceil(BLOC_PIXELS))
+                } else {
+                    (a.fiche.largeur, a.fiche.hauteur)
+                };
+                assert_eq!(a.source, attendu, "gardé à la taille de la planche (ou de sa grille), agrandi à l'affichage");
+                assert!(a.taille.1 > a.source.1 * 10);
+                for (nom, images) in [("approche", &a.approche), ("atterrissage", &a.atterrissage), ("marche", &a.marche)] {
+                    for (k, im) in images.iter().enumerate() {
+                        assert!(im.chunks_exact(4).any(|p| p[3] > 128), "héros {n} {style:?} : {nom} {k} vide");
+                    }
                 }
             }
         }

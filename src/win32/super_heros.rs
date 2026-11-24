@@ -33,7 +33,7 @@ use std::ffi::c_void;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::win32::mascotte::ModeHeros;
+use crate::win32::mascotte::{ModeHeros, StyleHeros};
 use atterrissage::Atterrisseur;
 
 use windows::core::w;
@@ -197,6 +197,50 @@ pub fn mettre_a_taille(src: &[u8], (l, h): (u32, u32), (nl, nh): (u32, u32)) -> 
     dst
 }
 
+/// Les planches « en pixels » sont faites de blocs de `BLOC_PIXELS` pixels
+/// ancrés au coin de chaque case — ⛔ la même valeur que `BLOC` de
+/// `tools/super_heros_vol/styles_heros.py`.
+pub const BLOC_PIXELS: u32 = 5;
+
+/// Une case « en pixels » ramenée à sa grille : un pixel par bloc, lu au
+/// centre du bloc (le bloc du bord, entamé, au centre de ce qui en reste).
+/// L'affichage l'agrandit ensuite au plus proche voisin : des blocs NETS à
+/// toutes les tailles, ce que la moyenne et le bilinéaire brouilleraient.
+pub fn en_blocs(rgba: &[u8], (l, h): (u32, u32), bloc: u32) -> (Vec<u8>, (u32, u32)) {
+    let (gl, gh) = (l.div_ceil(bloc), h.div_ceil(bloc));
+    let centre = |i: u32, taille: u32| ((i * bloc + (i * bloc + bloc).min(taille)) / 2).min(taille - 1);
+    let mut grille = Vec::with_capacity((gl * gh * 4) as usize);
+    for gy in 0..gh {
+        let y = centre(gy, h);
+        for gx in 0..gl {
+            let i = ((y * l + centre(gx, l)) * 4) as usize;
+            grille.extend_from_slice(&rgba[i..i + 4]);
+        }
+    }
+    (grille, (gl, gh))
+}
+
+/// `mettre_a_taille`, ou le plus proche voisin pour une image `nette` (pixels).
+pub fn a_taille(src: &[u8], de: (u32, u32), vers: (u32, u32), nette: bool) -> Vec<u8> {
+    if nette {
+        crate::win32::epingle::reechantillonner(src, de.0, de.1, vers.0, vers.1)
+    } else {
+        mettre_a_taille(src, de, vers)
+    }
+}
+
+/// Le chemin de la planche `heros-NN<style>[-clip].webp`, ou celle d'origine
+/// si ce style n'a pas été fabriqué pour ce héros. Rend aussi le style
+/// réellement servi.
+pub fn chemin_planche(dossier: &std::path::Path, n: u32, style: StyleHeros, clip: &str) -> (std::path::PathBuf, StyleHeros) {
+    let chemin = dossier.join(format!("heros-{n:02}{}{clip}.webp", style.suffixe()));
+    if style == StyleHeros::Origine || chemin.exists() {
+        (chemin, style)
+    } else {
+        (dossier.join(format!("heros-{n:02}{clip}.webp")), StyleHeros::Origine)
+    }
+}
+
 /// Un tirage dans 0..1, sans dépendance (xorshift sur l'horloge).
 fn hasard() -> f32 {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -227,11 +271,13 @@ struct Heros {
     images: Vec<Vec<u8>>,
     source: (u32, u32),
     taille: (u32, u32),
+    /// En pixels : agrandi au plus proche voisin.
+    nette: bool,
 }
 
 /// Décode et prépare le héros `n` à `hauteur` pixels physiques (dans un fil à part).
-fn preparer(n: u32, hauteur: u32, vers_la_droite: bool) -> Option<Heros> {
-    let chemin = dossier()?.join(format!("heros-{n:02}.webp"));
+fn preparer(n: u32, hauteur: u32, vers_la_droite: bool, style: StyleHeros) -> Option<Heros> {
+    let (chemin, style) = chemin_planche(&dossier()?, n, style, "");
     let octets = std::fs::read(&chemin).map_err(|e| crate::diag!("[heros] {} illisible : {e}", chemin.display())).ok()?;
     let planche = image::load_from_memory_with_format(&octets, image::ImageFormat::WebP)
         .map_err(|e| crate::diag!("[heros] {} non décodée : {e}", chemin.display()))
@@ -242,6 +288,19 @@ fn preparer(n: u32, hauteur: u32, vers_la_droite: bool) -> Option<Heros> {
     let images = decouper(planche.as_raw(), l, (cl, ch), COLONNES * LIGNES);
     // Gardées au plus à la taille de la planche ; agrandies à l'affichage.
     let taille = ((cl as u64 * hauteur as u64 / ch as u64).max(16) as u32, hauteur.max(16));
+    if style == StyleHeros::Pixels {
+        let mut source = (1, 1);
+        let images = images
+            .iter()
+            .map(|rgba| {
+                let (grille, g) = en_blocs(rgba, (cl, ch), BLOC_PIXELS);
+                source = g;
+                let bgra = crate::win32::epingle::premultiplier_bgra(&grille);
+                if vers_la_droite { bgra } else { miroir(&bgra, g.0) }
+            })
+            .collect();
+        return Some(Heros { images, source, taille, nette: true });
+    }
     let nh = hauteur.min(ch).max(16);
     let nl = (cl as u64 * nh as u64 / ch as u64).max(16) as u32;
     let images = images
@@ -252,7 +311,7 @@ fn preparer(n: u32, hauteur: u32, vers_la_droite: bool) -> Option<Heros> {
             if vers_la_droite { petite } else { miroir(&petite, nl) }
         })
         .collect();
-    Some(Heros { images, source: (nl, nh), taille })
+    Some(Heros { images, source: (nl, nh), taille, nette: false })
 }
 
 // ---------------------------------------------------------------- l'état
@@ -376,6 +435,13 @@ pub fn choisir_mode(mode: ModeHeros) {
     avec(|e| e.mode = mode);
 }
 
+/// Lu au départ de chaque vol (`lancer`) : rien à garder dans l'état.
+pub fn choisir_style(style: StyleHeros) {
+    let mut r = crate::win32::mascotte::reglages();
+    r.heros_style = style;
+    crate::win32::mascotte::enregistrer(&r);
+}
+
 pub fn choisir_heros(n: u32) {
     let mut r = crate::win32::mascotte::reglages();
     r.heros_choix = n;
@@ -437,6 +503,7 @@ fn lancer(hwnd: HWND, entree: u32, essai: bool) {
     let traverseurs = heros_presents(noms.iter().map(String::as_str));
     let atterrisseurs = atterrissage::heros_atterrisseurs(noms.iter().map(String::as_str));
     let (mode, choix, pour_cent) = avec(|e| (e.mode, e.choix, e.taille)).unwrap_or((ModeHeros::Hasard, 0, 100));
+    let style = crate::win32::mascotte::reglages().heros_style;
     // Le héros choisi n'a peut-être qu'une des deux animations : on joue celle-là.
     let (traverse, atterrit_aussi) = if choix != 0 && (traverseurs.contains(&choix) || atterrisseurs.contains(&choix)) {
         (traverseurs.contains(&choix), atterrisseurs.contains(&choix))
@@ -459,15 +526,16 @@ fn lancer(hwnd: HWND, entree: u32, essai: bool) {
     let y = haut + (hasard() * (bas - haut).max(0) as f32) as i32;
     avec(|e| e.demande = Some(Demande { ecran: rect, zone, vers_la_droite, y, entree, essai }));
     crate::diag!(
-        "[heros] départ du héros {n} ({}, {hauteur} px, vers la {})",
+        "[heros] départ du héros {n} ({}, {}, {hauteur} px, vers la {})",
         if atterrit { "atterrissage" } else { "traversée" },
+        style.nom(),
         if vers_la_droite { "droite" } else { "gauche" }
     );
     std::thread::spawn(move || {
         let heros = if atterrit {
-            atterrissage::preparer(&dossier, n, hauteur, vers_la_droite).map(Pret::Atterrissage)
+            atterrissage::preparer(&dossier, n, hauteur, vers_la_droite, style).map(Pret::Atterrissage)
         } else {
-            preparer(n, hauteur, vers_la_droite).map(Pret::Traversee)
+            preparer(n, hauteur, vers_la_droite, style).map(Pret::Traversee)
         };
         if let Ok(mut p) = PRET.lock() {
             *p = Some(heros);
@@ -587,7 +655,7 @@ fn cadre_du_vol(vol: &Vol, ecoule: f32) -> Option<(u64, POINT, (u32, u32), std::
             let px = if heros.source == heros.taille {
                 std::borrow::Cow::Borrowed(px.as_slice())
             } else {
-                std::borrow::Cow::Owned(mettre_a_taille(px, heros.source, heros.taille))
+                std::borrow::Cow::Owned(a_taille(px, heros.source, heros.taille, heros.nette))
             };
             Some((image as u64, pos, heros.taille, px))
         }
@@ -833,14 +901,33 @@ mod tests {
             .collect();
         let presents = heros_presents(noms.iter().map(String::as_str));
         for n in presents {
-            let octets = std::fs::read(dossier.join(format!("heros-{n:02}.webp"))).unwrap();
-            let planche = image::load_from_memory(&octets).unwrap().to_rgba8();
-            let (l, h) = planche.dimensions();
-            assert_eq!((l % COLONNES, h % LIGNES), (0, 0), "héros {n} : planche {l}×{h} pas en 8×10");
-            let images = decouper(planche.as_raw(), l, (l / COLONNES, h / LIGNES), COLONNES * LIGNES);
-            for (k, im) in images.iter().enumerate() {
-                assert!(im.chunks_exact(4).any(|p| p[3] > 128), "héros {n} : image {k} vide");
+            let mut origine = None;
+            for style in [StyleHeros::Origine, StyleHeros::Encre, StyleHeros::Pixels] {
+                let (chemin, servi) = chemin_planche(&dossier, n, style, "");
+                assert_eq!(servi, style, "héros {n} : style {style:?} pas livré");
+                let octets = std::fs::read(chemin).unwrap();
+                let planche = image::load_from_memory(&octets).unwrap().to_rgba8();
+                let (l, h) = planche.dimensions();
+                assert_eq!((l % COLONNES, h % LIGNES), (0, 0), "héros {n} : planche {l}×{h} pas en 8×10");
+                assert_eq!(*origine.get_or_insert((l, h)), (l, h), "héros {n} {style:?} : pas aux dimensions d'origine");
+                let images = decouper(planche.as_raw(), l, (l / COLONNES, h / LIGNES), COLONNES * LIGNES);
+                for (k, im) in images.iter().enumerate() {
+                    assert!(im.chunks_exact(4).any(|p| p[3] > 128), "héros {n} {style:?} : image {k} vide");
+                }
             }
         }
+    }
+
+    #[test]
+    fn la_grille_des_pixels_lit_le_centre_de_chaque_bloc() {
+        // 7×3 en blocs de 3 : grille 3×1 ; le dernier bloc (1 colonne) lu sur elle.
+        let px: Vec<u8> = (0..7 * 3).flat_map(|i| [(i % 7) as u8, (i / 7) as u8, 0, 255]).collect();
+        let (g, taille) = en_blocs(&px, (7, 3), 3);
+        assert_eq!(taille, (3, 1));
+        let lus: Vec<(u8, u8)> = g.chunks_exact(4).map(|p| (p[0], p[1])).collect();
+        assert_eq!(lus, [(1, 1), (4, 1), (6, 1)]);
+        // Agrandie au plus proche voisin : des blocs nets, sans valeur intermédiaire.
+        let grand = a_taille(&g, (3, 1), (9, 3), true);
+        assert!(grand.chunks_exact(4).all(|p| [1, 4, 6].contains(&p[0])));
     }
 }

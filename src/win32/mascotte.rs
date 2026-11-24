@@ -310,6 +310,189 @@ pub const PERSONNAGES: &[Personnage] = &[
     p("alien-poilu-3-pixel", "Extraterrestre poilu 3 en pixels", "Extraterrestres en pixels"),
     p("alien-retro-2-pixel", "Petit homme vert 2 en pixels", "Extraterrestres en pixels"),
     p("alien-retro-3-pixel", "Petit homme vert 3 en pixels", "Extraterrestres en pixels"),
+    // Les 30 super-héros en mascottes (`tools/mascottes_heros.py`), 2026-11-24 :
+    // une famille en couleur, puis une par style. Préfixe `superheros-`, pas
+    // `heros-` (celui des planches de l'inactivité).
+    p("superheros-01", "Super-héros 1", "Super-héros mascottes"),
+    p("superheros-02", "Super-héros 2", "Super-héros mascottes"),
+    p("superheros-03", "Super-héros 3", "Super-héros mascottes"),
+    p("superheros-04", "Super-héros 4", "Super-héros mascottes"),
+    p("superheros-05", "Super-héros 5", "Super-héros mascottes"),
+    p("superheros-06", "Super-héros 6", "Super-héros mascottes"),
+    p("superheros-07", "Super-héros 7", "Super-héros mascottes"),
+    p("superheros-08", "Super-héros 8", "Super-héros mascottes"),
+    p("superheros-09", "Super-héros 9", "Super-héros mascottes"),
+    p("superheros-10", "Super-héros 10", "Super-héros mascottes"),
+    p("superheros-11", "Super-héros 11", "Super-héros mascottes"),
+    p("superheros-12", "Super-héros 12", "Super-héros mascottes"),
+    p("superheros-13", "Super-héros 13", "Super-héros mascottes"),
+    p("superheros-14", "Super-héros 14", "Super-héros mascottes"),
+    p("superheros-15", "Super-héros 15", "Super-héros mascottes"),
+    p("superheros-16", "Super-héros 16", "Super-héros mascottes"),
+    p("superheros-17", "Super-héros 17", "Super-héros mascottes"),
+    p("superheros-18", "Super-héros 18", "Super-héros mascottes"),
+    p("superheros-19", "Super-héros 19", "Super-héros mascottes"),
+    p("superheros-20", "Super-héros 20", "Super-héros mascottes"),
+    p("superheros-21", "Super-héros 21", "Super-héros mascottes"),
+    p("superheros-22", "Super-héros 22", "Super-héros mascottes"),
+    p("superheros-23", "Super-héros 23", "Super-héros mascottes"),
+    p("superheros-24", "Super-héros 24", "Super-héros mascottes"),
+    p("superheros-25", "Super-héros 25", "Super-héros mascottes"),
+    p("superheros-26", "Super-héros 26", "Super-héros mascottes"),
+    p("superheros-27", "Super-héros 27", "Super-héros mascottes"),
+    p("superheros-28", "Super-héros 28", "Super-héros mascottes"),
+    p("superheros-29", "Super-héros 29", "Super-héros mascottes"),
+    p("superheros-30", "Super-héros 30", "Super-héros mascottes"),
+    p("superheros-01-ink", "Super-héros 1 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-02-ink", "Super-héros 2 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-03-ink", "Super-héros 3 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-04-ink", "Super-héros 4 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-05-ink", "Super-héros 5 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-06-ink", "Super-héros 6 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-07-ink", "Super-héros 7 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-08-ink", "Super-héros 8 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-09-ink", "Super-héros 9 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-10-ink", "Super-héros 10 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-11-ink", "Super-héros 11 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-12-ink", "Super-héros 12 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-13-ink", "Super-héros 13 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-14-ink", "Super-héros 14 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-15-ink", "Super-héros 15 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-16-ink", "Super-héros 16 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-17-ink", "Super-héros 17 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-18-ink", "Super-héros 18 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-19-ink", "Super-héros 19 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-20-ink", "Super-héros 20 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-21-ink", "Super-héros 21 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-22-ink", "Super-héros 22 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-23-ink", "Super-héros 23 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-24-ink", "Super-héros 24 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-25-ink", "Super-héros 25 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-26-ink", "Super-héros 26 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-27-ink", "Super-héros 27 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-28-ink", "Super-héros 28 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-29-ink", "Super-héros 29 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-30-ink", "Super-héros 30 à l'encre", "Super-héros mascottes à l'encre"),
+    p("superheros-01-sketch", "Super-héros 1 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-02-sketch", "Super-héros 2 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-03-sketch", "Super-héros 3 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-04-sketch", "Super-héros 4 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-05-sketch", "Super-héros 5 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-06-sketch", "Super-héros 6 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-07-sketch", "Super-héros 7 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-08-sketch", "Super-héros 8 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-09-sketch", "Super-héros 9 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-10-sketch", "Super-héros 10 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-11-sketch", "Super-héros 11 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-12-sketch", "Super-héros 12 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-13-sketch", "Super-héros 13 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-14-sketch", "Super-héros 14 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-15-sketch", "Super-héros 15 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-16-sketch", "Super-héros 16 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-17-sketch", "Super-héros 17 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-18-sketch", "Super-héros 18 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-19-sketch", "Super-héros 19 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-20-sketch", "Super-héros 20 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-21-sketch", "Super-héros 21 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-22-sketch", "Super-héros 22 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-23-sketch", "Super-héros 23 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-24-sketch", "Super-héros 24 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-25-sketch", "Super-héros 25 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-26-sketch", "Super-héros 26 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-27-sketch", "Super-héros 27 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-28-sketch", "Super-héros 28 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-29-sketch", "Super-héros 29 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-30-sketch", "Super-héros 30 au crayon", "Super-héros mascottes au crayon"),
+    p("superheros-01-riso", "Super-héros 1 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-02-riso", "Super-héros 2 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-03-riso", "Super-héros 3 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-04-riso", "Super-héros 4 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-05-riso", "Super-héros 5 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-06-riso", "Super-héros 6 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-07-riso", "Super-héros 7 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-08-riso", "Super-héros 8 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-09-riso", "Super-héros 9 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-10-riso", "Super-héros 10 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-11-riso", "Super-héros 11 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-12-riso", "Super-héros 12 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-13-riso", "Super-héros 13 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-14-riso", "Super-héros 14 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-15-riso", "Super-héros 15 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-16-riso", "Super-héros 16 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-17-riso", "Super-héros 17 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-18-riso", "Super-héros 18 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-19-riso", "Super-héros 19 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-20-riso", "Super-héros 20 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-21-riso", "Super-héros 21 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-22-riso", "Super-héros 22 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-23-riso", "Super-héros 23 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-24-riso", "Super-héros 24 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-25-riso", "Super-héros 25 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-26-riso", "Super-héros 26 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-27-riso", "Super-héros 27 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-28-riso", "Super-héros 28 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-29-riso", "Super-héros 29 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-30-riso", "Super-héros 30 en risographie", "Super-héros mascottes en risographie"),
+    p("superheros-01-paper", "Super-héros 1 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-02-paper", "Super-héros 2 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-03-paper", "Super-héros 3 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-04-paper", "Super-héros 4 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-05-paper", "Super-héros 5 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-06-paper", "Super-héros 6 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-07-paper", "Super-héros 7 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-08-paper", "Super-héros 8 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-09-paper", "Super-héros 9 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-10-paper", "Super-héros 10 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-11-paper", "Super-héros 11 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-12-paper", "Super-héros 12 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-13-paper", "Super-héros 13 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-14-paper", "Super-héros 14 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-15-paper", "Super-héros 15 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-16-paper", "Super-héros 16 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-17-paper", "Super-héros 17 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-18-paper", "Super-héros 18 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-19-paper", "Super-héros 19 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-20-paper", "Super-héros 20 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-21-paper", "Super-héros 21 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-22-paper", "Super-héros 22 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-23-paper", "Super-héros 23 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-24-paper", "Super-héros 24 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-25-paper", "Super-héros 25 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-26-paper", "Super-héros 26 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-27-paper", "Super-héros 27 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-28-paper", "Super-héros 28 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-29-paper", "Super-héros 29 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-30-paper", "Super-héros 30 en papier découpé", "Super-héros mascottes en papier découpé"),
+    p("superheros-01-pixel", "Super-héros 1 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-02-pixel", "Super-héros 2 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-03-pixel", "Super-héros 3 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-04-pixel", "Super-héros 4 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-05-pixel", "Super-héros 5 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-06-pixel", "Super-héros 6 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-07-pixel", "Super-héros 7 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-08-pixel", "Super-héros 8 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-09-pixel", "Super-héros 9 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-10-pixel", "Super-héros 10 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-11-pixel", "Super-héros 11 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-12-pixel", "Super-héros 12 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-13-pixel", "Super-héros 13 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-14-pixel", "Super-héros 14 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-15-pixel", "Super-héros 15 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-16-pixel", "Super-héros 16 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-17-pixel", "Super-héros 17 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-18-pixel", "Super-héros 18 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-19-pixel", "Super-héros 19 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-20-pixel", "Super-héros 20 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-21-pixel", "Super-héros 21 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-22-pixel", "Super-héros 22 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-23-pixel", "Super-héros 23 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-24-pixel", "Super-héros 24 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-25-pixel", "Super-héros 25 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-26-pixel", "Super-héros 26 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-27-pixel", "Super-héros 27 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-28-pixel", "Super-héros 28 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-29-pixel", "Super-héros 29 en pixels", "Super-héros mascottes en pixels"),
+    p("superheros-30-pixel", "Super-héros 30 en pixels", "Super-héros mascottes en pixels"),
 ];
 
 pub const PAR_DEFAUT: &str = "fox";
@@ -345,6 +528,42 @@ pub struct Reglages {
     pub heros_choix: u32,
     /// Sa taille, en pour cent de la taille normale.
     pub heros_taille: u32,
+    /// Le style de dessin des super-héros.
+    pub heros_style: StyleHeros,
+}
+
+/// Le style des super-héros — DEMANDE EXPLICITE (2026-11-23) : « super héros
+/// en style pixels et à l'encre en plus du style d'origine ». Des planches
+/// fabriquées à l'avance (`tools/super_heros_vol/styles_heros.py`), aux mêmes
+/// dimensions : `heros-NN<suffixe>.webp`, `heros-NN<suffixe>-approche.webp`…
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StyleHeros {
+    Origine,
+    Encre,
+    Pixels,
+}
+
+impl StyleHeros {
+    pub fn nom(self) -> &'static str {
+        match self {
+            StyleHeros::Origine => "origine",
+            StyleHeros::Encre => "encre",
+            StyleHeros::Pixels => "pixels",
+        }
+    }
+
+    pub fn lire(nom: &str) -> Option<StyleHeros> {
+        [StyleHeros::Origine, StyleHeros::Encre, StyleHeros::Pixels].into_iter().find(|s| s.nom() == nom)
+    }
+
+    /// Ce qui suit `heros-NN` dans le nom des planches.
+    pub fn suffixe(self) -> &'static str {
+        match self {
+            StyleHeros::Origine => "",
+            StyleHeros::Encre => "-ink",
+            StyleHeros::Pixels => "-pixel",
+        }
+    }
 }
 
 /// L'animation des super-héros — DEMANDE EXPLICITE (2026-11-23) : « un choix :
@@ -397,6 +616,7 @@ impl Default for Reglages {
             heros_mode: ModeHeros::Hasard,
             heros_choix: 0,
             heros_taille: HEROS_TAILLE_DEFAUT,
+            heros_style: StyleHeros::Origine,
         }
     }
 }
@@ -433,6 +653,11 @@ pub fn lire_reglages(texte: &str) -> Reglages {
                     r.heros_taille = t.clamp(HEROS_TAILLE_MIN, HEROS_TAILLE_MAX);
                 }
             }
+            "heros_style" => {
+                if let Some(style) = StyleHeros::lire(valeur) {
+                    r.heros_style = style;
+                }
+            }
             "heros_mode" => {
                 if let Some(mode) = ModeHeros::lire(valeur) {
                     r.heros_mode = mode;
@@ -449,7 +674,7 @@ pub fn lire_reglages(texte: &str) -> Reglages {
 
 pub fn ecrire_reglages(r: &Reglages) -> String {
     let mut s = format!(
-        "personnage={}\ntaille={}\nplein_ecran={}\nvisible={}\nheros={}\nheros_delai={}\nheros_mode={}\nheros_choix={}\nheros_taille={}\n",
+        "personnage={}\ntaille={}\nplein_ecran={}\nvisible={}\nheros={}\nheros_delai={}\nheros_mode={}\nheros_choix={}\nheros_taille={}\nheros_style={}\n",
         r.personnage,
         r.taille,
         u8::from(r.plein_ecran),
@@ -458,7 +683,8 @@ pub fn ecrire_reglages(r: &Reglages) -> String {
         r.heros_delai,
         r.heros_mode.nom(),
         r.heros_choix,
-        r.heros_taille
+        r.heros_taille,
+        r.heros_style.nom()
     );
     if let Some((x, y)) = r.position {
         s.push_str(&format!("x={x}\ny={y}\n"));
@@ -1246,7 +1472,10 @@ mod tests {
         // Les extraterrestres : 21, et leurs cinq styles.
         let aliens = PERSONNAGES.iter().filter(|p| p.famille.starts_with("Extraterrestres")).count();
         assert_eq!(aliens, 126);
-        assert_eq!(PERSONNAGES.len() - styles - creees - styles_ia - aliens, 73);
+        // Les super-héros : 30, et leurs cinq styles.
+        let heros = PERSONNAGES.iter().filter(|p| p.famille.starts_with("Super-héros")).count();
+        assert_eq!(heros, 180);
+        assert_eq!(PERSONNAGES.len() - styles - creees - styles_ia - aliens - heros, 73);
         let mut noms: Vec<_> = PERSONNAGES.iter().map(|p| p.nom).collect();
         noms.sort_unstable();
         noms.dedup();
@@ -1284,6 +1513,7 @@ mod tests {
             heros_mode: ModeHeros::Atterrissage,
             heros_choix: 17,
             heros_taille: 250,
+            heros_style: StyleHeros::Pixels,
         };
         assert_eq!(lire_reglages(&ecrire_reglages(&r)), r);
         for mode in [ModeHeros::Traversee, ModeHeros::Atterrissage, ModeHeros::Hasard] {
@@ -1292,6 +1522,11 @@ mod tests {
         assert_eq!(lire_reglages("heros_mode=nimporte\n").heros_mode, ModeHeros::Hasard, "inconnu : le défaut");
         assert_eq!(lire_reglages("").heros_mode, ModeHeros::Hasard, "« au hasard » par défaut");
         assert_eq!(lire_reglages("").heros_choix, 0, "héros au hasard par défaut");
+        for style in [StyleHeros::Origine, StyleHeros::Encre, StyleHeros::Pixels] {
+            assert_eq!(StyleHeros::lire(style.nom()), Some(style));
+        }
+        assert_eq!(lire_reglages("").heros_style, StyleHeros::Origine, "style d'origine par défaut");
+        assert_eq!(lire_reglages("heros_style=aquarelle").heros_style, StyleHeros::Origine);
         assert_eq!(lire_reglages("").heros_taille, HEROS_TAILLE_DEFAUT);
         assert_eq!(lire_reglages("heros_taille=5000\n").heros_taille, HEROS_TAILLE_MAX);
         assert_eq!(lire_reglages("heros_taille=1\n").heros_taille, HEROS_TAILLE_MIN);

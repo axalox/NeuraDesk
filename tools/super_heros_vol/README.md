@@ -53,3 +53,20 @@ Trois clips SUR PLACE par héros, fond gris, 640×640 :
    se met à marcher SUR PLACE dans l'atterrissage (Wan cloue la fin du clip sur la marche) ;
    l'application le fait avancer dès là. `--sec` : affiche sans écrire.
 5. `vignettes.py assets/popups/mascottes` : les vignettes 96 px de la grille des Réglages.
+
+## Styles « à l'encre » et « en pixels » (2026-11-23)
+
+`styles_heros.py assets/popups/mascottes [n…]` : les filtres des mascottes (`tools/mascottes_styles.py`)
+sur chaque case, planches AUX MÊMES DIMENSIONS (la fiche d'atterrissage reste valable) :
+`heros-NN-ink[-clip].webp`, `heros-NN-pixel[-clip].webp`. Une palette et un grain par héros pour ses
+quatre planches (raccords au pixel). Pixels : blocs de 5 px ancrés au coin de chaque case, WebP sans
+perte ; ⛔ `BLOC` = `BLOC_PIXELS` de `src/win32/super_heros.rs` — l'application relit la grille au
+centre des blocs et l'agrandit au plus proche voisin. ~2 min par héros, sans carte graphique.
+Réglage : `heros_style` (origine / encre / pixels) dans `mascotte.txt`.
+
+## Les super-héros en mascottes (2026-11-24)
+
+`tools/mascottes_heros.py` : le buste DU héros, recadré par Klein depuis son portrait (même visage,
+même costume, même dessin comics, fond blanc avec marges), puis 8 regards + 9 réactions par la chaîne
+des personnes, puis les six styles. Fichiers `superheros-NN[-style]-{directions,reactions,vignette}.webp`.
+⛔ Pas de version « petite mascotte » : refusée par l'utilisateur.
