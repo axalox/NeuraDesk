@@ -188,6 +188,7 @@ pub mod moniteur_taches;
 pub mod moniteur_gpu;
 // Le décodage des registres y sert au SEUL `neuradesk-capteurs.exe`, qui
 // inclut le même fichier : inutilisé ici, testé ici.
+pub mod capteurs_medias;
 #[allow(dead_code)]
 pub mod capteurs_cpu;
 /// Un graphique par disque et par carte graphique (voir `cef_moniteur`).

@@ -36,6 +36,7 @@ use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW,
     RegSetValueExW, HKEY, KEY_READ, KEY_SET_VALUE, REG_BINARY, REG_DWORD, REG_OPTION_NON_VOLATILE,
     REG_SZ, RRF_RT_REG_BINARY,
+    RRF_RT_REG_QWORD,
     RRF_RT_REG_SZ,
 };
 
@@ -163,6 +164,35 @@ pub fn read_binary_value(root: HKEY, subkey: &str, value_name: &str) -> Option<V
         buffer.truncate(size as usize);
         Some(buffer)
     }
+}
+
+/// Lit une valeur `REG_QWORD` sous `root\subkey`, nommée `value_name` — `None`
+/// si la clé/la valeur n'existe pas, n'est pas un entier de 64 bits, ou si une
+/// étape quelconque échoue (best-effort, même raisonnement que
+/// `read_string_value`).
+///
+/// **POURQUOI 64 BITS** : les horodatages `FILETIME` du registre de
+/// confidentialité (`LastUsedTimeStart`/`LastUsedTimeStop`, voir
+/// `win32::capteurs_medias`) sont des `REG_QWORD` — un `REG_DWORD` ne les
+/// contient pas, et `read_binary_value` ne les lit pas non plus (`RRF_RT_REG_
+/// BINARY` ne correspond qu'à ce type-là).
+pub fn read_qword_value(root: HKEY, subkey: &str, value_name: &str) -> Option<u64> {
+    let subkey_wide = to_wide(subkey);
+    let value_wide = to_wide(value_name);
+    let mut donnee: u64 = 0;
+    let mut taille: u32 = std::mem::size_of::<u64>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            root,
+            PCWSTR(subkey_wide.as_ptr()),
+            PCWSTR(value_wide.as_ptr()),
+            RRF_RT_REG_QWORD,
+            None,
+            Some(&mut donnee as *mut u64 as *mut _),
+            Some(&mut taille),
+        )
+    };
+    (status == ERROR_SUCCESS).then_some(donnee)
 }
 
 /// Énumère les noms des sous-clés directes de `root\subkey` — `Vec::new()`

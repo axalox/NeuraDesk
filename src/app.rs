@@ -3732,6 +3732,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let mut verrous_textes = crate::ui::verrous::Textes::new();
     // Le débit réseau (voir `ui::debit`, `win32::debit_reseau`).
     let mut debit_textes = crate::ui::debit::Textes::new();
+    // Micro et caméra en cours d'utilisation (voir `ui::capteurs`,
+    // `win32::capteurs_medias`) — les deux glyphes de la barre PRIMAIRE ; chaque
+    // barre secondaire a les siens (`DockInstance`).
+    let mut capteurs_textes = crate::ui::capteurs::Textes::new();
     let mut debit_echantillonneur = crate::win32::debit_reseau::Echantillonneur::new();
     // Voir `sys_monitor_font_px` juste au-dessus — même correctif, même
     // raison.
@@ -16893,6 +16897,21 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             } else {
                 None
             };
+            // LES CAPTEURS EN USAGE — micro puis caméra, à GAUCHE de l'horloge,
+            // devant l'icône de note (voir `ui::capteurs`, `win32::capteurs_medias`).
+            //
+            // ⚠️ **GARDÉS PAR LA TEXTURE D'HORLOGE, comme toute la rangée de
+            // droite** : `capteur_rect` s'ancre dessus. Et les DEUX cases sont
+            // réservées même vides — voir la doc de `topbar::capteur_rect`.
+            //
+            // `usage()` est un CACHE (500 ms) : le relevé système ne coûte rien
+            // à cette boucle. Ne rien pousser pour une source au repos est le
+            // seul moyen de la cacher (le nuanceur de glyphes ignore l'alpha).
+            let capteurs_usage = crate::win32::capteurs_medias::usage();
+            let capteurs_render_instances = clock_texture
+                .as_ref()
+                .map(|(_, w, h)| capteurs_textes.instances(&layout, (*w, *h), capteurs_usage, effective_topbar_text_color))
+                .unwrap_or([None, None]);
             // L'APPLET DE MASQUAGE — toujours là tant que l'horloge l'est, dans la
             // couleur des autres icônes de la barre.
             let reglages_render_instance = clock_texture.as_ref().filter(|_| features.reglages_secours).map(|(_, w, h)| {
@@ -16918,6 +16937,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // ⭐ LE DÉBIT RÉSEAU (voir `ui::debit`) — juste avant l'icône réseau ;
             // tous les textes de la moitié droite s'ancrent sur SON bord gauche.
             debit_textes.sync(&gfx.device, &layout, dock.topbar_text_size())?;
+            // Les deux glyphes des capteurs (voir `ui::capteurs`) : régénérés au
+            // seul changement d'épaisseur de barre, comme les verrous.
+            capteurs_textes.sync(&gfx.device, &layout)?;
             let bord_reseau = dock.bord_gauche_reseau(&layout);
             let bord_droit = debit_textes.bord_gauche(dock.top_right_zone_left_edge(&layout), bord_reseau, &layout);
             let debit_instance = debit_textes.instance(bord_reseau, &layout, effective_topbar_text_color);
@@ -17746,6 +17768,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // Le voyant d'enregistrement — un disque UNI, sans texture.
             if let Some(instances) = &rec_render_instance {
                 batches.push(QuadBatch::new(None, instances));
+            }
+            // Les capteurs en usage, APRÈS le lot différé de l'horloge comme le
+            // reste de la rangée ; rien ne se cliquable en dessous d'eux, donc
+            // l'ordre entre les deux n'a pas d'importance.
+            for (i, instance) in capteurs_render_instances.iter().enumerate() {
+                if let (Some(instance), Some(texture)) = (instance, capteurs_textes.texture(i)) {
+                    batches.push(QuadBatch::new(Some(&texture.srv), std::slice::from_ref(instance)));
+                }
             }
 
             // Rang du premier lot qui a droit de sortir de la barre du haut

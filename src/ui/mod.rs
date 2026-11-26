@@ -1,3 +1,4 @@
+pub mod capteurs;
 pub mod color;
 pub mod debit;
 pub mod dessins_vignettes;

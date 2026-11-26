@@ -9,6 +9,7 @@ Automatique : français si Windows est en français, anglais sinon.	Automatic: F
 Le changement de langue prendra effet au prochain démarrage de NeuraDesk.	The language change will take effect the next time NeuraDesk starts.
 
 # == aide.html
+Deux voyants discrets, à gauche de l'horloge, signalent le micro et la caméra tant qu'une application les utilise, et s'éteignent dès qu'elle s'arrête.	Two discreet dots to the left of the clock light up while an app is using the microphone or the camera, and go out as soon as it stops.
 (Réglages → Style) a sa police. Si elle manque, Windows la remplace par Segoe UI : rien ne casse, mais le style perd son allure.	(Settings → Style) has its own font. If it's missing, Windows substitutes Segoe UI: nothing breaks, but the style loses its look.
 ) et les	) and the
 ), les	), the

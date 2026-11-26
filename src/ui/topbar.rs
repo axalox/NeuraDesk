@@ -1229,6 +1229,71 @@ pub fn rec_instances(rect: [f32; 4], color: [f32; 4], ring_rgb: [f32; 3]) -> [Qu
 }
 
 // ---------------------------------------------------------------------------
+// LES CAPTEURS EN USAGE — MICRO PUIS CAMÉRA, à DROITE du voyant d'enregistrement
+// ---------------------------------------------------------------------------
+//
+// ⭐ IDÉE N°3 REPRISE DE FLUIDWIN (`sensori.h`), DEMANDÉE le 2026-11-26
+// (« passe au 3 ») : deux cases qui n'apparaissent QUE tant que la source
+// correspondante est utilisée par une application — micro d'abord, caméra
+// ensuite (voir `win32::capteurs_medias` pour la détection).
+//
+// ⛔ **ELLES SONT À GAUCHE DE L'HORLOGE, ET CE N'EST PAS UN GOÛT.** Posées à
+// DROITE, après le voyant d'enregistrement (leur première place, le
+// 2026-11-26), elles étaient à 90 px des pastilles Verr. num / Verr. maj sur un
+// écran SECONDAIRE — mesuré sur une capture : la caméra se dessinait PAR-DESSUS
+// le « NUM ». La rangée de droite est bornée par la chaîne du bord droit, et elle
+// y était déjà pleine ; la gauche de l'horloge, elle, est libre sur les deux
+// barres (l'icône de note y est seule).
+//
+// ⚠️ **LES DEUX CASES SONT RÉSERVÉES MÊME QUAND ELLES SONT VIDES**, règle de
+// toute cette rangée : un widget ne change pas de place selon l'état de son
+// voisin.
+//
+// **RIEN À CLIQUER, RIEN QUI MAGNIFIE** : ce sont des indicateurs. Ils n'ont
+// donc ni entrée dans `app::topbar_hit_scales`, ni `HOVER_*_INDEX` — ajouter un
+// indice les aurait obligés à en avoir un sans rien offrir au clic.
+
+/// Nombre de cases : micro, puis caméra — l'ordre de `ui::capteurs::GLYPHES`.
+pub const CAPTEURS: usize = 2;
+
+/// Marge entre une case et la précédente — la même que dans toute la rangée.
+pub const CAPTEUR_MARGIN_LEFT: f32 = MINUTEUR_MARGIN_LEFT;
+
+/// Rectangle de la case `index` (0 = micro, 1 = caméra) — **à GAUCHE de
+/// l'emplacement de l'icône de note**. Les cases s'éloignent de l'horloge avec
+/// `index` : la caméra est donc à gauche du micro. Même piège de largeur nulle
+/// que `note_rect` : les appelants sont gardés par « la texture d'horloge
+/// existe ».
+pub fn capteur_rect(layout: &DockLayout, clock_w: f32, clock_h: f32, index: usize) -> [f32; 4] {
+    let [nx, ny, nw, nh] = note_rect(layout, clock_w, clock_h);
+    [nx - CAPTEUR_MARGIN_LEFT - nw - index as f32 * (nw + CAPTEUR_MARGIN_LEFT), ny, nw, nh]
+}
+
+/// Rectangle à DESSINER — même formule que la cloche. Ces cases ne magnifient
+/// pas (rien à cliquer), donc c'est le rectangle AU REPOS : `scale` n'est là
+/// que pour la forme commune aux autres widgets de la rangée, et vaut 1.0.
+pub fn presented_capteur_rect(rect: [f32; 4], scale: f32, layout: &DockLayout) -> [f32; 4] {
+    crate::ui::dock::presented_rect_for(rect, scale, layout)
+}
+
+/// Instance de quad du glyphe (micro ou caméra, voir `ui::capteurs`) — couleur
+/// de la barre, comme ses voisines : le glyphe lui-même EST le signal.
+///
+/// `TexMode::Glyph` : la texture n'est qu'un masque, la couleur vient d'ici.
+pub fn capteur_instance(rect: [f32; 4], color: [f32; 3]) -> QuadInstance {
+    QuadInstance::new_glyph(rect, color)
+}
+
+/// Taille de police des glyphes de capteurs : le DOUBLE de la case d'icône.
+///
+/// La texture est ÉTIRÉE dans la case ; la doubler garde le glyphe net quand la
+/// taille des icônes de la barre est augmentée (jusqu'à 150 %), et évite un
+/// redimensionnement de bitmap pour la moindre variation d'épaisseur.
+pub fn capteur_font_px(layout: &DockLayout) -> i32 {
+    (crate::ui::dock::top_icon_size_for(layout.top_thickness) * 2.0).ceil().max(16.0) as i32
+}
+
+// ---------------------------------------------------------------------------
 // L'ICÔNE DE NOTE — à GAUCHE de l'horloge
 // ---------------------------------------------------------------------------
 //

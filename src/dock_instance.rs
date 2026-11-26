@@ -79,6 +79,9 @@ pub struct DockInstance {
     verrous: crate::ui::verrous::Textes,
     /// Le débit réseau (voir `ui::debit`), à la police de CETTE barre.
     debit: crate::ui::debit::Textes,
+    /// Micro et caméra en cours d'utilisation (voir `ui::capteurs`), à la taille
+    /// d'icône de CETTE barre — même raison de cache que les champs ci-dessus.
+    capteurs: crate::ui::capteurs::Textes,
     media_title: CachedText,
     /// Numéros des pastilles de bureaux virtuels de CET écran (voir
     /// `ui::desktop_labels`) — un `CachedText` par bureau, à la taille de
@@ -227,6 +230,7 @@ impl DockInstance {
             refresh_rate: CachedText::new(),
             verrous: crate::ui::verrous::Textes::new(),
             debit: crate::ui::debit::Textes::new(),
+            capteurs: crate::ui::capteurs::Textes::new(),
             media_title: CachedText::new(),
             desktop_labels: crate::ui::desktop_labels::DesktopDotLabels::new(),
         }
@@ -305,6 +309,9 @@ impl DockInstance {
         crate::ui::langue::sans_traduction(|| self.media_title.sync(device, media_title_text, topbar::media_title_font_px(&self.layout, text_size), topbar::MEDIA_TITLE_FONT_NAME, false))?;
         self.verrous.sync(device, &self.layout, text_size)?;
         self.debit.sync(device, &self.layout, text_size)?;
+        // Les deux glyphes des capteurs (voir `ui::capteurs`) : une fois par
+        // changement de taille d'icône de CETTE barre.
+        self.capteurs.sync(device, &self.layout)?;
         // La taille de pastille est celle de CET écran (voir
         // `Dock::desktop_dot_size`) : un écran secondaire qui règle ses
         // pastilles plus petites voit donc ses numéros suivre — et disparaître
@@ -1346,6 +1353,26 @@ impl DockInstance {
             .flatten();
         if let Some(instances) = &rec_topbar_instance {
             batches.push(QuadBatch::new(None, instances));
+        }
+        // LES CAPTEURS EN USAGE — micro puis caméra, à gauche de l'horloge (voir
+        // `ui::capteurs`) ; sur CHAQUE barre, comme la cloche : la confidentialité
+        // ne dépend pas de l'écran qu'on regarde.
+        // Gardées par `clock_size()` pour la même raison que la cloche.
+        let capteurs_instances = self
+            .clock_size()
+            .map(|taille| {
+                self.capteurs.instances(
+                    &layout,
+                    taille,
+                    crate::win32::capteurs_medias::usage(),
+                    effective_topbar_text_color,
+                )
+            })
+            .unwrap_or([None, None]);
+        for (i, instance) in capteurs_instances.iter().enumerate() {
+            if let (Some(instance), Some(texture)) = (instance, self.capteurs.texture(i)) {
+                batches.push(QuadBatch::new(Some(&texture.srv), std::slice::from_ref(instance)));
+            }
         }
 
         // Pastilles de bureaux virtuels (voir `ui::topbar::desktop_dot_
