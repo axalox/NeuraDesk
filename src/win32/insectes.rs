@@ -152,6 +152,16 @@ const MINUTERIE: usize = 1;
 const VOL_MS: u32 = 16;
 const POSE_MS: u32 = 40;
 const ABSENT_MS: u32 = 500;
+/// ⭐ LE BATTEMENT DE LA MOUCHE ET DU MOUSTIQUE, EN TOURS PAR IMAGE PEINTE —
+/// DEMANDE EXPLICITE (2026-11-25) : « il faut faire bouger les ailes plus
+/// vite ». La minuterie volante bat à ~62 images par seconde, et une aile qui
+/// ferait PLUS d'un demi-tour entre deux images ne paraîtrait pas plus rapide :
+/// elle filerait à l'envers ou au hasard (effet de roue de chariot). À 0,47,
+/// elle est juste sous cette limite quel que soit le nombre d'insectes : c'est
+/// le plus vite que l'écran peut montrer, et l'écart est le même à chaque
+/// image — donc pas de ralentissement quand l'appli est chargée. Le papillon,
+/// lui, garde `Allure::battement_vol` (par seconde), lent et lisible.
+const BATTEMENT_PAR_IMAGE: f32 = 0.47;
 /// Le plus long vol avant de changer d'idée (il tournait autour d'un point
 /// inaccessible, ou l'écran a changé).
 const VOL_MAX: Duration = Duration::from_secs(25);
@@ -570,6 +580,17 @@ fn nouvelle_pose(i: &Insecte, souris: (f32, f32)) -> (f32, f32) {
     vol::point_de_pose(i.travail.retrecie(marge), souris, a.rayon_fuite * i.echelle * 3.0, &mut hasard)
 }
 
+/// Le pas du battement pour un tic : un tour par IMAGE pour la mouche et le
+/// moustique (le plus vite que l'écran peut montrer sans roue de chariot), la
+/// cadence en secondes pour le papillon.
+fn pas_du_battement(espece: Espece, allure: &vol::Allure, dt: f32) -> f32 {
+    if espece.est_papillon() {
+        allure.battement_vol * dt
+    } else {
+        BATTEMENT_PAR_IMAGE
+    }
+}
+
 fn avancer(i: &mut Insecte, maintenant: Instant, dt: f32, souris: (f32, f32), son: bool) -> Travail {
     let a = vol::allure(i.espece);
     match i.phase {
@@ -699,7 +720,10 @@ fn voler(i: &mut Insecte, maintenant: Instant, dt: f32, souris: (f32, f32), sort
     if v > 5.0 * i.echelle {
         i.cap = vol::approcher_angle(i.cap, i.vit.1.atan2(i.vit.0), 10.0 * dt);
     }
-    i.battement = (i.battement + a.battement_vol * dt).fract();
+    // ⭐ Mouche et moustique : un tour par image (voir BATTEMENT_PAR_IMAGE) ;
+    // le papillon garde sa cadence en secondes, lisible.
+    let pas = pas_du_battement(i.espece, &a, dt);
+    i.battement = (i.battement + pas).fract();
 
     let d = (i.pos.0 - i.cible.0).hypot(i.pos.1 - i.cible.1);
     if sortir {
@@ -875,6 +899,22 @@ mod tests {
         assert_eq!(Espece::lire("mouche"), Some(Espece::Mouche(0)));
         assert_eq!(Espece::lire("moustique"), Some(Espece::Moustique(0)));
         assert!(Espece::Mouche(4).bourdonne() && Espece::Moustique(4).bourdonne());
+    }
+
+    /// ⭐ DEMANDE EXPLICITE (2026-11-25) : « il faut faire bouger les ailes plus
+    /// vite ». La mouche et le moustique avancent d'un tour PAR IMAGE — le plus
+    /// vite montrable sans roue de chariot —, même quand une image dure plus
+    /// longtemps ; le papillon garde sa cadence en secondes.
+    #[test]
+    fn la_mouche_bat_au_maximum_de_l_ecran_et_le_papillon_a_son_rythme() {
+        assert!(BATTEMENT_PAR_IMAGE < 0.5, "au-delà d'un demi-tour par image, l'aile repart à l'envers");
+        let (mouche, papillon) = (vol::allure(Espece::Mouche(0)), vol::allure(Espece::Papillon(0)));
+        for dt in [0.016f32, 0.05] {
+            assert_eq!(pas_du_battement(Espece::Mouche(0), &mouche, dt), BATTEMENT_PAR_IMAGE);
+            assert_eq!(pas_du_battement(Espece::Moustique(0), &mouche, dt), BATTEMENT_PAR_IMAGE);
+        }
+        let pas = pas_du_battement(Espece::Papillon(0), &papillon, 0.05);
+        assert!((pas - papillon.battement_vol * 0.05).abs() < 1e-6, "papillon : {pas}");
     }
 
     /// Une planche de revue (posés puis en vol, agrandis ×5 sur fond clair) et

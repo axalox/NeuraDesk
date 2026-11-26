@@ -6,8 +6,11 @@
 //!
 //! À chaque image : rotation selon le cap (échantillonnage bilinéaire), ombre
 //! portée tirée de la silhouette ; en vol, les ailes translucides de la mouche
-//! et du moustique scintillent, celles du papillon battent (la moitié gauche et
-//! la moitié droite écrasées vers le corps, comme vues de dessus).
+//! et du moustique BATTENT pour de vrai (DEMANDE EXPLICITE (2026-11-25) :
+//! « je préférerais une vraie animation pour les battements d'ailes ») — vues
+//! de dessus, elles balaient l'axe avant-arrière autour de leur racine, à la
+//! phase du battement — et scintillent ; celles du papillon battent aussi (la
+//! moitié gauche et la moitié droite écrasées vers le corps).
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -53,11 +56,28 @@ fn cote_photo(espece: Espece) -> f32 {
 const CORPS_PAPILLON: f32 = 0.025;
 /// Sous cette opacité, un pixel de mouche ou de moustique est de l'aile.
 const ALPHA_AILE: f32 = 0.8;
+/// La clarté (couleur droite) qui sépare la MEMBRANE translucide des bords
+/// antialiasés du corps et des pattes, sombres : eux gardent un contour net.
+const CLAIR_AILE: f32 = 0.55;
+/// À peu près transparent : le fond.
+const FOND: f32 = 0.02;
+/// La demi-largeur du corps, en part du côté de la photo : la racine de l'aile
+/// ne balaie rien, le bout balaie toute la course.
+const RACINE_AILE: f32 = 0.08;
+/// La course du battement vue de dessus, en part de la distance à la racine :
+/// le sinus de l'angle que l'aile balaie autour de sa racine. Assez large pour
+/// que le battement se voie à 25 px de long.
+const COURSE_AILE: f32 = 0.50;
 
 /// Une photo : RGBA prémultiplié, flottants de 0 à 1, carrée.
 pub struct Image {
     cote: u32,
     px: Vec<[f32; 4]>,
+    /// ⭐ OÙ LES AILES PEUVENT PASSER — par colonne, les rangées des membranes
+    /// élargies de la course maximale du battement (mouche et moustique en
+    /// vol seulement : vide ailleurs). C'est dans cette zone qu'une aile est
+    /// déplacée ; au-dehors, le corps et les pattes ne bougent pas.
+    zone: Vec<bool>,
 }
 
 impl Image {
@@ -79,7 +99,7 @@ impl Image {
                 [p.0[0] as f32 / 255.0 * a, p.0[1] as f32 / 255.0 * a, p.0[2] as f32 / 255.0 * a, a]
             })
             .collect();
-        Some(Image { cote: l, px })
+        Some(Image { cote: l, px, zone: Vec::new() })
     }
 
     /// Bilinéaire, transparent hors de l'image.
@@ -103,6 +123,32 @@ impl Image {
         }
         r
     }
+
+    /// ⭐ LA ZONE DU BATTEMENT — les rangées où une aile peut passer, par
+    /// colonne : celles des membranes, élargies de la course maximale que
+    /// `dessiner` leur fera faire (proportionnelle à la distance à la racine).
+    fn zone_de_battement(&self) -> Vec<bool> {
+        let c = self.cote as usize;
+        let demi = self.cote as f32 / 2.0;
+        let mut zone = vec![false; c * c];
+        for x in 0..c {
+            let course = ((x as f32 - demi).abs() - RACINE_AILE * self.cote as f32).max(0.0) * COURSE_AILE;
+            let (mut haut, mut bas) = (None, 0usize);
+            for y in 0..c {
+                if est_aile(self.px[y * c + x]) {
+                    haut.get_or_insert(y);
+                    bas = y;
+                }
+            }
+            let Some(haut) = haut else { continue };
+            let y0 = (haut as f32 - course).floor().max(0.0) as usize;
+            let y1 = (bas as f32 + course).ceil().min(c as f32 - 1.0) as usize;
+            for y in y0..=y1 {
+                zone[y * c + x] = true;
+            }
+        }
+        zone
+    }
 }
 
 /// Toutes les photos d'insectes.
@@ -121,7 +167,10 @@ impl Photos {
                 if e.est_papillon() {
                     Some([lire(e.nom())?, lire(e.nom())?])
                 } else {
-                    Some([lire(&format!("{}-pose", e.nom()))?, lire(&format!("{}-vol", e.nom()))?])
+                    // La photo de vol sait où ses ailes peuvent battre.
+                    let mut vol = lire(&format!("{}-vol", e.nom()))?;
+                    vol.zone = vol.zone_de_battement();
+                    Some([lire(&format!("{}-pose", e.nom()))?, vol])
                 }
             })
             .collect();
@@ -165,6 +214,12 @@ fn ouverture(m: &Moment) -> f32 {
     }
 }
 
+/// Un pixel de MEMBRANE d'aile : translucide et clair. Les bords lissés du
+/// corps, des pattes et les nervures sont sombres.
+fn est_aile(p: [f32; 4]) -> bool {
+    p[3] > FOND && p[3] < ALPHA_AILE && (p[0] + p[1] + p[2]) / (3.0 * p[3]) > CLAIR_AILE
+}
+
 /// Dessine l'insecte au centre d'un carré de `cote` pixels, `echelle` pixels
 /// par pixel logique : BGRA prémultiplié. Le carré se cale sur `cote_logique`.
 pub fn dessiner(photos: &Photos, espece: Espece, m: &Moment, echelle: f32, cote: u32) -> Vec<u8> {
@@ -175,11 +230,15 @@ pub fn dessiner(photos: &Photos, espece: Espece, m: &Moment, echelle: f32, cote:
     let centre = cote as f32 / 2.0;
     let (sin, cos) = m.cap.sin_cos();
     let papillon = espece.est_papillon();
+    let volant = m.en_vol && !papillon;
     let ouvre = ouverture(m).max(0.05);
     let corps = CORPS_PAPILLON * s;
+    // ⭐ LE BATTEMENT, VU DE DESSUS : les ailes balaient l'axe avant-arrière
+    // autour de leur racine — leur bout parcourt la course, la racine rien.
+    let phase = (m.battement * std::f32::consts::TAU).sin();
     // Les ailes translucides scintillent en vol.
-    let scintille = if m.en_vol && !papillon {
-        0.45 + 0.55 * (m.battement * std::f32::consts::TAU).sin().abs()
+    let scintille = if volant {
+        0.75 + 0.25 * phase.abs()
     } else {
         1.0
     };
@@ -192,7 +251,17 @@ pub fn dessiner(photos: &Photos, espece: Espece, m: &Moment, echelle: f32, cote:
         if papillon && droite.abs() > corps {
             droite = droite.signum() * (corps + (droite.abs() - corps) / ouvre);
         }
-        let mut p = img.lire_en(s / 2.0 + droite, s / 2.0 - avant * k);
+        let (x, mut y) = (s / 2.0 + droite, s / 2.0 - avant * k);
+        if !img.zone.is_empty() {
+            let lateral = droite.abs() - RACINE_AILE * s;
+            let (xi, yi, c) = (x as i32, y as i32, img.cote as i32);
+            if lateral > 0.0 && (0..c).contains(&xi) && (0..c).contains(&yi) && img.zone[(yi * c + xi) as usize] {
+                // L'aile est là où elle était : on va la chercher à la position
+                // d'il y a un instant de son battement.
+                y -= lateral * phase * COURSE_AILE;
+            }
+        }
+        let mut p = img.lire_en(x, y);
         if scintille < 1.0 && p[3] < ALPHA_AILE {
             for c in &mut p {
                 *c *= scintille;
@@ -294,6 +363,37 @@ mod tests {
             dessiner(&photos, Espece::Papillon(0), &m, 1.0, 124).chunks_exact(4).filter(|p| p[3] > 160).count()
         };
         assert!(couvert(0.0) > couvert(0.5) * 3, "grandes ouvertes ≫ de profil");
+    }
+
+    /// ⭐ Une mouche en vol BAT des ailes : le centre de masse des membranes
+    /// TRANSLUCIDES se déplace le long de l'axe avant-arrière entre deux
+    /// phases opposées du battement (cap 0 : cet axe est celui de l'écran).
+    /// Une photo immobile donnerait le même centre aux deux phases.
+    #[test]
+    fn en_vol_les_ailes_balayent_l_axe_avant_arriere() {
+        let photos = livrees();
+        let centre = |espece: Espece, battement: f32| {
+            let m = Moment { cap: 0.0, en_vol: true, battement };
+            let cote = 124u32;
+            let px = dessiner(&photos, espece, &m, 1.0, cote);
+            let (mut somme, mut poids) = (0.0f32, 0.0f32);
+            for (i, p) in px.chunks_exact(4).enumerate() {
+                let a = p[3] as f32 / 255.0;
+                if a > 0.0 && a < ALPHA_AILE {
+                    somme += (i as u32 % cote) as f32 * a;
+                    poids += a;
+                }
+            }
+            somme / poids.max(1e-3)
+        };
+        for espece in [Espece::Mouche(0), Espece::Moustique(0)] {
+            // sin(2π·0,25) = 1, sin(2π·0,75) = −1 : course maximale opposée.
+            let (avant, arriere) = (centre(espece, 0.25), centre(espece, 0.75));
+            assert!(
+                (avant - arriere).abs() >= 2.0,
+                "{espece:?} : les ailes ne balaient pas ({avant:.1} / {arriere:.1})"
+            );
+        }
     }
 
     #[test]
