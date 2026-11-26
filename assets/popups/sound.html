@@ -5,12 +5,18 @@
   périphériques de sortie, mute d'entrée, liste de périphériques d'entrée).
 
   Comme assets/popups/network.html, l'état ne peut PAS être calculé en JS
-  pur : Rust pousse `window.setState({output, outputs, input, inputs})`
+  pur : Rust pousse `window.setState({output, outputs, input, inputs, apps})`
   (voir win32::cef_sound::push_state, win32::cef_app::CefBrowserSurface::
   execute_js) à l'ouverture et après chaque action. Le DOM est reconstruit
-  par JS à partir de cet état (pas de contenu HTML statique dans <body>,
-  contrairement aux autres popups) car le nombre de lignes est dynamique
-  (dépend du nombre de périphériques réellement branchés).
+  par JS à partir de cet état car le nombre de lignes est dynamique (dépend
+  du nombre de périphériques réellement branchés et d'applications qui ont
+  une session audio).
+
+  `apps` est le MÉLANGEUR PAR APPLICATION (win32::audio::apps_on_default_output) :
+  une ligne par processus, volume et muet propres à l'app (WASAPI,
+  ISimpleAudioVolume). Contrairement aux périphériques, ces lignes sont
+  mises à jour EN PLACE (voir `renderApps`) — un `<input type=range>`
+  remplacé en plein glissement perdrait la capture de la souris.
 
   Canal JS→Rust : `neuradesk://sound/<action>[/<valeur>]`, MÊME mécanisme
   que les autres popups (RequestHandler::on_before_browse) — SAUF que les
@@ -72,6 +78,12 @@
        survol ci-dessus (garder l'état actif nettement plus marqué que le
        survol). */
     background: rgba(var(--menu-active-rgb, 255, 255, 255), calc(0.52 * var(--popup-fond-alpha, 1)));
+    /* ⛔ **LE TEXTE PASSE SUR LE PÔLE OPPOSÉ.** `--menu-active-rgb` EST la
+       couleur du texte : à 0.52 sur le fond, elle donne un aplat CLAIR, et
+       du texte blanc dessus est invisible — mesuré sur une capture le
+       2026-11-26 (le palier courant apparaissait comme une case blanche
+       vide). `--menu-on-accent-rgb` est exactement ce pôle-là. */
+    color: rgba(var(--menu-on-accent-rgb, 0, 0, 0), min(1, var(--popup-alpha, 1)));
     font-weight: 600;
   }
   button.row {
@@ -101,10 +113,87 @@
     display: flex;
     flex-direction: column;
   }
+  /* --- Mélangeur par application -------------------------------------- */
+  .app-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 4px;
+    border-radius: var(--nd-rayon-controle);
+  }
+  .app-row:hover {
+    /* Même palier de survol que les autres lignes de menu (voir ci-dessus). */
+    background: rgba(var(--menu-zone-rgb, 255, 255, 255), calc(0.46 * var(--popup-fond-alpha, 1)));
+  }
+  /* Nom d'application = contenu de l'utilisateur : `data-no-i18n` posé par
+     JS (voir `creerLigneApp`), sinon « Son » deviendrait « Sound ». */
+  .app-name {
+    flex: 1;
+    min-width: 80px;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 14px;
+  }
+  .app-name.off {
+    opacity: calc(0.55 * max(1, var(--popup-alpha, 1)));
+  }
+  .app-row input[type="range"] {
+    flex: 0 0 120px;
+    width: 120px;
+    accent-color: rgba(var(--menu-accent-rgb, 255, 255, 255), calc(0.85 * var(--popup-fond-alpha, 1)));
+  }
+  .app-value {
+    min-width: 40px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+  }
+  .app-mute {
+    all: unset;
+    padding: 4px 8px;
+    border-radius: var(--nd-rayon-controle);
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .app-mute:hover {
+    background: rgba(var(--menu-zone-rgb, 255, 255, 255), calc(0.46 * var(--popup-fond-alpha, 1)));
+  }
+  .app-mute.muet {
+    background: rgba(var(--menu-active-rgb, 255, 255, 255), calc(0.52 * var(--popup-fond-alpha, 1)));
+    /* Même raison que `.volumes button.active` ci-dessus. */
+    color: rgba(var(--menu-on-accent-rgb, 0, 0, 0), min(1, var(--popup-alpha, 1)));
+    font-weight: 600;
+  }
+  .app-vide {
+    font-size: 13px;
+    opacity: calc(0.6 * max(1, var(--popup-alpha, 1)));
+    margin: 2px 0;
+  }
 </style>
 </head>
 <body>
-  <div class="menu" id="menu"></div>
+  <!-- Les conteneurs sont STATIQUES : `render()` ne remplit que les deux
+       sections de périphériques, et la liste des applications est mise à
+       jour EN PLACE (voir `renderApps`). Reconstruire cette liste à chaque
+       état (toutes les 500 ms) arracherait le curseur sous la main qui le
+       glisse — même leçon que `voicemeeter.html` (doc de `channelRow`). -->
+  <div class="menu" id="menu">
+    <div id="sorties"></div>
+    <div id="applications">
+      <h2>Applications</h2>
+      <div id="apps"></div>
+      <p class="app-vide" id="apps-vide" hidden>Aucune application ne joue de son</p>
+    </div>
+    <!-- ⚠️ LA LISTE DES SORTIES EST SOUS LE MÉLANGEUR, ET C'EST VOULU : sur
+         une machine à cartes virtuelles (Voicemeeter…), elle fait vingt-cinq
+         lignes et repoussait « Applications » hors de la fenêtre — mesuré sur
+         une capture le 2026-11-26. -->
+    <div id="sorties-liste"></div>
+    <hr>
+    <div id="entrees"></div>
+  </div>
   <script>
     // Envoie `neuradesk://sound/<segments encodés>` — voir le commentaire
     // d'en-tête, un ID de périphérique peut contenir des caractères
@@ -134,20 +223,20 @@
     }
 
     const VOLUME_STEPS = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
-    const state = { output: null, outputs: [], input: null, inputs: [] };
+    const state = { output: null, outputs: [], input: null, inputs: [], apps: [] };
     // Dernier JSON reçu de `window.setState` — voir la doc de cette
     // fonction plus bas, BUG RÉEL SIGNALÉ ("mes clics ne sont pas pris en
     // compte") : évite de reconstruire le DOM pour un état identique.
     let lastStateJson = null;
 
-    function render() {
-      const menu = document.getElementById("menu");
-      menu.replaceChildren();
+    function renderSorties() {
+      const box = document.getElementById("sorties");
+      box.replaceChildren();
 
       const outputLabel = state.output
         ? `Sortie : ${state.output.name}` + (state.output.volume !== null ? ` (${state.output.volume}%)` : "")
         : "Sortie : indisponible";
-      menu.appendChild(el("h2", {}, [outputLabel]));
+      box.appendChild(el("h2", {}, [outputLabel]));
 
       if (state.output) {
         const volumes = el("div", { class: "volumes" });
@@ -159,16 +248,23 @@
             ]),
           );
         }
-        menu.appendChild(volumes);
-        menu.appendChild(
+        box.appendChild(volumes);
+        box.appendChild(
           el("button", { class: "row", onclick: () => go("toggle-output-mute") }, [
             state.output.muted ? "Réactiver le son" : "Couper le son",
           ]),
         );
       }
 
+      // ⚠️ LA LISTE VAUT SON PROPRE CONTENEUR (`#sorties-liste`, placé APRÈS
+      // le mélangeur dans le HTML) : sur vingt-cinq cartes virtuelles, elle
+      // repoussait « Applications » hors de la fenêtre (capture du
+      // 2026-11-26). Un seul conteneur, deux endroits dans l'ordre.
+      const listeBox = document.getElementById("sorties-liste");
+      listeBox.replaceChildren();
+      listeBox.hidden = state.outputs.length <= 1;
       if (state.outputs.length > 1) {
-        menu.appendChild(el("h2", {}, ["Changer de sortie"]));
+        listeBox.appendChild(el("h2", {}, ["Changer de sortie"]));
         const list = el("div", { class: "device-list" });
         for (const device of state.outputs) {
           const current = state.output && state.output.id === device.id;
@@ -178,16 +274,19 @@
             ]),
           );
         }
-        menu.appendChild(list);
+        listeBox.appendChild(list);
       }
+    }
 
-      menu.appendChild(el("hr"));
+    function renderEntrees() {
+      const box = document.getElementById("entrees");
+      box.replaceChildren();
 
       const inputLabel = state.input ? `Entrée : ${state.input.name}` : "Entrée : indisponible";
-      menu.appendChild(el("h2", {}, [inputLabel]));
+      box.appendChild(el("h2", {}, [inputLabel]));
 
       if (state.input) {
-        menu.appendChild(
+        box.appendChild(
           el("button", { class: "row", onclick: () => go("toggle-input-mute") }, [
             state.input.muted ? "Réactiver le micro" : "Couper le micro",
           ]),
@@ -195,7 +294,7 @@
       }
 
       if (state.inputs.length > 1) {
-        menu.appendChild(el("h2", {}, ["Changer d'entrée"]));
+        box.appendChild(el("h2", {}, ["Changer d'entrée"]));
         const list = el("div", { class: "device-list" });
         for (const device of state.inputs) {
           const current = state.input && state.input.id === device.id;
@@ -205,8 +304,100 @@
             ]),
           );
         }
-        menu.appendChild(list);
+        box.appendChild(list);
       }
+    }
+
+    // ---- Mélangeur par application ------------------------------------
+    // Une ligne par processus (c'est Rust qui regroupe : voir
+    // win32::audio::apps_on_default_output). Les lignes sont CRÉÉES UNE FOIS
+    // puis mises à jour EN PLACE : `render()` reconstruit les sections de
+    // périphériques à chaque état, mais remplacer un `<input type=range>` en
+    // plein glissement lui ferait perdre la capture de la souris — le
+    // glissement s'arrêterait au milieu du geste (même leçon que
+    // voicemeeter.html, doc de `channelRow`).
+    const appRows = new Map(); // pid -> { row, nom, curseur, valeur, mute }
+    let ordreApps = "";
+    /// Le curseur qu'on est en train de GLISSER (voir `pointerdown`), et non
+    /// `document.activeElement` : un curseur garde le focus après le relâcher,
+    /// et ses mises à jour externes seraient alors ignorées indéfiniment.
+    let curseurGlisse = null;
+
+    function creerLigneApp(app) {
+      // Nom d'application = CONTENU UTILISATEUR (une app peut s'appeler
+      // « Son ») → `data-no-i18n`. Exception : la ligne des sons du système
+      // (PID 0), dont le libellé est le NÔTRE et doit être traduit.
+      const attrs = { class: "app-name" };
+      if (app.pid !== 0) attrs["data-no-i18n"] = "1";
+      const nom = el("span", attrs, [app.name]);
+      const curseur = el("input", { type: "range", min: "0", max: "100", step: "1", value: String(app.volume) });
+      const valeur = el("span", { class: "app-value" }, [app.volume + "%"]);
+      // `data-i18n-ctx` : « Couper » seul vaut « Cut » au dictionnaire, et
+      // c'est un bouton MUET (voir assets/i18n/en.tsv, `son|Couper`).
+      const mute = el("button", { class: "app-mute", "data-i18n-ctx": "son" }, [app.muted ? "Réactiver" : "Couper"]);
+      const row = el("div", { class: "app-row" }, [nom, curseur, valeur, mute]);
+
+      curseur.addEventListener("input", () => {
+        valeur.textContent = curseur.value + "%";
+        go("set-app-volume", String(app.pid), curseur.value);
+      });
+      curseur.addEventListener("pointerdown", () => { curseurGlisse = curseur; });
+      const relacher = () => { if (curseurGlisse === curseur) curseurGlisse = null; };
+      curseur.addEventListener("pointerup", relacher);
+      curseur.addEventListener("pointercancel", relacher);
+      mute.addEventListener("click", () => go("toggle-app-mute", String(app.pid)));
+      return { row, nom, curseur, valeur, mute };
+    }
+
+    function renderApps() {
+      const apps = state.apps || [];
+      const conteneur = document.getElementById("apps");
+      document.getElementById("apps-vide").hidden = apps.length > 0;
+
+      const vus = new Set();
+      for (const app of apps) {
+        vus.add(app.pid);
+        let ligne = appRows.get(app.pid);
+        if (!ligne) {
+          ligne = creerLigneApp(app);
+          appRows.set(app.pid, ligne);
+          conteneur.appendChild(ligne.row);
+        }
+        ligne.nom.textContent = app.name;
+        ligne.nom.classList.toggle("off", !app.active);
+        ligne.valeur.textContent = app.volume + "%";
+        ligne.mute.textContent = app.muted ? "Réactiver" : "Couper";
+        ligne.mute.classList.toggle("muet", app.muted);
+        // ⛔ Ne pas réécrire la valeur du curseur pendant qu'on le glisse :
+        // le nœud est le même, mais lui imposer une position sous la main
+        // ferait sauter le bouton. Le drapeau est celui du GLISSEMENT, pas du
+        // focus (voir `curseurGlisse`).
+        if (curseurGlisse !== ligne.curseur) ligne.curseur.value = String(app.volume);
+      }
+
+      for (const [pid, ligne] of [...appRows]) {
+        if (!vus.has(pid)) {
+          ligne.row.remove();
+          appRows.delete(pid);
+        }
+      }
+
+      // Ordre voulu par Rust (qui joue d'abord, puis par nom). On ne déplace
+      // les lignes que si l'ordre CHANGE, et jamais pendant un glissement.
+      const ordre = apps.map((a) => a.pid).join(",");
+      if (ordre !== ordreApps && curseurGlisse === null) {
+        ordreApps = ordre;
+        for (const app of apps) {
+          const ligne = appRows.get(app.pid);
+          if (ligne) conteneur.appendChild(ligne.row);
+        }
+      }
+    }
+
+    function render() {
+      renderSorties();
+      renderEntrees();
+      renderApps();
     }
 
     // Appelée depuis Rust (win32::cef_sound::push_state) — voir le
@@ -224,12 +415,32 @@
     // `:hover` continuait de fonctionner (recalculé depuis la position du
     // curseur, indépendamment de l'identité du nœud). D'où le symptôme
     // exact rapporté : surbrillance au survol, clic sans effet.
+    let lastSortiesJson = null;
+    let lastEntreesJson = null;
+
     window.setState = function (next) {
       const nextJson = JSON.stringify(next);
       if (nextJson === lastStateJson) return;
       lastStateJson = nextJson;
       Object.assign(state, next);
-      render();
+
+      // ⛔ **NE RECONSTRUIRE QUE LA SECTION QUI A CHANGÉ.** `apps` bouge toute
+      // seule (une app se met à jouer, une session apparaît) : sans ce
+      // découpage, les boutons de sortie/entrée seraient détruits et recréés
+      // à chaque fois, et un clic dont `mousedown` et `mouseup` tombent de
+      // part et d'autre d'une reconstruction ne serait jamais émis — le BUG
+      // RÉEL déjà documenté plus bas ("mes clics ne sont pas pris en compte").
+      const sorties = JSON.stringify({ output: state.output, outputs: state.outputs });
+      if (sorties !== lastSortiesJson) {
+        lastSortiesJson = sorties;
+        renderSorties();
+      }
+      const entrees = JSON.stringify({ input: state.input, inputs: state.inputs });
+      if (entrees !== lastEntreesJson) {
+        lastEntreesJson = entrees;
+        renderEntrees();
+      }
+      renderApps();
     };
 
     render();

@@ -1683,6 +1683,7 @@ Relancer l'animation du dégradé (Ctrl+Espace)	Resume the gradient animation (C
 Revenir au motif intégré choisi dans les Réglages	Go back to the built-in pattern chosen in Settings
 Un motif neuf, à partir du modèle	A new pattern, from the template
 # == sound.html
+Aucune application ne joue de son	No app is playing sound
 Changer d'entrée	Change input
 Changer de sortie	Change output
 Couper le micro	Mute microphone
@@ -1690,6 +1691,9 @@ Couper le son	Mute sound
 Entrée : indisponible	Input: unavailable
 Réactiver le micro	Unmute microphone
 Réactiver le son	Unmute sound
+Sons du système	System sounds
+son|Couper	Mute
+son|Réactiver	Unmute
 Sortie : indisponible	Output: unavailable
 # == sous_dock.html
 (liste tronquée)	(list truncated)

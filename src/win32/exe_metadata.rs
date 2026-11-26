@@ -25,6 +25,14 @@ pub fn company_name(path: &Path) -> Option<String> {
     read_string_field(path, "CompanyName")
 }
 
+/// Nom lisible de l'application — le champ `FileDescription` du bloc
+/// `VERSIONINFO`, celui que les propriétés du fichier affichent dans
+/// « Description » (« Google Chrome », « Spotify »…). `None` si l'exécutable
+/// n'en embarque pas (voir `read_string_field`, best-effort comme le reste).
+pub fn description(path: &Path) -> Option<String> {
+    read_string_field(path, "FileDescription")
+}
+
 /// Lit le champ `field` (ex. `"CompanyName"`, `"ProductName"`) du bloc
 /// `StringFileInfo` de `path`, via la même API que `rundll32
 /// shell32.dll,Control_RunDLL` (propriétés de fichier > onglet Détails)

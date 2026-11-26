@@ -23,8 +23,9 @@
 //! `win32::cef_popup` — voir `win32::cef_test_window` pour la doc de
 //! module complète du pattern suivi ici.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use windows::core::w;
@@ -44,6 +45,31 @@ thread_local! {
     /// `render_if_visible`, `PopupSlot` n'ayant pas connaissance de la
     /// résolution des écrans (module `app`, pas `win32::cef_popup`).
     static CONTENT_SCALE: Cell<f32> = const { Cell::new(1.0) };
+    /// Les applications de la sortie par défaut, relues au plus toutes les
+    /// `APPS_TTL` : `poll` appelle `push_state` à CHAQUE frame, et énumérer
+    /// les sessions WASAPI + lire les noms d'exécutables à cette cadence
+    /// serait du gaspillage pur.
+    static APPS: RefCell<Option<(Instant, Vec<audio::AudioApp>)>> = RefCell::new(None);
+}
+
+/// Intervalle de relecture du mélangeur par application (voir `APPS`).
+const APPS_TTL: Duration = Duration::from_millis(500);
+
+/// Les apps de la sortie par défaut, depuis le cache sauf si `forcer`.
+fn apps_actuelles(forcer: bool) -> Vec<audio::AudioApp> {
+    APPS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if !forcer {
+            if let Some((quand, apps)) = cache.as_ref() {
+                if quand.elapsed() < APPS_TTL {
+                    return apps.clone();
+                }
+            }
+        }
+        let apps = audio::apps_on_default_output();
+        *cache = Some((Instant::now(), apps.clone()));
+        apps
+    })
 }
 
 const SPEC: PopupSpec = PopupSpec {
@@ -79,7 +105,17 @@ pub fn toggle(rect: [i32; 4], gfx: &GfxDevice, content_scale: f32) {
 /// `window.setState` (voir `assets/popups/sound.html`) — à appeler à
 /// l'ouverture du popup (voir `toggle`) ET après chaque action effective
 /// (voir `dispatch_actions`), pour que l'affichage ne reste jamais périmé.
+///
+/// Les APPLICATIONS, elles, passent par `apps_actuelles` (cache de
+/// `APPS_TTL`) : c'est la seule partie de cet état dont la lecture coûte
+/// vraiment quelque chose.
 pub fn push_state() {
+    pousser(false);
+}
+
+/// Voir `push_state`. `forcer` relit les sessions tout de suite — c'est le cas
+/// après une action de l'utilisateur, dont l'effet doit se voir immédiatement.
+fn pousser(forcer: bool) {
     let output = audio::default_output();
     let input = audio::default_input();
     let output_volume = audio::output_volume_percent();
@@ -91,12 +127,25 @@ pub fn push_state() {
     let input_json = input.map(|d| json!({ "id": d.id, "name": d.name, "muted": input_muted }));
     let outputs_json: Vec<_> = audio::list_outputs().into_iter().map(|d| json!({ "id": d.id, "name": d.name })).collect();
     let inputs_json: Vec<_> = audio::list_inputs().into_iter().map(|d| json!({ "id": d.id, "name": d.name })).collect();
+    let apps_json: Vec<_> = apps_actuelles(forcer)
+        .into_iter()
+        .map(|app| {
+            json!({
+                "pid": app.pid,
+                "name": app.name,
+                "volume": app.volume,
+                "muted": app.muted,
+                "active": app.active,
+            })
+        })
+        .collect();
 
     let payload = json!({
         "output": output_json,
         "outputs": outputs_json,
         "input": input_json,
         "inputs": inputs_json,
+        "apps": apps_json,
     });
     // `payload` (un `serde_json::Value`) affiche du JSON valide via `Display`
     // — un objet littéral JS ordinaire, `window.setState` n'a besoin de rien
@@ -128,7 +177,26 @@ pub fn dispatch_actions() {
     if actions.is_empty() {
         return;
     }
-    for action in &actions {
+    // ⏱ **UN CURSEUR GLISSÉ ENVOIE UNE ACTION PAR ÉVÉNEMENT.** Ne garder que
+    // la DERNIÈRE valeur par application : appliquer les précédentes serait
+    // autant d'énumérations de sessions pour un état déjà périmé.
+    let mut gardees: Vec<String> = Vec::with_capacity(actions.len());
+    for action in actions {
+        if let Some(reste) = action.strip_prefix("sound/set-app-volume/") {
+            if let Some(pid) = reste.split('/').next() {
+                gardees.retain(|autre| {
+                    autre.strip_prefix("sound/set-app-volume/").and_then(|r| r.split('/').next()) != Some(pid)
+                });
+            }
+        }
+        gardees.push(action);
+    }
+
+    // La liste des applications n'est relue TOUT DE SUITE que si l'action
+    // change quelque chose que le curseur ne reflète pas déjà : `pousser(true)`
+    // relit sessions ET noms d'exécutables, à ne pas faire à chaque événement.
+    let mut forcer = false;
+    for action in &gardees {
         let Some(rest) = action.strip_prefix("sound/") else {
             eprintln!("[neuradesk][cef] action son inconnue : {action:?}");
             continue;
@@ -149,10 +217,27 @@ pub fn dispatch_actions() {
             },
             ("set-output-device", Some(id)) => audio::set_default_output(&percent_decode(id)),
             ("set-input-device", Some(id)) => audio::set_default_input(&percent_decode(id)),
+            // `set-app-volume/<pid>/<pourcentage>` — DEUX numéros, découpés
+            // avant tout décodage (même règle que ci-dessus, voir
+            // `percent_decode`). Les deux sont des chiffres : rien à décoder.
+            ("set-app-volume", Some(reste)) => match reste.split_once('/') {
+                Some((pid, percent)) => match (pid.parse::<u32>(), percent.parse::<u8>()) {
+                    (Ok(pid), Ok(percent)) => audio::set_app_volume_percent(pid, percent),
+                    _ => eprintln!("[neuradesk][cef] volume d'application invalide : {reste:?}"),
+                },
+                None => eprintln!("[neuradesk][cef] volume d'application sans pourcentage : {reste:?}"),
+            },
+            ("toggle-app-mute", Some(pid)) => match pid.parse::<u32>() {
+                Ok(pid) => audio::toggle_app_mute(pid),
+                Err(_) => eprintln!("[neuradesk][cef] application invalide : {pid:?}"),
+            },
             _ => eprintln!("[neuradesk][cef] action son inconnue : {action:?}"),
         }
+        if verb != "set-app-volume" {
+            forcer = true;
+        }
     }
-    push_state();
+    pousser(forcer);
 }
 
 pub fn hide_if_focus_elsewhere() {
@@ -177,4 +262,62 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         return result;
     }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PAGE: &str = include_str!("../../assets/popups/sound.html");
+
+    /// Les verbes que `dispatch_actions` accepte — même lecture que
+    /// `cef_automatisations::tests::verbes_du_dispatch`.
+    fn verbes_du_dispatch() -> Vec<String> {
+        let source = include_str!("cef_sound.rs");
+        source
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or(source)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with("//"))
+            .filter_map(|l| {
+                let reste = l.strip_prefix("(\"")?;
+                let (verbe, fin) = reste.split_once('"')?;
+                matches!(fin.chars().next(), Some(')') | Some(',')).then(|| verbe.to_string())
+            })
+            .collect()
+    }
+
+    /// Les verbes que la page envoie via `go("…")`.
+    fn verbes_de_la_page() -> Vec<String> {
+        PAGE.match_indices("go(")
+            .filter_map(|(i, _)| {
+                let reste = &PAGE[i + 3..];
+                let guillemet = reste.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+                reste[1..].split(guillemet).next().map(str::to_string)
+            })
+            .collect()
+    }
+
+    /// ⛔ **LE SEUL TEST QUI GARDE CETTE PAGE.** Un verbe ajouté d'un côté
+    /// seulement est mort en silence : la page l'envoie dans le vide, ou le
+    /// dispatch attend une action que personne n'envoie.
+    #[test]
+    fn la_page_et_le_dispatch_acceptent_les_memes_verbes() {
+        let mut page = verbes_de_la_page();
+        let mut rust = verbes_du_dispatch();
+        page.sort();
+        page.dedup();
+        rust.sort();
+        rust.dedup();
+        assert_eq!(page, rust);
+    }
+
+    /// Ce que Rust appelle dans la page doit y exister, sinon l'état se perd
+    /// EN SILENCE (même essai que `cef_automatisations`).
+    #[test]
+    fn la_page_definit_ce_que_rust_appelle() {
+        assert!(PAGE.contains("window.setState"), "sound.html doit définir window.setState");
+    }
 }

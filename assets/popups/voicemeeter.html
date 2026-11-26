@@ -147,6 +147,11 @@
        insuffisant). */
     background: rgba(var(--menu-active-rgb, 255, 255, 255), calc(0.58 * var(--popup-fond-alpha, 1)));
     border-color: transparent;
+    /* ⛔ Le texte passe sur le pôle OPPOSÉ : `--menu-active-rgb` EST la
+       couleur du texte, et à 0.58 elle donne un aplat clair — du texte blanc
+       dessus est invisible (même défaut mesuré dans sound.html le
+       2026-11-26). `--menu-on-accent-rgb` est ce pôle-là. */
+    color: rgba(var(--menu-on-accent-rgb, 0, 0, 0), min(1, var(--popup-alpha, 1)));
   }
   details {
     margin-top: 10px;
