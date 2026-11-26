@@ -52,6 +52,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// Replacements tolérés dans `FENETRE_ESSAIS` avant de lâcher une fenêtre.
 const ESSAIS_MAX: usize = 3;
 const FENETRE_ESSAIS: Duration = Duration::from_secs(10);
+/// Pendant combien de temps on laisse tranquille une fenêtre qui ne répond pas
+/// (voir `win32::autrui`) avant de lui redemander. Chaque demande coûte son
+/// délai : la refaire à chaque frame rendrait le gel pire que celui qu'on évite.
+const MUTISME: Duration = Duration::from_secs(5);
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -81,6 +85,9 @@ thread_local! {
     static SUIVIS: RefCell<HashMap<isize, Suivi>> = RefCell::new(HashMap::new());
     /// Les exécutables déjà prévenus cette session.
     static PREVENUS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Les fenêtres reconnues sourdes, et jusqu'à quand on les laisse
+    /// tranquilles (voir `MUTISME`).
+    static MUETTES: RefCell<HashMap<isize, Instant>> = RefCell::new(HashMap::new());
 }
 
 /// Ce qu'on fait d'une fenêtre plein écran.
@@ -146,6 +153,11 @@ pub fn rediriger(fenetre: HWND) -> bool {
     }
     let maintenant = Instant::now();
     let cle = fenetre.0 as isize;
+    // Fenêtre déjà reconnue sourde : on ne la requestionne pas à chaque frame,
+    // chaque question coûte son délai (voir `win32::autrui`).
+    if MUETTES.with(|m| m.borrow().get(&cle).is_some_and(|jusqu| maintenant < *jusqu)) {
+        return true;
+    }
     let (essais, lachee) = SUIVIS.with(|s| {
         let mut suivis = s.borrow_mut();
         suivis.retain(|h, _| unsafe { IsWindow(Some(HWND(*h as _))) }.as_bool());
@@ -162,6 +174,28 @@ pub fn rediriger(fenetre: HWND) -> bool {
             false
         }
         Choix::Replacer => {
+            // ⛔ **UNE FENÊTRE QUI NE RÉPOND PAS NE REÇOIT PAS `SetWindowPos`.**
+            // Cet appel attend qu'elle lise son message — 29 s mesurées sur un
+            // processus figé (voir `win32::autrui`) — et cette attente serait
+            // celle de TOUTE la boucle de frame. On la laisse en plein écran, le
+            // dock reste affiché, et on réessaiera dans `MUTISME`.
+            //
+            // Rendre `true` est volontaire : rendre `false` masquerait le dock
+            // ET poserait `hidden_for_fullscreen`, après quoi
+            // `sync_fullscreen_visibility` sortirait par le haut tant que la
+            // fenêtre est encore plein écran — plus personne ne réessaierait,
+            // même une fois l'app réveillée. Conséquence assumée : tant que
+            // l'app reste figée, le dock (toujours au-dessus) reste dessiné
+            // par-dessus elle. C'est le prix du réessai.
+            if !crate::win32::autrui::repond(fenetre, crate::win32::autrui::DELAI_REPONSE) {
+                MUETTES.with(|m| {
+                    let mut m = m.borrow_mut();
+                    m.retain(|_, jusqu| maintenant < *jusqu);
+                    m.insert(cle, maintenant + MUTISME);
+                });
+                crate::diag!("[plein ecran] {} ne répond pas : replacement reporté", exe_de(fenetre));
+                return true;
+            }
             let (l, h) = (travail.right - travail.left, travail.bottom - travail.top);
             let pose = unsafe { SetWindowPos(fenetre, None, travail.left, travail.top, l, h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER) };
             if let Err(erreur) = pose {
@@ -207,7 +241,12 @@ fn restaurer_tout() {
         let encore_la = unsafe { IsWindow(Some(hwnd)).as_bool() && GetWindowRect(hwnd, &mut rect).is_ok() } && rect == suivi.zone;
         if !suivi.lachee && encore_la {
             let o = suivi.origine;
-            let _ = unsafe { SetWindowPos(hwnd, None, o.left, o.top, o.right - o.left, o.bottom - o.top, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER) };
+            // À la sortie (ou quand l'option est coupée), on ne peut pas se
+            // permettre d'attendre une app figée : on POSTE la remise en place
+            // et on rend la main. Elle se fera quand l'app se réveillera — ou
+            // pas du tout si elle ne se réveille jamais, mais quitter
+            // NeuraDesk ne dépendra plus d'elle.
+            crate::win32::autrui::deplacer_sans_attendre(hwnd, o.left, o.top, o.right - o.left, o.bottom - o.top);
         }
     }
 }
@@ -358,5 +397,59 @@ mod tests {
     fn coupee_elle_ne_replace_rien() {
         activer(false);
         assert!(!rediriger(HWND(std::ptr::null_mut())));
+    }
+
+    /// ⭐ **SUR UNE FENÊTRE FIGÉE** — à lancer à la main (`--ignored`), l'app
+    /// ouverte : sans ses barres, la zone de travail vaut l'écran et rien n'est
+    /// tenté. La fenêtre couvre l'écran mais son fil **ne pompe jamais** ses
+    /// messages : `rediriger` doit rendre la main tout de suite (le délai de
+    /// `win32::autrui`), sans la déplacer. C'est la preuve du défaut corrigé —
+    /// sans la garde, c'est `SetWindowPos` qui attendait la fenêtre, jusqu'à
+    /// 29 s mesurées. ⚠️ Avec `--test-threads=1` : les essais réels partagent
+    /// l'interrupteur `ACTIVE`.
+    #[test]
+    #[ignore]
+    fn essai_reel_une_fenetre_figee_ne_fait_pas_attendre() {
+        use std::sync::mpsc;
+        use windows::core::w;
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY};
+        use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, ShowWindow, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WS_POPUP};
+
+        let moniteur = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        assert!(unsafe { GetMonitorInfoW(moniteur, &mut info) }.as_bool(), "écran principal");
+        let ecran = info.rcMonitor;
+        let (l, h) = (ecran.right - ecran.left, ecran.bottom - ecran.top);
+
+        let (rendue, attente) = mpsc::channel::<isize>();
+        let (fin, recu) = mpsc::channel::<()>();
+        let fil = std::thread::spawn(move || {
+            let fenetre = unsafe {
+                CreateWindowExW(WINDOW_EX_STYLE(0), w!("STATIC"), w!("essai figée"), WS_POPUP, ecran.left, ecran.top, l, h, None, None, None, None)
+                    .expect("fenêtre d'essai")
+            };
+            unsafe {
+                let _ = ShowWindow(fenetre, SW_SHOWNOACTIVATE);
+            }
+            let _ = rendue.send(fenetre.0 as isize);
+            let _ = recu.recv(); // ne pompe RIEN : l'app figée de la mesure
+        });
+        let fenetre = HWND(attente.recv().expect("fenêtre d'essai") as _);
+
+        activer(true);
+        let debut = Instant::now();
+        let replacee = rediriger(fenetre);
+        let duree = debut.elapsed();
+        activer(false);
+
+        let mut rect = RECT::default();
+        let lu = unsafe { GetWindowRect(fenetre, &mut rect) }.is_ok();
+
+        drop(fin);
+        let _ = fil.join();
+        assert!(replacee, "l'app doit tourner et une zone être réservée (travail {:?} contre écran {ecran:?})", info.rcWork);
+        assert!(duree < Duration::from_secs(1), "rediriger a attendu {duree:?} une fenêtre qui ne pompe pas");
+        assert!(lu && rect == ecran, "une fenêtre figée ne peut pas être replacée — et ne doit pas bloquer : {rect:?}");
     }
 }

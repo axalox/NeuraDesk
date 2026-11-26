@@ -8,6 +8,7 @@ pub mod file_dialog;
 pub mod cef_sous_dock;
 pub mod sous_dock;
 pub mod audio;
+pub mod autrui;
 pub mod automatisations;
 pub mod bandeau;
 pub mod bulle;
