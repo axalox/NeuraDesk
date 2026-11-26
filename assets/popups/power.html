@@ -47,12 +47,27 @@
        doc) — `all: unset` remet `color` à sa valeur héritée. */
     font: inherit;
   }
-  button:hover {
+  button:hover:not(:disabled) {
     /* 0.15 → 0.26 → 0.36 → 0.46 — voir assets/popups/clipboard_menu.html,
        `.row:hover`, pour le pourquoi (DEMANDE EXPLICITE, répétée après le
        premier passage à 0.26 encore jugé insuffisant, puis de nouveau après
        0.36). */
     background: rgba(var(--menu-zone-rgb, 255, 255, 255), calc(0.46 * var(--popup-fond-alpha, 1)));
+  }
+  /* L'entrée « Garder éveillé » est DÉSACTIVÉE quand rien n'est demandé (voir
+     `<button id="eveil-stop">` plus bas). */
+  button:disabled {
+    color: rgba(var(--menu-text-rgb, 255, 255, 255), calc(0.4 * var(--popup-alpha, 1)));
+    cursor: default;
+  }
+  /* La ligne d'état de « Garder éveillé » — même gabarit que les titres de
+     section (voir assets/popups/context.html, `.section-title`). */
+  .etat {
+    padding: 10px 14px 4px;
+    font-size: 0.95em;
+    opacity: 0.7;
+    /* Le décompte ne doit pas danser quand il passe de « 59 min » à « 1 h ». */
+    font-variant-numeric: tabular-nums;
   }
   hr {
     border: none;
@@ -72,8 +87,55 @@
     <button onclick="location.href='neuradesk://power/shutdown'">Arrêter</button>
     <button onclick="location.href='neuradesk://power/logoff'">Déconnexion</button>
     <hr>
+    <!-- « Garder éveillé » — idée n°7 de FluidWin (comodita.h) : l'ordinateur
+         ne se met plus en veille et l'écran ne s'éteint plus (voir
+         win32::eveil). Les durées sont celles de FluidWin : une heure, deux
+         heures, ou jusqu'à ce qu'on l'arrête. ⚠️ L'état (et le décompte) vient
+         de Rust — voir `window.setState` plus bas, cette page ne peut pas le
+         lire elle-même. -->
+    <button onclick="location.href='neuradesk://power/eveil/60'">Garder éveillé 1 h</button>
+    <button onclick="location.href='neuradesk://power/eveil/120'">Garder éveillé 2 h</button>
+    <button onclick="location.href='neuradesk://power/eveil/0'">Garder éveillé sans limite</button>
+    <!-- L'état est une LIGNE À PART, pas le libellé du bouton d'arrêt : à cette
+         taille de texte, « Arrêter de garder éveillé » et son décompte ne
+         tenaient pas sur une ligne (mesuré par capture, 2026-11-26). -->
+    <div class="etat" id="eveil-etat">Garder éveillé : inactif</div>
+    <button id="eveil-stop" disabled>Arrêter de garder éveillé</button>
+    <hr>
     <button onclick="location.href='neuradesk://app/quit'">Quitter NeuraDesk</button>
   </div>
+<script>
+  (function () {
+    var dernier = null;
+    function resteTexte(min) {
+      if (min >= 60) {
+        var h = Math.floor(min / 60), r = min % 60;
+        return r ? h + " h " + String(r).padStart(2, "0") : h + " h";
+      }
+      return min + " min";
+    }
+    // Appelée depuis Rust (win32::cef_test_window::push_state) — voir le
+    // commentaire de la section « Garder éveillé » plus haut.
+    window.setState = function (s) {
+      var json = JSON.stringify(s);
+      if (json === dernier) return;
+      dernier = json;
+      var e = (s && s.eveil) || { actif: false };
+      document.getElementById("eveil-stop").disabled = !e.actif;
+      // ⚠️ Une PHRASE ENTIÈRE, pas des morceaux : le traducteur des pages
+      // reconnaît les motifs `{}` du dictionnaire (« Éveillé — reste {} »),
+      // pas des fragments mis côte à côte (voir assets/i18n/pages.js).
+      document.getElementById("eveil-etat").textContent = !e.actif
+        ? "Garder éveillé : inactif"
+        : e.sansLimite
+          ? "Éveillé — sans limite"
+          : "Éveillé — reste " + resteTexte(e.resteMin);
+    };
+    document.getElementById("eveil-stop").addEventListener("click", function () {
+      location.href = "neuradesk://power/eveil-stop";
+    });
+  })();
+</script>
 <script src="menu.js"></script>
 </body>
 </html>

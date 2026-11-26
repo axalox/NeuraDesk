@@ -111,6 +111,7 @@ pub mod ombre_barre;
 pub mod texture_terminaux;
 pub mod ecran_accueil;
 pub mod epingle;
+pub mod eveil;
 pub mod exe_metadata;
 pub mod fade;
 pub mod fetes;

@@ -1054,7 +1054,14 @@ carte face cachée	face-down card
 Symboles phonétiques	Phonetic symbols
 clic : insérer — clic droit : copier	click: insert — right-click: copy
 # == power.html
+Arrêter de garder éveillé	Stop keeping awake
 Déconnexion	Sign out
+Garder éveillé 1 h	Keep awake 1 h
+Garder éveillé 2 h	Keep awake 2 h
+Garder éveillé sans limite	Keep awake indefinitely
+Garder éveillé : inactif	Keep awake: inactive
+Éveillé — sans limite	Awake — no time limit
+Éveillé — reste {}	Awake — {} left
 Quitter NeuraDesk	Quit NeuraDesk
 Redémarrer	Restart
 Veille	Sleep

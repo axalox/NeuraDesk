@@ -14,15 +14,17 @@
 //! wndproc, comme `win32::cef_calendar`/`win32::cef_context`/
 //! `win32::cef_network`.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 
+use serde_json::json;
 use windows::core::w;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
 
 use crate::gfx::device::GfxDevice;
 use crate::win32::cef_popup::{self, PopupSlot, PopupSpec};
+use crate::win32::eveil;
 use crate::win32::menu;
 
 thread_local! {
@@ -31,6 +33,8 @@ thread_local! {
     /// l'ouverture (voir `toggle`) et relu à chaque frame par
     /// `render_if_visible`.
     static CONTENT_SCALE: Cell<f32> = const { Cell::new(1.0) };
+    /// La clé du dernier `window.setState(...)` émis — voir `push_state`.
+    static PAYLOAD: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 const SPEC: PopupSpec = PopupSpec {
@@ -64,6 +68,30 @@ pub fn preload(gfx: &GfxDevice) {
 pub fn toggle(rect: [i32; 4], gfx: &GfxDevice, content_scale: f32) {
     CONTENT_SCALE.with(|c| c.set(content_scale));
     cef_popup::toggle(&SLOT, &SPEC, rect, gfx);
+    push_state();
+}
+
+/// Repousse l'état « Garder éveillé » (voir `push_state`) tant que la fenêtre
+/// est visible — à appeler à CHAQUE frame (voir `app::run`). `PAYLOAD` rend
+/// l'appel gratuit tant que rien de VISIBLE ne change (la clé n'avance qu'à la
+/// minute près, pas à la frame).
+pub fn refresh_if_visible() {
+    if cef_popup::is_visible(&SLOT) {
+        push_state();
+    }
+}
+
+/// Pousse l'état dans `assets/popups/power.html` via `window.setState` — le
+/// SEUL moyen pour cette page de savoir si « Garder éveillé » est actif (voir
+/// `win32::eveil`, qui porte la demande Windows elle-même).
+fn push_state() {
+    let cle = eveil::cle();
+    if PAYLOAD.with(|p| p.borrow().as_deref() == Some(cle.as_str())) {
+        return;
+    }
+    let payload = json!({ "eveil": eveil::json() });
+    PAYLOAD.with(|p| *p.borrow_mut() = Some(cle));
+    cef_popup::execute_js(&SLOT, &format!("window.setState({payload})"));
 }
 
 pub fn hide_if_focus_elsewhere() {
@@ -122,4 +150,91 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         return result;
     }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+#[cfg(test)]
+mod tests {
+    const PAGE: &str = include_str!("../../assets/popups/power.html");
+    /// Le dispatch des actions de ce popup est dans `app::run` (voir
+    /// `dispatch_power_or_quit_action`) — même lecture que `cef_network`.
+    const APP: &str = include_str!("../app.rs");
+
+    /// Les verbes `power/…` que la page envoie. `power/eveil/<minutes>` est
+    /// ramené au PRÉFIXE `power/eveil/`, que le dispatch traite comme tel.
+    fn verbes_de_la_page() -> Vec<String> {
+        let mut v: Vec<String> = PAGE
+            .match_indices("neuradesk://")
+            .filter_map(|(i, _)| {
+                let reste = &PAGE[i + "neuradesk://".len()..];
+                let fin = reste.find(['"', '\''])?;
+                Some(reste[..fin].to_string())
+            })
+            .filter(|v| v.starts_with("power/"))
+            .map(|v| {
+                if v.starts_with("power/eveil/") {
+                    "power/eveil/".to_string()
+                } else {
+                    v
+                }
+            })
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// Les verbes du bras de dispatch, lus dans `app.rs`.
+    fn verbes_du_dispatch() -> Vec<String> {
+        let debut = APP.find("fn dispatch_power_or_quit_action").expect("dispatch introuvable");
+        let apres = &APP[debut..];
+        let fin = apres.find("\npub fn reload_was_requested").expect("fin du dispatch introuvable");
+        let corps = &apres[..fin];
+        let mut v: Vec<String> = corps
+            .match_indices("\"power/")
+            .map(|(i, _)| {
+                let reste = &corps[i + 1..];
+                reste[..reste.find('"').expect("littéral non terminé")].to_string()
+            })
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// ⛔ Un verbe présent d'un seul côté est mort en silence : la page
+    /// l'envoie dans le vide, ou le dispatch attend une action que personne
+    /// n'envoie.
+    #[test]
+    fn la_page_et_le_dispatch_acceptent_les_memes_verbes() {
+        assert_eq!(
+            verbes_de_la_page(),
+            verbes_du_dispatch(),
+            "la page et `dispatch_power_or_quit_action` doivent citer les mêmes verbes"
+        );
+    }
+
+    /// Ce que Rust appelle dans la page doit y exister, sinon l'état se perd
+    /// EN SILENCE (même essai que `cef_network`/`cef_sound`).
+    #[test]
+    fn la_page_definit_ce_que_rust_appelle() {
+        assert!(PAGE.contains("window.setState"), "power.html doit définir window.setState");
+        for champ in ["eveil", "actif", "sansLimite", "resteMin"] {
+            assert!(PAGE.contains(champ), "la page n'exploite pas `{champ}`, que `push_state` envoie");
+        }
+    }
+
+    /// **LA HAUTEUR DE LA FENÊTRE EST ESTIMÉE, PAS MESURÉE** (voir
+    /// `cef_popup::button_list_height`) : un bouton ajouté à la page sans
+    /// toucher aux deux appels d'`app.rs` le pousse sous le pli, hors de portée
+    /// d'un clic. Le compte fait foi des DEUX côtés.
+    #[test]
+    fn la_hauteur_estimee_suit_le_contenu_de_la_page() {
+        assert_eq!(PAGE.matches("</button>").count(), 10, "compter les boutons RÉELS (les commentaires citent `<button`)");
+        assert_eq!(PAGE.matches("<hr>").count(), 2);
+        assert_eq!(
+            APP.matches("button_list_height(10, 2, 1)").count(),
+            2,
+            "le harnais (cef-test) ET le vrai clic sur l'icône Alimentation l'appellent"
+        );
+    }
 }

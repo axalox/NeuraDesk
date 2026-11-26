@@ -7690,7 +7690,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     );
                 }
                 Some("cef-test") => {
-                    let (bw, bh) = (660, crate::win32::cef_popup::button_list_height(6, 1, 0));
+                    let (bw, bh) = (660, crate::win32::cef_popup::button_list_height(10, 2, 1));
                     let s = menu_scale_qui_tient(bw, bh, echelle_debug, room);
                     crate::win32::cef_test_window::toggle(menu_rect((100, 100), bw, bh, s, room), &gfx, s)
                 }
@@ -9218,8 +9218,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 // `win32::cef_popup::CONTENT_ZOOM_FACTOR`),
                                 // comme tous les autres appels à
                                 // `menu_rect`. Hauteur :
-                                // `button_list_height(6, 1)` (6 boutons + 1
-                                // séparateur, voir `assets/popups/power.html`)
+                                // `button_list_height` (10 boutons, 2
+                                // séparateurs + la ligne d'état de « Garder
+                                // éveillé », comptée comme un titre de section,
+                                // voir `assets/popups/power.html` — les trois
+                                // durées et l'arrêt de « Garder éveillé » sont
+                                // toujours présents)
                                 // — DEMANDE EXPLICITE ("le menu d'alimentation
                                 // est trop grand, ne peux-tu pas utiliser un
                                 // backend en rust pour gérer ça ?") : plus de
@@ -9235,7 +9239,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 // sert DEUX fois — à l'échelle effective et au
                                 // rectangle (voir `menu_scale_qui_tient`).
                                 let room = menu_room(origin, active_layout, screen);
-                                let base_h = crate::win32::cef_popup::button_list_height(6, 1, 0);
+                                let base_h = crate::win32::cef_popup::button_list_height(10, 2, 1);
                                 let s = menu_scale_qui_tient(660, base_h, content_scale, room);
                                 crate::win32::cef_test_window::toggle(
                                     menu_rect(anchor, 660, base_h, s, room),
@@ -12467,11 +12471,16 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // pairs (clé `power`, voir `menu::MENU_COLOR_KEYS`) — avant, il
             // suivait toujours la couleur PARTAGÉE des menus.
             crate::win32::cef_test_window::render_if_visible(tint_menu("power"));
+            // « Garder éveillé » (voir `win32::eveil`) : l'échéance est soldée à
+            // CHAQUE frame, que le menu soit ouvert ou non — sinon une demande
+            // d'une heure dépassée resterait posée jusqu'à la prochaine
+            // ouverture du menu.
+            crate::win32::eveil::tick();
             // Actions demandées par assets/popups/power.html (voir
             // win32::cef_app::NeuraDeskRequestHandler, doc détaillée) —
-            // "power/<action>" mappé sur win32::power::PowerAction,
-            // "app/quit" sur la fermeture normale de l'app (même chemin que
-            // PopupAction::Close plus bas dans cette boucle). Voir
+            // "power/<action>" mappé sur win32::power::PowerAction ou
+            // win32::eveil, "app/quit" sur la fermeture normale de l'app (même
+            // chemin que PopupAction::Close plus bas dans cette boucle). Voir
             // `dispatch_power_or_quit_action`, partagée avec
             // `cef_context::drain_actions` plus bas.
             for action in crate::win32::cef_test_window::drain_actions() {
@@ -12479,6 +12488,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     should_close = true;
                 }
             }
+            // APRÈS le dispatch : une action « Garder éveillé » vient peut-être
+            // de changer l'état, et c'est cette poussée qui rafraîchit le menu.
+            crate::win32::cef_test_window::refresh_if_visible();
             crate::win32::cef_calendar::render_if_visible(tint_menu("calendar"));
             // Sans cet appel, une action venue du calendrier resterait dans sa
             // file POUR TOUJOURS (voir `cef_calendar::drain_actions`, doc) — et
@@ -21712,6 +21724,15 @@ fn dispatch_power_or_quit_action(action: &str, hwnd: windows::Win32::Foundation:
         "power/restart" => power::execute(hwnd, power::PowerAction::Restart),
         "power/shutdown" => power::execute(hwnd, power::PowerAction::ShutDown),
         "power/logoff" => power::execute(hwnd, power::PowerAction::LogOff),
+        // « GARDER ÉVEILLÉ » (idée n°7 de FluidWin, voir `win32::eveil`) —
+        // `<minutes>` en clair (0 = sans limite), voir `assets/popups/power.html`.
+        _ if action.starts_with("power/eveil/") => {
+            match action["power/eveil/".len()..].parse::<u32>() {
+                Ok(minutes) => crate::win32::eveil::demarrer(minutes),
+                Err(_) => crate::diag!("[cef] durée d'éveil illisible : {action:?}"),
+            }
+        }
+        "power/eveil-stop" => crate::win32::eveil::arreter(),
         "app/quit" => return true,
         "app/reload" => {
             // Voir `RELOAD_REQUESTED`/`reload_was_requested` : PAS de
