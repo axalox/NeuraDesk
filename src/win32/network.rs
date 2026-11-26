@@ -49,6 +49,22 @@ pub fn ouvrir_parametres() {
     }
 }
 
+/// La page « Localisation » des Paramètres — `ms-settings:privacy-location`.
+///
+/// ⭐ **ELLE N'EST PAS DÉCORATIVE** : depuis Windows 10, la LISTE DES RÉSEAUX
+/// Wi-Fi est une donnée de localisation, et `wlanapi` rend `ACCESS_DENIED` quand
+/// la localisation est coupée — par l'utilisateur ou par une stratégie. Le popup
+/// Réseau s'en sert comme seul remède praticable (voir
+/// `win32::reseaux_wifi::etat`, qui porte la mesure).
+pub fn ouvrir_localisation() {
+    crate::diag!("réseau : ouverture de {LOCALISATION_URI}");
+    if let Err(err) = std::process::Command::new("explorer.exe").arg(LOCALISATION_URI).spawn() {
+        crate::diag!("réseau : lancement impossible — {err}");
+    }
+}
+
+const LOCALISATION_URI: &str = "ms-settings:privacy-location";
+
 fn find_radio(kind: RadioKind) -> Option<Radio> {
     let radios = Radio::GetRadiosAsync().ok()?.join().ok()?;
     let size = radios.Size().ok()?;

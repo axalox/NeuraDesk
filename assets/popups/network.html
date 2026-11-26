@@ -1,18 +1,22 @@
 <!doctype html>
 <!--
-  win32::cef_network (icône Réseau) — reproduit en CSS le contenu de
-  win32::popup_menu::render_network (deux bascules Wi-Fi/Bluetooth).
+  win32::cef_network (icône Réseau) — les deux bascules Wi-Fi/Bluetooth, puis
+  LA LISTE DES RÉSEAUX Wi-Fi (idée n°4 de FluidWin, 2026-11-26).
 
   Contrairement à assets/popups/power.html (état fixe, pas besoin de
-  savoir quoi que ce soit du système), l'état Wi-Fi/Bluetooth ne peut PAS
-  être calculé en JS pur — il vient de Windows côté Rust
-  (win32::network::wifi_state/bluetooth_state). Canal Rust→JS : Rust
-  appelle `window.setState({wifi, bluetooth})` (voir
-  win32::cef_network::push_state, win32::cef_app::CefBrowserSurface::
-  execute_js) à l'ouverture du popup ET après chaque bascule, pour que
-  l'affichage reflète toujours l'état réel sans recharger la page. Chaque
-  bouton fait `location.href = "neuradesk://network/toggle-<clé>"` —
-  même canal JS→Rust que power.html (RequestHandler::on_before_browse).
+  savoir quoi que ce soit du système), l'état Wi-Fi/Bluetooth et la liste
+  des réseaux ne peuvent PAS être calculés en JS pur — ils viennent de
+  Windows côté Rust (win32::network, win32::reseaux_wifi). Canal Rust→JS :
+  Rust appelle `window.setState({wifi, bluetooth, networks, wifiProfiles,
+  wifiRefused})` (voir win32::cef_network::push_state) à l'ouverture du
+  popup ET à chaque frame tant qu'il est visible (relu au plus toutes les
+  2 s pour la liste). Chaque bouton fait
+  `location.href = "neuradesk://network/<verbe>[/<argument encodé>]"` — même
+  canal JS→Rust que power.html (RequestHandler::on_before_browse).
+
+  ⚠️ Les SSID et les noms de profil sont du CONTENU UTILISATEUR : ils portent
+  `data-no-i18n`, sinon le traducteur des pages les prendrait pour des mots de
+  l'interface (voir src/ui/langue.rs).
 
   PAS de `background` sur `<html>`/`<body>` : transparent par défaut en
   rendu hors-écran CEF.
@@ -57,16 +61,110 @@
     color: rgba(var(--menu-text-rgb, 255, 255, 255), calc(0.4 * var(--popup-alpha, 1)));
     cursor: default;
   }
+  /* ⛔ SANS CETTE RÈGLE, `hidden` NE CACHE RIEN SUR UN `<button>` : l'attribut
+     n'agit que par `[hidden] { display: none }` de la feuille du navigateur, et
+     `button { display: block }` ci-dessus (nécessaire à `all: unset`) est plus
+     spécifique. MESURÉ le 2026-11-26 par capture : Wi-Fi coupé, le popup montrait
+     quand même « Autres réseaux… », et « Rechercher à nouveau » réapparaissait
+     dans la branche « localisation refusée » alors que le JS venait de le
+     masquer. */
+  [hidden] {
+    display: none !important;
+  }
+  hr {
+    border: none;
+    height: 1px;
+    margin: 6px 4px;
+    background: rgba(var(--menu-zone-rgb, 255, 255, 255), calc(0.35 * var(--popup-fond-alpha, 1)));
+  }
+  h2 {
+    font-size: 0.95em;
+    font-weight: 600;
+    opacity: 0.7;
+    margin: 6px 14px 2px;
+  }
+  /* ⚠️ COLONNES EN LARGEUR FIXE (`em`, donc liées à la taille de texte réglée
+     par l'utilisateur), PAS `auto` : chaque ligne est SA grille, et deux
+     colonnes `auto` se dimensionnent ligne par ligne — les pourcentages et les
+     actions ne s'alignaient donc pas d'une ligne à l'autre (mesuré par capture
+     le 2026-11-26). Le nom prend la place restante, la force du signal et
+     l'action sont alignées à droite. */
+  .net-row {
+    all: unset;
+    display: grid;
+    grid-template-columns: 1fr 3.4em 7em;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-radius: var(--nd-rayon-surface);
+    cursor: pointer;
+  }
+  .net-row:hover:not(:disabled) {
+    background: rgba(var(--menu-zone-rgb, 255, 255, 255), calc(0.46 * var(--popup-fond-alpha, 1)));
+  }
+  .net-row:disabled {
+    cursor: default;
+  }
+  .net-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 260px;
+  }
+  .net-row.connecte .net-name {
+    font-weight: 600;
+  }
+  .net-meta {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.75;
+    text-align: right;
+  }
+  .net-row.sans-profil .net-meta {
+    opacity: 0.45;
+  }
+  .note {
+    margin: 4px 14px 6px;
+    opacity: 0.75;
+    font-size: 0.9em;
+  }
+  #liste-reseaux,
+  #liste-profils {
+    display: flex;
+    flex-direction: column;
+  }
 </style>
 </head>
 <body>
   <div class="menu">
     <button id="wifi" disabled>Wi-Fi : …</button>
     <button id="bluetooth" disabled>Bluetooth : …</button>
+    <div id="reseaux" hidden>
+      <hr>
+      <h2>Réseaux Wi-Fi</h2>
+      <div id="liste-reseaux"></div>
+      <p class="note" id="reseaux-vides" hidden>Aucun réseau à portée</p>
+      <p class="note" id="localisation" hidden>Windows refuse la liste des réseaux tant que la localisation est désactivée.</p>
+      <button id="ouvrir-localisation" hidden>Ouvrir les paramètres de localisation</button>
+      <button id="rechercher" hidden>Rechercher à nouveau</button>
+    </div>
+    <div id="profils" hidden>
+      <hr>
+      <h2>Réseaux enregistrés</h2>
+      <div id="liste-profils"></div>
+    </div>
+    <button id="ouvrir-parametres" hidden>Autres réseaux…</button>
   </div>
   <script>
     const NAMES = { wifi: "Wi-Fi", bluetooth: "Bluetooth" };
-    const state = { wifi: null, bluetooth: null };
+    const state = { wifi: null, bluetooth: null, networks: [], wifiProfiles: [], wifiRefused: false };
+    // Dernier JSON reçu — voir la doc de `setState` plus bas.
+    let lastStateJson = null;
+
+    function go(verbe, argument) {
+      location.href = argument
+        ? `neuradesk://network/${verbe}/${encodeURIComponent(argument)}`
+        : `neuradesk://network/${verbe}`;
+    }
 
     function render() {
       for (const key of Object.keys(NAMES)) {
@@ -80,19 +178,117 @@
           btn.disabled = false;
         }
       }
+
+      const wifiAllume = state.wifi === true;
+      const section = document.getElementById("reseaux");
+      section.hidden = !wifiAllume;
+      document.getElementById("ouvrir-parametres").hidden = !wifiAllume;
+      if (!wifiAllume) {
+        document.getElementById("profils").hidden = true;
+        return;
+      }
+
+      renderReseaux();
+      renderProfils();
     }
 
-    for (const key of Object.keys(NAMES)) {
-      document.getElementById(key).addEventListener("click", () => {
-        if (state[key] === null || state[key] === undefined) return;
-        location.href = `neuradesk://network/toggle-${key}`;
-      });
+    function renderReseaux() {
+      const liste = document.getElementById("liste-reseaux");
+      liste.replaceChildren();
+      const refus = state.wifiRefused;
+      document.getElementById("localisation").hidden = !refus;
+      document.getElementById("ouvrir-localisation").hidden = !refus;
+      // Un réseau sans profil n'est pas connectable ici : il faudrait le mot de
+      // passe (voir `win32::reseaux_wifi`, doc de module). Le bouton de
+      // recherche n'a de sens que quand la liste est autorisée.
+      document.getElementById("rechercher").hidden = refus;
+      const vide = !refus && state.networks.length === 0;
+      document.getElementById("reseaux-vides").hidden = !vide;
+
+      for (const reseau of state.networks) {
+        const bouton = document.createElement("button");
+        bouton.className = "net-row" + (reseau.profile ? "" : " sans-profil");
+        if (reseau.connected) bouton.classList.add("connecte");
+        const nom = document.createElement("span");
+        nom.className = "net-name";
+        nom.textContent = (reseau.connected ? "✓ " : "") + reseau.ssid;
+        // Contenu UTILISATEUR : jamais traduit (voir l'en-tête).
+        nom.dataset.noI18n = "";
+        const meta = document.createElement("span");
+        meta.className = "net-meta";
+        meta.textContent = `${reseau.signal} %`;
+        // ⚠️ L'ACTION EST TOUJOURS AJOUTÉE, même vide : les colonnes de la
+        // grille sont fixes (voir la règle `.net-row`), et une ligne à deux
+        // enfants glisserait le signal dans la colonne de l'action.
+        const action = document.createElement("span");
+        action.className = "net-meta";
+        bouton.append(nom, meta, action);
+
+        if (!reseau.profile) {
+          bouton.disabled = true;
+          bouton.title = "Mot de passe requis";
+        } else {
+          action.textContent = reseau.connected ? "Connecté" : "Se connecter";
+          bouton.addEventListener("click", () => go("wifi-connect", reseau.profile));
+        }
+        liste.append(bouton);
+      }
     }
+
+    function renderProfils() {
+      const conteneur = document.getElementById("profils");
+      const liste = document.getElementById("liste-profils");
+      liste.replaceChildren();
+      // Les profils servent de SECOURS quand la liste est refusée (localisation
+      // coupée) : c'est le seul moyen d'y accéder depuis ce popup. Quand la
+      // liste est lisible, les réseaux enregistrés y figurent déjà.
+      conteneur.hidden = !state.wifiRefused || state.wifiProfiles.length === 0;
+      if (conteneur.hidden) return;
+
+      for (const profil of state.wifiProfiles) {
+        const bouton = document.createElement("button");
+        bouton.className = "net-row";
+        const nom = document.createElement("span");
+        nom.className = "net-name";
+        nom.textContent = profil;
+        nom.dataset.noI18n = "";
+        // Même raison que dans `renderReseaux` : trois colonnes fixes, donc
+        // trois enfants — la force du signal reste vide ici.
+        const signal = document.createElement("span");
+        signal.className = "net-meta";
+        const action = document.createElement("span");
+        action.className = "net-meta";
+        action.textContent = "Se connecter";
+        bouton.append(nom, signal, action);
+        bouton.addEventListener("click", () => go("wifi-connect", profil));
+        liste.append(bouton);
+      }
+    }
+
+    // ⚠️ Les deux verbes sont écrits EN CLAIR, jamais construits : le test
+    // `la_page_et_le_dispatch_acceptent_les_memes_verbes` lit ces littéraux
+    // pour confronter les deux côtés (voir `win32::cef_network`).
+    document.getElementById("wifi").addEventListener("click", () => {
+      if (state.wifi === null || state.wifi === undefined) return;
+      go("toggle-wifi");
+    });
+    document.getElementById("bluetooth").addEventListener("click", () => {
+      if (state.bluetooth === null || state.bluetooth === undefined) return;
+      go("toggle-bluetooth");
+    });
+    document.getElementById("ouvrir-localisation").addEventListener("click", () => go("ouvrir-localisation"));
+    document.getElementById("rechercher").addEventListener("click", () => go("wifi-balayer"));
+    document.getElementById("ouvrir-parametres").addEventListener("click", () => go("ouvrir-parametres"));
 
     // Appelée depuis Rust (win32::cef_network::push_state) — voir le
     // commentaire d'en-tête, le SEUL moyen pour cette page de connaître
-    // l'état Wi-Fi/Bluetooth réel.
+    // l'état réel. ⚠️ `poll` l'appelle à CHAQUE frame : la sortie anticipée
+    // sur un JSON identique évite de reconstruire la liste soixante fois par
+    // seconde (même remède que la page Son, où re-rendre mangeait des clics).
     window.setState = function (next) {
+      const json = JSON.stringify(next);
+      if (json === lastStateJson) return;
+      lastStateJson = json;
       Object.assign(state, next);
       render();
     };

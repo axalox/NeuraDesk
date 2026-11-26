@@ -12573,6 +12573,19 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // attendre une fermeture/réouverture du popup.
             let mut network_state_changed = false;
             for action in crate::win32::cef_network::drain_actions() {
+                // ⚠️ Scinde AVANT de décoder (voir `cef_app::percent_decode`) :
+                // seul le segment après le verbe peut porter un nom de profil
+                // encodé, jamais le verbe lui-même.
+                if let Some(profil) = action.strip_prefix("network/wifi-connect/") {
+                    let profil = crate::win32::cef_app::percent_decode(profil);
+                    if !crate::win32::reseaux_wifi::connecter(&profil) {
+                        // Un refus ICI est un vrai échec (droits, réseau parti) :
+                        // le nom vient de la liste qu'on vient de lire.
+                        crate::diag!("[wifi] Windows a refusé la connexion à {profil:?}");
+                    }
+                    network_state_changed = true;
+                    continue;
+                }
                 match action.as_str() {
                     "network/toggle-wifi" => {
                         network::toggle_wifi();
@@ -12582,10 +12595,16 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         network::toggle_bluetooth();
                         network_state_changed = true;
                     }
+                    "network/wifi-balayer" => crate::win32::reseaux_wifi::balayer(),
+                    "network/ouvrir-localisation" => network::ouvrir_localisation(),
+                    "network/ouvrir-parametres" => network::ouvrir_parametres(),
                     other => crate::diag!("[cef] action inconnue : {other:?}"),
                 }
             }
             if network_state_changed {
+                // La liste des réseaux a pu changer avec la radio : on oublie le
+                // cache avant de repousser (voir `forcer_rafraichissement`).
+                crate::win32::cef_network::forcer_rafraichissement();
                 crate::win32::cef_network::push_state();
             }
             // Voir `win32::cef_network::poll`, doc de fonction — BUG RÉEL

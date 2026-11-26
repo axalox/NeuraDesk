@@ -2,6 +2,8 @@
 # Une ligne : <texte français>TAB<traduction anglaise>. {} = une valeur, remplie dans l'ordre.
 # Compléter : python tools/i18n_extraire.py --manquants manquants.tsv
 
+Aucun réseau à portée	No network in range
+Autres réseaux…	Other networks…
 Langue	Language
 Langue de l'interface	Interface language
 Automatique	Automatic
@@ -86,12 +88,17 @@ Les valeurs	The values
 Les zones	Zones
 Lire les vidéos : installer VLC	Playing videos: install VLC
 Moniteur système	System Monitor
+Mot de passe requis	Password required
 NeuraDesk embarque sa propre police de terminal —	NeuraDesk ships its own terminal font —
 NeuraDesk fonctionne seul. Les programmes ci-dessous sont	NeuraDesk works on its own. The programs below are
 NeuraDesk remplace la barre des tâches par	NeuraDesk replaces the taskbar with
+Ouvrir les paramètres de localisation	Open location settings
 Placer les applications plein écran dans la zone centrale	Place full-screen apps in the center zone
 Presque tout se règle depuis le panneau des Réglages, et une grande partie	Almost everything is set from the Settings panel, and much of it
 Ratio de DPI	DPI ratio
+Rechercher à nouveau	Scan again
+Réseaux enregistrés	Saved networks
+Réseaux Wi-Fi	Wi-Fi networks
 Si un menu est trop grand pour l'écran, il	If a menu is too big for the screen, it
 Survol	Hover
 Télécharger VLC sur	Download VLC from
@@ -130,6 +137,7 @@ température	temperature
 une icône appartient à sa zone	an icon belongs to its zone
 videolan.org — ou winget install VideoLAN.VLC	videolan.org — or winget install VideoLAN.VLC
 voidtools.com/downloads — ou winget install voidtools.Everything	voidtools.com/downloads — or winget install voidtools.Everything
+Windows refuse la liste des réseaux tant que la localisation est désactivée.	Windows refuses the network list while location is turned off.
 « Police des terminaux »	“Terminal font”
 À gauche et à droite	Left and right
 Ça se règle	It's adjustable

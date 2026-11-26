@@ -133,6 +133,12 @@ windows = { version = "0.62", features = [
     # `MIB_IF_ROW2` (ses champs d'état) — le DÉBIT RÉSEAU de la barre du haut
     # (voir `win32::debit_reseau`, `GetIfTable2`).
     "Win32_NetworkManagement_Ndis",
+    # `wlanapi` — LA LISTE DES RÉSEAUX WI-FI du popup Réseau (voir
+    # `win32::reseaux_wifi`) : SSID, force du signal, sécurité et réseau
+    # connecté. Contrairement à l'API WinRT `Windows.Devices.WiFi`, elle ne
+    # demande PAS la capacité `wiFiControl` d'une application empaquetée — un
+    # exécutable de bureau n'y aurait pas droit.
+    "Win32_NetworkManagement_WiFi",
     # `Icmp6SendEcho2` — le ping IPv6 de l'outil IPv4 / IPv6 (voir
     # `win32::surveillance::ping_adresse`) : son adresse est un `SOCKADDR_IN6`
     # et sa signature porte un `PIO_APC_ROUTINE`.

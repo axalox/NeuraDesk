@@ -89,6 +89,9 @@ pub mod reseau_connexion;
 pub mod reseau_mac;
 /// Le proxy de l'utilisateur (WinINet, sans UAC) : onglet Proxy.
 pub mod reseau_proxy;
+/// Les réseaux Wi-Fi à portée et les profils enregistrés (`wlanapi`) : la
+/// liste du popup Réseau (voir `cef_network`).
+pub mod reseaux_wifi;
 /// La FENÊTRE de l'applet DNS (voir `dns`).
 pub mod cef_dns;
 /// La FENÊTRE de l'applet « Capture d'écran » — même présentation que
