@@ -8686,17 +8686,26 @@ impl Dock {
         // La vitesse est celle de CETTE barre (voir `scroll_step_px`, réglable
         // par l'utilisateur) — et le défilement D'UNE ZONE la suit, puisque
         // c'est ce même pas qui lui est appliqué juste en dessous.
-        let step = delta / WHEEL_DELTA * scroll_step_px(side);
+        let pas = delta / WHEEL_DELTA * scroll_step_px(side);
         // ⭐ REPLIÉE, la barre défile en `pli_delta` — repliée comme dépliée :
         // ce qui passe au-dessus du haut s'y replie (voir `ui::empilement::plier`).
         if let Some(pliage) = self.pliage_de_la_barre(side, layout) {
             let slot = side_slot(side);
             let min = crate::ui::empilement::delta_min(&pliage.elements, TOP_MARGIN, pliage.longueur);
-            self.pli_delta[slot] = (self.pli_delta[slot] + step).clamp(min, 0.0);
+            self.pli_delta[slot] = (self.pli_delta[slot] + pas).clamp(min, 0.0);
             return;
         }
-        let zone_took_it = match self.zone_separator_at(side, y, layout) {
-            Some(sep) => self.scroll_one_zone(sep, step, side, layout),
+        // La zone SOUS LE CURSEUR, avec sa hauteur VISIBLE : en mode « par
+        // zone », c'est elle qui donne le pas — un cran parcourt la zone (une
+        // page) au lieu de la vitesse réglée, donc la molette avance de zone
+        // en zone. La zone garde la priorité sur la barre (voir `scroll_bar`).
+        let zone = self.zone_separator_at(side, y, layout);
+        let step = match (scroll_par_zone(side), zone) {
+            (true, Some((_, hauteur))) => delta / WHEEL_DELTA * hauteur,
+            _ => pas,
+        };
+        let zone_took_it = match zone {
+            Some((sep, _)) => self.scroll_one_zone(sep, step, side, layout),
             None => false,
         };
         if !zone_took_it {
@@ -8732,7 +8741,8 @@ impl Dock {
     }
 
     /// Séparateur de la zone qui CONTIENT l'ordonnée `y` dans la barre `side`
-    /// — `None` hors de toute zone : au-dessus du premier séparateur, ou SUR
+    /// — et sa hauteur VISIBLE (le pas du mode « par zone », voir `scroll_bar`).
+    /// `None` hors de toute zone : au-dessus du premier séparateur, ou SUR
     /// un séparateur lui-même (il est le bord de la boîte, pas son contenu).
     ///
     /// La position testée est celle de l'ÉCRAN, défilement de barre compris
@@ -8740,7 +8750,7 @@ impl Dock {
     /// curseur. Le défilement PROPRE aux zones, lui, entre aussi dans le
     /// calcul — sans quoi une zone déjà défilée verrait ses bornes
     /// s'appliquer à un contenu qui n'y est plus.
-    fn zone_separator_at(&self, side: Side, y: f32, layout: &DockLayout) -> Option<usize> {
+    fn zone_separator_at(&self, side: Side, y: f32, layout: &DockLayout) -> Option<(usize, f32)> {
         let (bar_width, order) = match side {
             Side::Left => (layout.left_width, &self.left_order),
             Side::Right => (layout.right_width, &self.right_order),
@@ -8751,7 +8761,10 @@ impl Dock {
         let icon_size = lateral_icon_size_for(side, bar_width);
         let start_y = layout.haut_colonnes + TOP_MARGIN - self.decalage_barre(side, layout);
         let bar = self.bar_layout(side, &visible, icon_size, start_y, &|sep| self.zone_scroll_offset(sep), &self.zone_grid(side, icon_size, bar_width));
-        bar.zones.iter().find(|zone| y >= zone.top && y < zone.bottom).map(|zone| zone.sep_index)
+        bar.zones
+            .iter()
+            .find(|zone| y >= zone.top && y < zone.bottom)
+            .map(|zone| (zone.sep_index, zone.bottom - zone.top))
     }
 
     /// Borne le décalage de défilement d'une barre latérale à la hauteur RÉELLE
@@ -9628,6 +9641,30 @@ thread_local! {
         const { Cell::new(DEFAULT_SCROLL_STEP_PX) },
         const { Cell::new(DEFAULT_SCROLL_STEP_PX) },
     ];
+    /// Mode « par zone » de la molette, PAR BARRE (même index que `SCROLL_STEP`,
+    /// voir `side_slot`). Faux = un cran vaut la vitesse réglée (comportement
+    /// d'origine) ; vrai = un cran fait une PAGE de la zone sous le curseur.
+    static SCROLL_PAR_ZONE: [Cell<bool>; 4] = [
+        const { Cell::new(false) },
+        const { Cell::new(false) },
+        const { Cell::new(false) },
+        const { Cell::new(false) },
+    ];
+}
+
+/// Mode de défilement « par zone » d'une barre — DEMANDE EXPLICITE
+/// (2026-11-25) : « donner le choix à l'utilisateur de faire défiler les zones
+/// de la barre de droite à la molette par zone ou normalement ». Vrai : un cran
+/// parcourt la hauteur VISIBLE de la zone sous le curseur, au lieu de
+/// `scroll_step_px` — la molette avance donc de zone en zone.
+pub fn scroll_par_zone(side: Side) -> bool {
+    SCROLL_PAR_ZONE.with(|modes| modes[side_slot(side)].get())
+}
+
+/// Change le mode de défilement d'une barre (voir `scroll_par_zone`). GLOBAL
+/// comme la vitesse : il vaut aussi pour les docks des écrans secondaires.
+pub fn set_scroll_par_zone(side: Side, oui: bool) {
+    SCROLL_PAR_ZONE.with(|modes| modes[side_slot(side)].set(oui));
 }
 
 /// Vitesse de défilement actuelle de la barre `side`, en pixels par cran — voir
@@ -16977,6 +17014,46 @@ fn saved_spacer_capacity_never_goes_below_winpin_end() {
 
         assert!(dock.scroll[1] > bar_before, "la barre a bien défilé : {bar_before} → {}", dock.scroll[1]);
         assert_eq!(dock.zone_scroll_offset(sep), 0.0, "et la zone, qui n'avait rien à donner, n'a pas bougé");
+    }
+
+    /// **Le mode « par zone » : un cran = une PAGE de la zone sous le curseur**
+    /// — DEMANDE EXPLICITE (2026-11-25) : « faire défiler les zones de la barre
+    /// de droite à la molette par zone ou normalement ». La zone du montage est
+    /// haute de 100 px et son contenu de 400 : un cran doit la déplacer de sa
+    /// hauteur, pas de `SCROLL_STEP_PX`.
+    #[test]
+    fn en_mode_par_zone_un_cran_parcourt_la_hauteur_de_la_zone() {
+        let layout = geometry_layout();
+        let (mut dock, sep, _, bar) = dock_with_an_overflowing_zone(&layout);
+        let hauteur = bar.zones[0].bottom - bar.zones[0].top;
+        set_scroll_par_zone(Side::Right, true);
+        let y = bar.zones[0].top + 10.0;
+        dock.scroll_bar(Side::Right, -WHEEL_DELTA, y, &layout);
+        let offset = dock.zone_scroll_offset(sep);
+        assert!((offset - hauteur).abs() < 0.01, "un cran = la hauteur visible de la zone : {offset} ≠ {hauteur}");
+        assert!((offset - SCROLL_STEP_PX).abs() > 1.0, "et non la vitesse réglée : {offset}");
+    }
+
+    /// Le relais ne change pas : une fois la zone à sa fin, le cran suivant fait
+    /// avancer la BARRE d'une page — c'est ce qui amène la zone suivante.
+    #[test]
+    fn en_mode_par_zone_la_barre_avance_dune_page_quand_la_zone_est_a_sa_fin() {
+        let layout = geometry_layout();
+        let (mut dock, sep, _, bar) = dock_with_an_overflowing_zone(&layout);
+        let hauteur = bar.zones[0].bottom - bar.zones[0].top;
+        let allowance = bar.zones[0].content_height - hauteur;
+        set_scroll_par_zone(Side::Right, true);
+        let y = bar.zones[0].top + 10.0;
+        // La réserve de la zone vaut trois pages (300 px pour 100 px de cote).
+        for _ in 0..3 {
+            dock.scroll_bar(Side::Right, -WHEEL_DELTA, y, &layout);
+        }
+        assert!((dock.zone_scroll_offset(sep) - allowance).abs() < 0.01, "prémisse : zone épuisée");
+        let avant = dock.scroll[1];
+        dock.scroll_bar(Side::Right, -WHEEL_DELTA, y, &layout);
+        let avance = dock.scroll[1] - avant;
+        assert!((avance - hauteur).abs() < 0.01, "la barre avance d'une page : {avance} ≠ {hauteur}");
+        assert!((dock.zone_scroll_offset(sep) - allowance).abs() < 0.01, "la zone ne repart pas");
     }
 
     /// **Une vitesse PAR BARRE, et un cran vaut exactement cette vitesse** —

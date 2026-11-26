@@ -58,14 +58,16 @@ function union(a, b) {
 
 // ── Rendu ─────────────────────────────────────────────────────────────────
 // Peint le calque `k` sur `c`, décalé de (-ox, -oy) : sa toile, puis ses objets.
-// `options` : `filtre` (l'aperçu des couleurs), `trace` (l'objet en cours de
-// tracé), `cache` (l'index de l'objet que le champ de texte remplace).
+// `options` : `filtre` (l'aperçu des couleurs), `vignette` (son aperçu, posé
+// sur les pixels du calque avant ses annotations), `trace` (l'objet en cours
+// de tracé), `cache` (l'index de l'objet que le champ de texte remplace).
 function peindreCalque(c, k, ox, oy, options = {}) {
   c.save();
   c.imageSmoothingEnabled = false;
   c.filter = options.filtre || "none";
   c.drawImage(k.toile, k.x - ox, k.y - oy);
   c.restore();
+  if (options.vignette) vignetter(c, { x: k.x - ox, y: k.y - oy, l: k.toile.width, h: k.toile.height }, options.vignette);
   const decale = (o) => (ox || oy ? deplacer(o, -ox, -oy) : o);
   const tous = options.trace ? [...k.objets, options.trace] : k.objets;
   let numero = 0;
@@ -84,7 +86,7 @@ const RENDUS = new WeakMap();
 const travail = nouvelleToile(1, 1);
 
 function sourceDuCalque(k, L, H, options = {}) {
-  const vivant = options.filtre && options.filtre !== "none" || options.trace || options.cache !== undefined;
+  const vivant = (options.filtre && options.filtre !== "none") || options.vignette || options.trace || options.cache !== undefined;
   if (!k.objets.length && !vivant) return { source: k.toile, x: k.x, y: k.y };
   const garde = !vivant && RENDUS.get(k);
   if (garde && garde.width === L && garde.height === H) return { source: garde, x: 0, y: 0 };

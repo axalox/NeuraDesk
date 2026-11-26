@@ -63,6 +63,10 @@ thread_local! {
     /// Le fichier à calques en cours de décodage (voir `win32::decodeur_document`),
     /// son nom, et s'il doit s'AJOUTER en calques plutôt que remplacer l'image.
     static DECODAGE: RefCell<Option<(decodeur_document::EnCours, String, bool)>> = const { RefCell::new(None) };
+    /// Le défilement de la barre de droite, par section (vrai) ou continu —
+    /// cache du réglage, relu du disque à la première demande (voir
+    /// `defilement_par_section`).
+    static DEFILEMENT: Cell<Option<bool>> = const { Cell::new(None) };
 }
 
 /// Un lien copié reste affiché plus longtemps qu'une confirmation : il se lit.
@@ -197,11 +201,37 @@ fn message_pendant(texte: &str, duree_ms: u32) {
     executer_quand_prete(format!("window.editeurMessage && window.editeurMessage({}, {duree_ms})", json!(texte)));
 }
 
-/// Le script qui dit à la page vers quel hébergeur partira « Envoyer en ligne ».
+/// **LE DÉFILEMENT DE LA BARRE DE DROITE** — DEMANDE (2026-11-25) : « un
+/// réglage pour choisir le mode de défilement », puis « à la molette par zone
+/// ou normalement ». Vrai (le défaut) : la molette passe d'une zone à l'autre ;
+/// faux : défilement normal. Le réglage vit dans les Réglages (voir
+/// `cef_settings`) et la page le reçoit à chaque ouverture.
+const REGLAGE_DEFILEMENT: &str = "editeur_defilement_section";
+
+pub fn defilement_par_section() -> bool {
+    DEFILEMENT.with(|d| {
+        d.get().unwrap_or_else(|| {
+            let lu = crate::config::load_bool_setting_or(REGLAGE_DEFILEMENT, true);
+            d.set(Some(lu));
+            lu
+        })
+    })
+}
+
+pub fn activer_defilement_par_section(oui: bool) {
+    DEFILEMENT.with(|d| d.set(Some(oui)));
+    crate::config::save_bool_setting(REGLAGE_DEFILEMENT, oui);
+}
+
+/// Le script qui dit à la page vers quel hébergeur partira « Envoyer en ligne »
+/// et comment se défile sa barre de droite.
 fn script_service() -> String {
     let reglages = envoi_image::charger_reglages();
     let service = json!({ "label": reglages.nom_affiche(), "description": reglages.hebergeur.description() });
-    format!("window.editeurService && window.editeurService({service})")
+    let section = defilement_par_section();
+    format!(
+        "window.editeurService && window.editeurService({service}); window.editeurDefilement && window.editeurDefilement({section})"
+    )
 }
 
 /// Pousse une image encodée (`mime`) dans la page — en NOUVEAU CALQUE si

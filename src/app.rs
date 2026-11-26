@@ -3872,6 +3872,26 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let mut automatisations_accent = accent_du_dash("automatisations");
     let mut meteo_accent = accent_du_dash("meteo");
     let mut aide_accent = accent_du_dash("aide");
+    // Les applets qui suivaient EN SILENCE la couleur du Dash (DEMANDE,
+    // 2026-11-25 : « il y a des dashs et des menus pour lesquels je n'ai pas
+    // accès au réglage de la couleur ») — même départ que les précédents :
+    // rien ne change à l'écran tant que l'utilisateur n'a rien choisi.
+    let mut caracteres_accent = accent_du_dash("caracteres");
+    let mut kaomoji_accent = accent_du_dash("kaomoji");
+    let mut phonetique_accent = accent_du_dash("phonetique");
+    let mut maths_accent = accent_du_dash("maths");
+    let mut enregistrer_accent = accent_du_dash("enregistrer");
+    let mut jeu2048_accent = accent_du_dash("jeu2048");
+    let mut cinq_ou_plus_accent = accent_du_dash("cinq_ou_plus");
+    let mut quadrapassel_accent = accent_du_dash("quadrapassel");
+    let mut lightsoff_accent = accent_du_dash("lightsoff");
+    let mut reversi_accent = accent_du_dash("reversi");
+    let mut bovo_accent = accent_du_dash("bovo");
+    let mut patience_accent = accent_du_dash("patience");
+    let mut dns_accent = accent_du_dash("dns");
+    let mut apropos_accent = accent_du_dash("apropos");
+    let mut capture_accent = accent_du_dash("capture");
+    let mut fenetres_accent = accent_du_dash("fenetres");
     // ⚠️ **LE FOND DU DASH DOSSIER ÉTAIT CELUI DES MENUS**, pas celui du Dash
     // (voir son appel à `cef_sous_dock::render_if_visible`). On le garde tant que
     // sa couleur reste celle de départ — la comparaison se fait à chaque frame,
@@ -4501,6 +4521,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         crate::ui::dock::set_scroll_step_px(crate::ui::dock::Side::Left, steps[0]);
         crate::ui::dock::set_scroll_step_px(crate::ui::dock::Side::Right, steps[1]);
     }
+    // Le MODE de ce défilement, par barre — DEMANDE EXPLICITE (2026-11-25) :
+    // « faire défiler les zones de la barre de droite à la molette par zone ou
+    // normalement ». Défaut : normalement, c'est-à-dire la vitesse réglée
+    // ci-dessus (voir `ui::dock::scroll_par_zone`).
+    crate::ui::dock::set_scroll_par_zone(crate::ui::dock::Side::Left, config::load_bool_setting("scroll_par_zone_left"));
+    crate::ui::dock::set_scroll_par_zone(crate::ui::dock::Side::Right, config::load_bool_setting("scroll_par_zone_right"));
     // SÉPARATEURS DE LA RANGÉE DE WIDGETS (voir `ui::topbar::TopSlot`) — DEMANDE
     // EXPLICITE : « je n'arrive pas à placer de séparateur entre le widget pour
     // afficher le bureau et le widget de changement de bureau, ni entre celui-ci
@@ -12020,6 +12046,33 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 dark_mode,
             );
             let aide_tint_rgba = [aide_bg[0], aide_bg[1], aide_bg[2], dash_tint_for_render];
+            // ⭐ **LE FOND D'UN PANNEAU SUIT SON PROPRE ACCENT, PAS CELUI DU DASH.**
+            // Défaut signalé le 2026-11-25 (« les réglages modifient la couleur de
+            // mise en avant, pas la couleur des dashs ») : les applets ajoutées ce
+            // jour-là recevaient leur accent mais gardaient `dash_tint_rgba` en
+            // fond, donc régler leur couleur ne changeait QUE leurs éléments. Même
+            // recette que les blocages ci-dessus (`soften_tint` + l'alpha partagé
+            // du Dash) ; une seule closure pour les seize.
+            let teinte_du_panneau = |accent: &color::WindowAccent| {
+                let bg = color::soften_tint(accent.background, dark_mode);
+                [bg[0], bg[1], bg[2], dash_tint_for_render]
+            };
+            let caracteres_tint_rgba = teinte_du_panneau(&caracteres_accent);
+            let kaomoji_tint_rgba = teinte_du_panneau(&kaomoji_accent);
+            let phonetique_tint_rgba = teinte_du_panneau(&phonetique_accent);
+            let maths_tint_rgba = teinte_du_panneau(&maths_accent);
+            let enregistrer_tint_rgba = teinte_du_panneau(&enregistrer_accent);
+            let jeu2048_tint_rgba = teinte_du_panneau(&jeu2048_accent);
+            let cinq_ou_plus_tint_rgba = teinte_du_panneau(&cinq_ou_plus_accent);
+            let quadrapassel_tint_rgba = teinte_du_panneau(&quadrapassel_accent);
+            let lightsoff_tint_rgba = teinte_du_panneau(&lightsoff_accent);
+            let reversi_tint_rgba = teinte_du_panneau(&reversi_accent);
+            let bovo_tint_rgba = teinte_du_panneau(&bovo_accent);
+            let patience_tint_rgba = teinte_du_panneau(&patience_accent);
+            let dns_tint_rgba = teinte_du_panneau(&dns_accent);
+            let apropos_tint_rgba = teinte_du_panneau(&apropos_accent);
+            let capture_tint_rgba = teinte_du_panneau(&capture_accent);
+            let fenetres_tint_rgba = teinte_du_panneau(&fenetres_accent);
             let dossier_tint_rgba = if Some(dossier_accent) == dossier_accent_de_depart { menu_tint_rgba } else { dossier_tint_rgba };
             // ⛔ **LES QUATRE BARRES, BAS COMPRIS.** Ce relevé ne portait que
             // `[haut, gauche, droite]` : le curseur « bar-size bottom » changeait
@@ -12149,6 +12202,22 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 automatisations_accent: &mut automatisations_accent,
                 meteo_accent: &mut meteo_accent,
                 aide_accent: &mut aide_accent,
+                caracteres_accent: &mut caracteres_accent,
+                kaomoji_accent: &mut kaomoji_accent,
+                phonetique_accent: &mut phonetique_accent,
+                maths_accent: &mut maths_accent,
+                enregistrer_accent: &mut enregistrer_accent,
+                jeu2048_accent: &mut jeu2048_accent,
+                cinq_ou_plus_accent: &mut cinq_ou_plus_accent,
+                quadrapassel_accent: &mut quadrapassel_accent,
+                lightsoff_accent: &mut lightsoff_accent,
+                reversi_accent: &mut reversi_accent,
+                bovo_accent: &mut bovo_accent,
+                patience_accent: &mut patience_accent,
+                dns_accent: &mut dns_accent,
+                apropos_accent: &mut apropos_accent,
+                capture_accent: &mut capture_accent,
+                fenetres_accent: &mut fenetres_accent,
                 notes_accent: &mut notes_accent,
                 dash_tint: &mut dash_tint,
                 auto_color_scheme: &mut auto_color_scheme,
@@ -12390,7 +12459,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // précis restait sur l'ancien littéral figé, avec le même
             // raisonnement erroné ("pas de réglage utilisateur") que le
             // rayon/zoom ci-dessous.
-            crate::win32::cef_test_window::render_if_visible(menu_tint_rgba);
+            // Le menu « Alimentation » est réglable individuellement comme ses
+            // pairs (clé `power`, voir `menu::MENU_COLOR_KEYS`) — avant, il
+            // suivait toujours la couleur PARTAGÉE des menus.
+            crate::win32::cef_test_window::render_if_visible(tint_menu("power"));
             // Actions demandées par assets/popups/power.html (voir
             // win32::cef_app::NeuraDeskRequestHandler, doc détaillée) —
             // "power/<action>" mappé sur win32::power::PowerAction,
@@ -13325,20 +13397,20 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // ⛔ **LE DESSIN, ET C'EST LUI QUI MANQUAIT** : sans cet appel, la fenêtre
             // est créée, montrée, prend le focus — et reste INVISIBLE, parce que rien
             // n'y est jamais peint. Même trio d'arguments que le météo.
-            crate::win32::cef_caracteres::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_caracteres::render_if_visible(caracteres_tint_rgba, caracteres_accent.effective_palette(), dark_mode);
             // LES KAOMOJIS — le même trio, une fenêtre INDÉPENDANTE (voir l'applet).
             crate::win32::cef_kaomoji::dispatch_actions();
             crate::win32::cef_kaomoji::refresh_if_visible();
-            crate::win32::cef_kaomoji::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_kaomoji::render_if_visible(kaomoji_tint_rgba, kaomoji_accent.effective_palette(), dark_mode);
             // LES SYMBOLES PHONÉTIQUES — le même trio. ⛔ Sans `render_if_visible`, la
             // fenêtre prendrait le focus en restant INVISIBLE.
             crate::win32::cef_phonetique::dispatch_actions();
             crate::win32::cef_phonetique::refresh_if_visible();
-            crate::win32::cef_phonetique::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_phonetique::render_if_visible(phonetique_tint_rgba, phonetique_accent.effective_palette(), dark_mode);
             // LES SYMBOLES MATHÉMATIQUES — le même trio, la même raison.
             crate::win32::cef_maths::dispatch_actions();
             crate::win32::cef_maths::refresh_if_visible();
-            crate::win32::cef_maths::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_maths::render_if_visible(maths_tint_rgba, maths_accent.effective_palette(), dark_mode);
             // ENREGISTRER — le même trio, plus le pilote : `avancer` tourne MÊME
             // FENÊTRE FERMÉE, c'est lui qui voit l'enregistreur finir.
             // ⭐ L'AVIS DE FIN : un toast Windows quand le panneau est FERMÉ (le
@@ -13374,35 +13446,35 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 crate::win32::cef_enregistrer::montrer(&gfx);
             }
             crate::win32::cef_enregistrer::refresh_if_visible();
-            crate::win32::cef_enregistrer::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_enregistrer::render_if_visible(enregistrer_tint_rgba, enregistrer_accent.effective_palette(), dark_mode);
             crate::win32::cef_jeu2048::dispatch_actions();
             crate::win32::cef_jeu2048::refresh_if_visible();
-            crate::win32::cef_jeu2048::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_jeu2048::render_if_visible(jeu2048_tint_rgba, jeu2048_accent.effective_palette(), dark_mode);
             crate::win32::cef_cinq_ou_plus::dispatch_actions();
             crate::win32::cef_cinq_ou_plus::refresh_if_visible();
-            crate::win32::cef_cinq_ou_plus::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_cinq_ou_plus::render_if_visible(cinq_ou_plus_tint_rgba, cinq_ou_plus_accent.effective_palette(), dark_mode);
             crate::win32::cef_quadrapassel::dispatch_actions();
             crate::win32::cef_quadrapassel::refresh_if_visible();
-            crate::win32::cef_quadrapassel::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_quadrapassel::render_if_visible(quadrapassel_tint_rgba, quadrapassel_accent.effective_palette(), dark_mode);
             crate::win32::cef_lightsoff::dispatch_actions();
             crate::win32::cef_lightsoff::refresh_if_visible();
-            crate::win32::cef_lightsoff::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_lightsoff::render_if_visible(lightsoff_tint_rgba, lightsoff_accent.effective_palette(), dark_mode);
             crate::win32::cef_reversi::dispatch_actions();
             crate::win32::cef_reversi::refresh_if_visible();
-            crate::win32::cef_reversi::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_reversi::render_if_visible(reversi_tint_rgba, reversi_accent.effective_palette(), dark_mode);
             crate::win32::cef_bovo::dispatch_actions();
             crate::win32::cef_bovo::refresh_if_visible();
-            crate::win32::cef_bovo::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_bovo::render_if_visible(bovo_tint_rgba, bovo_accent.effective_palette(), dark_mode);
             crate::win32::cef_patience::dispatch_actions();
             crate::win32::cef_patience::refresh_if_visible();
-            crate::win32::cef_patience::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_patience::render_if_visible(patience_tint_rgba, patience_accent.effective_palette(), dark_mode);
             crate::win32::cef_dns::dispatch_actions();
             crate::win32::cef_dns::refresh_if_visible();
-            crate::win32::cef_dns::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_dns::render_if_visible(dns_tint_rgba, dns_accent.effective_palette(), dark_mode);
             // « À PROPOS DE NEURADESK » (voir `win32::cef_apropos`).
             crate::win32::cef_apropos::dispatch_actions();
             crate::win32::cef_apropos::refresh_if_visible();
-            crate::win32::cef_apropos::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_apropos::render_if_visible(apropos_tint_rgba, apropos_accent.effective_palette(), dark_mode);
             // CAPTURE D'ÉCRAN — le PANNEAU de l'applet (même famille que
             // « Enregistrer », voir `win32::cef_capture`), ses demandes et sa
             // photo de webcam.
@@ -13457,7 +13529,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // vignette d'une sélection annulée.
             crate::win32::cef_capture::avancer();
             crate::win32::cef_capture::refresh_if_visible();
-            crate::win32::cef_capture::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_capture::render_if_visible(capture_tint_rgba, capture_accent.effective_palette(), dark_mode);
             // ⚠️ **`meteo::avancer` TOURNE MÊME PANNEAU FERMÉ** : c'est lui qui
             // draine ce que le fil d'interrogation a rapporté. Le sauter quand la
             // fenêtre est cachée perdrait la réponse arrivée entre-temps — et le
@@ -13608,7 +13680,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 let zone = zone_centrale_pour_dock(hwnd_ecran, &window, &layout, &secondary_docks);
                 crate::win32::cef_fenetres::ouvrir_ou_fermer(zone, &gfx, scale);
             }
-            crate::win32::cef_fenetres::render_if_visible(dash_tint_rgba, dash_accent.effective_palette(), dark_mode);
+            crate::win32::cef_fenetres::render_if_visible(fenetres_tint_rgba, fenetres_accent.effective_palette(), dark_mode);
             crate::win32::cef_fenetres::dispatch_actions();
             crate::win32::cef_surveillance::refresh_if_visible();
             crate::win32::cef_scanner::refresh_if_visible();
@@ -13727,7 +13799,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             // disparaitre la page qu'on est en train de lire.
             crate::win32::cef_page_scan::render_if_visible(
                 dash_tint_rgba,
-                dash_accent.effective_palette(),
+                // La vue d'une page scannée appartient au SCANNER : elle suit
+                // son accent, pas celui du Dash (même famille que
+                // `cef_scanner::render_if_visible` plus haut).
+                scanner_accent.effective_palette(),
                 dark_mode,
             );
             crate::win32::cef_page_scan::dispatch_actions();

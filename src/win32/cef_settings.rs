@@ -82,6 +82,84 @@ use crate::win32::monitors;
 use crate::win32::taskbar_autohide;
 use crate::win32::theme;
 
+/// ⭐ **LA LISTE UNIQUE DES PANNEAUX QUI ONT UNE COULEUR PROPRE** —
+/// `champ de SettingsRefs => clé côté page`. C'est le SEUL endroit à toucher
+/// pour en ajouter un : les dérivés ci-dessous (les noms, l'accès `&mut`,
+/// donc le routage des couleurs, les tableaux de thème et le JSON d'état)
+/// sont TOUS engendrés depuis cette liste.
+///
+/// ⛔ **POURQUOI UNE MACRO** : la même liste existait autrefois SIX fois
+/// (`FENETRES_ACCENT`, `accent_target`, `apply_theme`, `apply_famille`,
+/// `reappliquer_forces`, `push_state`) plus DEUX bras de
+/// `match` par panneau dans `apply_color_to_target`. Un panneau oublié dans
+/// l'une d'elles retombait en SILENCE sur la couleur du Dash — c'est
+/// exactement le défaut « je n'ai pas accès au réglage de la couleur pour
+/// certains dashs » (constaté encore sur les jeux et les applets de
+/// caractères, qui suivaient le Dash sans entrée dans les Réglages).
+macro_rules! pour_chaque_panneau {
+    ($mac:ident $(, $arg:expr)*) => {
+        $mac!(
+            $($arg,)*
+            dash_accent => "dash",
+            settings_accent => "settings",
+            clipboard_accent => "clipboard",
+            notes_accent => "notes",
+            calendar_accent => "calendar",
+            minuteur_accent => "minuteur",
+            surveillance_accent => "surveillance",
+            calculatrice_accent => "calculatrice",
+            ssh_accent => "ssh",
+            terminal_accent => "terminal",
+            dossier_accent => "dossier",
+            visionneuse_accent => "visionneuse",
+            couleurs_accent => "couleurs",
+            editeur_accent => "editeur",
+            scanner_accent => "scanner",
+            shaders_accent => "shaders",
+            lueurs_accent => "lueurs",
+            textures_accent => "textures",
+            moniteur_accent => "moniteur",
+            recherche_accent => "recherche",
+            automatisations_accent => "automatisations",
+            meteo_accent => "meteo",
+            aide_accent => "aide",
+            // Les applets ci-dessous suivaient le Dash sans réglage propre
+            // (2026-11-25 : « il y a des dashs et des menus pour lesquels je
+            // n'ai pas accès au réglage de la couleur »).
+            caracteres_accent => "caracteres",
+            kaomoji_accent => "kaomoji",
+            phonetique_accent => "phonetique",
+            maths_accent => "maths",
+            enregistrer_accent => "enregistrer",
+            jeu2048_accent => "jeu2048",
+            cinq_ou_plus_accent => "cinq_ou_plus",
+            quadrapassel_accent => "quadrapassel",
+            lightsoff_accent => "lightsoff",
+            reversi_accent => "reversi",
+            bovo_accent => "bovo",
+            patience_accent => "patience",
+            dns_accent => "dns",
+            apropos_accent => "apropos",
+            capture_accent => "capture",
+            fenetres_accent => "fenetres",
+        )
+    };
+}
+
+/// Les noms seuls (voir `FENETRES_ACCENT`).
+macro_rules! noms_des_panneaux {
+    ($($champ:ident => $cle:literal),* $(,)?) => {
+        &[$($cle),*]
+    };
+}
+
+/// Les couples `(clé, &mut WindowAccent)` (voir `accents_du_panneau`).
+macro_rules! accents_empruntes {
+    ($refs:expr, $($champ:ident => $cle:literal),* $(,)?) => {
+        vec![$(($cle, &mut *$refs.$champ)),*]
+    };
+}
+
 /// Voir la doc de module (dernier paragraphe) : les trois seuls champs que
 /// ce module possède réellement — chargés paresseusement (voir `data`), pas
 /// via `const { ... }` (`Vec::new()`/valeur par défaut suffiraient, mais le
@@ -129,10 +207,10 @@ thread_local! {
     /// possédée (pas `&'static str`) : les cibles des écrans secondaires
     /// sont construites dynamiquement (`"secondary:<device_name>:<bar>"`,
     /// voir `apply_color_to_target`) et n'ont donc pas de représentant
-    /// `'static` connu à la compilation, contrairement aux 13 cibles fixes
-    /// de `leak_known_target` (toujours utilisé là où c'est suffisant,
-    /// `window_static`) — DEMANDE EXPLICITE ("mêmes possibilités de
-    /// réglages... sélecteur de couleur" pour les écrans secondaires).
+    /// `'static` connu à la compilation, contrairement aux cibles fixes
+    /// (`FENETRES_ACCENT`, les barres) que `accent_target` résout en `'static`
+    /// — DEMANDE EXPLICITE ("mêmes possibilités de réglages... sélecteur de
+    /// couleur" pour les écrans secondaires).
     static EYEDROPPER_ACTIVE: RefCell<Option<String>> = const { RefCell::new(None) };
     static EYEDROPPER_RESULT: Cell<Option<[f32; 3]>> = const { Cell::new(None) };
     static EYEDROPPER_HOOK: Cell<Option<HHOOK>> = const { Cell::new(None) };
@@ -367,6 +445,27 @@ pub struct SettingsRefs<'a> {
     pub automatisations_accent: &'a mut color::WindowAccent,
     pub meteo_accent: &'a mut color::WindowAccent,
     pub aide_accent: &'a mut color::WindowAccent,
+    /// Les applets qui suivaient EN SILENCE la couleur du Dash (DEMANDE,
+    /// 2026-11-25 : « il y a des dashs et des menus pour lesquels je n'ai pas
+    /// accès au réglage de la couleur ») — voir `app::run`, `accent_du_dash`.
+    /// Leur valeur de départ est celle du Dash : rien ne change à l'écran tant
+    /// que l'utilisateur ne choisit pas une couleur.
+    pub caracteres_accent: &'a mut color::WindowAccent,
+    pub kaomoji_accent: &'a mut color::WindowAccent,
+    pub phonetique_accent: &'a mut color::WindowAccent,
+    pub maths_accent: &'a mut color::WindowAccent,
+    pub enregistrer_accent: &'a mut color::WindowAccent,
+    pub jeu2048_accent: &'a mut color::WindowAccent,
+    pub cinq_ou_plus_accent: &'a mut color::WindowAccent,
+    pub quadrapassel_accent: &'a mut color::WindowAccent,
+    pub lightsoff_accent: &'a mut color::WindowAccent,
+    pub reversi_accent: &'a mut color::WindowAccent,
+    pub bovo_accent: &'a mut color::WindowAccent,
+    pub patience_accent: &'a mut color::WindowAccent,
+    pub dns_accent: &'a mut color::WindowAccent,
+    pub apropos_accent: &'a mut color::WindowAccent,
+    pub capture_accent: &'a mut color::WindowAccent,
+    pub fenetres_accent: &'a mut color::WindowAccent,
     pub dash_tint: &'a mut f32,
     pub auto_color_scheme: &'a mut bool,
     pub top_thickness: &'a mut f32,
@@ -1115,6 +1214,9 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
             // Après une capture : sa fenêtre d'actions, ou l'éditeur (voir
             // `win32::cef_capture`).
             ["capture-carte", flag] => crate::win32::cef_capture::activer(*flag == "1"),
+            // Le défilement de la barre de droite de l'éditeur d'image : par
+            // section (aimanté) ou continu — voir `cef_image_editor`.
+            ["editeur-defilement", flag] => crate::win32::cef_image_editor::activer_defilement_par_section(*flag == "1"),
             ["capture-visible", flag] => {
                 let enabled = *flag == "1";
                 crate::gfx::capture_visibility::set_enabled(enabled);
@@ -1900,7 +2002,7 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
             // chaque barre reçoit SA PROPRE couleur au hasard (demande explicite :
             // « pour chaque élément de l'app »). Un tirage INDÉPENDANT par cible.
             ["color-random-all"] => {
-                for p in PANNEAUX_ACCENT {
+                for &p in FENETRES_ACCENT {
                     apply_color_to_target(p, color::random_dark_theme(), refs);
                 }
                 for k in menu::MENU_COLOR_KEYS {
@@ -3072,6 +3174,22 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
                     ]);
                 }
             }
+            // Le MODE du défilement, par barre — DEMANDE EXPLICITE (2026-11-25) :
+            // « faire défiler les zones de la barre de droite à la molette par
+            // zone ou normalement ». Un fichier booléen par barre, comme les
+            // autres cases de ce panneau.
+            ["scroll-zone-mode", side, flag] => {
+                let cible = match *side {
+                    "left" => Some((crate::ui::dock::Side::Left, "scroll_par_zone_left")),
+                    "right" => Some((crate::ui::dock::Side::Right, "scroll_par_zone_right")),
+                    _ => None,
+                };
+                if let Some((side, cle)) = cible {
+                    let oui = *flag == "1";
+                    crate::ui::dock::set_scroll_par_zone(side, oui);
+                    config::save_bool_setting(cle, oui);
+                }
+            }
             // ⭐ DEMANDE EXPLICITE (2026-10-16) : « rediriger les jeux en plein
             // écran dans la zone centrale de l'app » — voir `win32::plein_ecran_zone`.
             ["plein-ecran-zone", flag] => {
@@ -3218,20 +3336,20 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
                 }
             }
             ["accent-icon-bg", window, flag] => {
-                if let Some(target) = accent_target(refs, window) {
+                if let Some((cle, target)) = accent_target(refs, window) {
                     target.icon_bg = *flag == "1";
-                    config::save_window_accent(window_static(window), target.background, target.icon_bg);
+                    config::save_window_accent(cle, target.background, target.icon_bg);
                 }
             }
             ["accent-palette-enabled", window, flag] => {
-                if let Some(target) = accent_target(refs, window) {
+                if let Some((cle, target)) = accent_target(refs, window) {
                     if *flag == "1" {
                         let seed = target.effective_palette();
                         target.palette = Some(seed);
-                        config::save_window_palette_accent(window_static(window), seed);
+                        config::save_window_palette_accent(cle, seed);
                     } else {
                         target.palette = None;
-                        config::delete_window_palette_accent(window_static(window));
+                        config::delete_window_palette_accent(cle);
                     }
                 }
             }
@@ -3465,105 +3583,29 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
     }
 }
 
-/// Les identifiants de cible sont un ensemble FIXE et connu à la
-/// compilation (voir `apply_color_to_target`) — convertit la `String` reçue
-/// de JS vers l'une de ces constantes `'static`, `None` pour toute autre
-/// valeur (JS malveillant/bug, jamais un identifiant arbitraire fuité).
-fn leak_known_target(target: &str) -> Option<&'static str> {
-    const TARGETS: &[&str] = &[
-        "bar_top",
-        "bar_left",
-        "bar_right",
-        "bar_bottom",
-        "topbar_text",
-        "popup",
-        "dash",
-        "settings",
-        "clipboard",
-        "notes",
-        "dash_palette",
-        "settings_palette",
-        "clipboard_palette",
-        "notes_palette",
-        // ⚠️ "calendar" MANQUAIT ICI : `window_static("calendar")` retombait
-        // sur "dash", donc cocher une case du Calendrier écrivait sa couleur
-        // dans le fichier du DASH.
-        "calendar",
-        "calendar_palette",
-        "minuteur",
-        "minuteur_palette",
-        "surveillance",
-        "surveillance_palette",
-        "calculatrice",
-        "calculatrice_palette",
-        "ssh",
-        "ssh_palette",
-        "terminal",
-        "terminal_palette",
-        "dossier",
-        "dossier_palette",
-        "visionneuse",
-        "visionneuse_palette",
-        "couleurs",
-        "couleurs_palette",
-        "editeur",
-        "editeur_palette",
-        "scanner",
-        "scanner_palette",
-        "shaders",
-        "shaders_palette",
-        "lueurs",
-        "lueurs_palette",
-        "textures",
-        "textures_palette",
-        "moniteur",
-        "moniteur_palette",
-        "recherche",
-        "recherche_palette",
-        "automatisations",
-        "automatisations_palette",
-        "meteo",
-        "meteo_palette",
-        "aide",
-        "aide_palette",
-        "theme_base_color",
-    ];
-    TARGETS.iter().copied().find(|t| *t == target)
+/// ⭐ **LES NOMS DES PANNEAUX À COULEUR PROPRE** — engendrés depuis
+/// `pour_chaque_panneau` (voir sa doc), donc JAMAIS désynchronisés de
+/// `accents_du_panneau` : ni de la page, ni des tableaux de thème. Sert aux
+/// traitements qui n'ont besoin QUE du nom (bases du thème, « Tout en
+/// aléatoire », test de parité page ↔ Rust).
+const FENETRES_ACCENT: &[&str] = pour_chaque_panneau!(noms_des_panneaux);
+
+/// Les `(clé, accent)` de TOUS les panneaux, en un seul endroit — voir
+/// `pour_chaque_panneau`, doc de la macro.
+fn accents_du_panneau<'a>(refs: &'a mut SettingsRefs<'_>) -> Vec<(&'static str, &'a mut color::WindowAccent)> {
+    pour_chaque_panneau!(accents_empruntes, refs)
 }
 
-fn window_static(window: &str) -> &'static str {
-    leak_known_target(window).unwrap_or("dash")
-}
-
-fn accent_target<'a, 'b>(refs: &'a mut SettingsRefs<'b>, window: &str) -> Option<&'a mut color::WindowAccent> {
-    match window {
-        "dash" => Some(refs.dash_accent),
-        "settings" => Some(refs.settings_accent),
-        "clipboard" => Some(refs.clipboard_accent),
-        "notes" => Some(refs.notes_accent),
-        // La fenêtre du calendrier — DEMANDE EXPLICITE (2026-09-23) : « ajoutes
-        // les réglages pour le dash calendrier dans le dash réglages ».
-        "calendar" => Some(refs.calendar_accent),
-        "minuteur" => Some(refs.minuteur_accent),
-        "surveillance" => Some(refs.surveillance_accent),
-        "calculatrice" => Some(refs.calculatrice_accent),
-        "ssh" => Some(refs.ssh_accent),
-        "terminal" => Some(refs.terminal_accent),
-        "dossier" => Some(refs.dossier_accent),
-        "visionneuse" => Some(refs.visionneuse_accent),
-        "couleurs" => Some(refs.couleurs_accent),
-        "editeur" => Some(refs.editeur_accent),
-        "scanner" => Some(refs.scanner_accent),
-        "shaders" => Some(refs.shaders_accent),
-        "lueurs" => Some(refs.lueurs_accent),
-        "textures" => Some(refs.textures_accent),
-        "moniteur" => Some(refs.moniteur_accent),
-        "recherche" => Some(refs.recherche_accent),
-        "automatisations" => Some(refs.automatisations_accent),
-        "meteo" => Some(refs.meteo_accent),
-        "aide" => Some(refs.aide_accent),
-        _ => None,
-    }
+/// L'accent d'un panneau, par son nom de cible, AVEC son nom canonique
+/// (`'static`, celui qui nomme les fichiers de config) — `None` pour toute
+/// autre cible (barres, menus, `popup`…). Le nom canonique évite l'ancien
+/// `window_static`, dont la retombée sur `"dash"` écrivait EN SILENCE la
+/// couleur d'un panneau oublié dans le fichier du Dash.
+fn accent_target<'a>(
+    refs: &'a mut SettingsRefs<'_>,
+    window: &str,
+) -> Option<(&'static str, &'a mut color::WindowAccent)> {
+    accents_du_panneau(refs).into_iter().find(|(cle, _)| *cle == window)
 }
 
 fn apply_feature(features: &mut Features, name: &str, enabled: bool) {
@@ -3795,17 +3837,6 @@ fn forces_du_theme() -> (f32, f32) {
     with_data(|d| (d.theme_force_saturation, d.theme_force_luminosite))
 }
 
-/// Les 23 fenêtres dont la « Couleur de mise en avant » est réglable
-/// individuellement — mêmes noms que les listes `(target, window)` de
-/// `apply_theme`/`apply_famille`/`reappliquer_forces`. Sert aux traitements qui
-/// n'ont besoin QUE du nom (pas du champ `&mut WindowAccent`).
-const FENETRES_ACCENT: [&str; 23] = [
-    "dash", "settings", "clipboard", "notes", "calendar", "minuteur",
-    "surveillance", "calculatrice", "ssh", "terminal", "dossier", "visionneuse",
-    "couleurs", "editeur", "scanner", "shaders", "lueurs", "textures",
-    "moniteur", "recherche", "automatisations", "meteo", "aide",
-];
-
 /// Les quatre barres du dock, avec la clé de base associée (même convention de
 /// cible que le sélecteur de couleur : `"bar_top"`…). Les barres sont
 /// ré-échelonnées depuis LEUR propre base, comme les panneaux — demande
@@ -3825,7 +3856,7 @@ const BARRES: [(Bar, &str); 4] = [
 fn poser_bases_uniformes(fond: [f32; 3], palette: Option<[f32; 3]>) {
     with_data(|d| {
         d.theme_bases.clear();
-        for w in FENETRES_ACCENT {
+        for &w in FENETRES_ACCENT {
             d.theme_bases.insert(w, (fond, palette));
         }
         for (_, nom) in BARRES {
@@ -3920,31 +3951,7 @@ fn reappliquer_forces(refs: &mut SettingsRefs, saturation: f32, luminosite: f32)
     let surface = color::ajuster_theme(surface_base_courante(), saturation, luminosite);
     menu::set_menu_accent_rgb(surface);
     config::save_window_accent("popup", surface, false);
-    for (target, window) in [
-        (&mut *refs.dash_accent, "dash"),
-        (&mut *refs.settings_accent, "settings"),
-        (&mut *refs.clipboard_accent, "clipboard"),
-        (&mut *refs.notes_accent, "notes"),
-        (&mut *refs.calendar_accent, "calendar"),
-        (&mut *refs.minuteur_accent, "minuteur"),
-        (&mut *refs.surveillance_accent, "surveillance"),
-        (&mut *refs.calculatrice_accent, "calculatrice"),
-        (&mut *refs.ssh_accent, "ssh"),
-        (&mut *refs.terminal_accent, "terminal"),
-        (&mut *refs.dossier_accent, "dossier"),
-        (&mut *refs.visionneuse_accent, "visionneuse"),
-        (&mut *refs.couleurs_accent, "couleurs"),
-        (&mut *refs.editeur_accent, "editeur"),
-        (&mut *refs.scanner_accent, "scanner"),
-        (&mut *refs.shaders_accent, "shaders"),
-        (&mut *refs.lueurs_accent, "lueurs"),
-        (&mut *refs.textures_accent, "textures"),
-        (&mut *refs.moniteur_accent, "moniteur"),
-        (&mut *refs.recherche_accent, "recherche"),
-        (&mut *refs.automatisations_accent, "automatisations"),
-        (&mut *refs.meteo_accent, "meteo"),
-        (&mut *refs.aide_accent, "aide"),
-    ] {
+    for (window, target) in accents_du_panneau(refs) {
         // Base mémorisée au dernier thème/famille/choix ; à défaut, la couleur
         // actuelle devient la base (premier geste d'une session fraîche).
         let (fond, palette) = with_data(|d| {
@@ -3964,33 +3971,7 @@ fn apply_theme(refs: &mut SettingsRefs, rgb: [f32; 3]) {
     for bar in [Bar::Top, Bar::Left, Bar::Right, Bar::Bottom] {
         apply_bar_color(refs.dock, bar, rgb);
     }
-    for (target, window) in
-        [
-            (&mut *refs.dash_accent, "dash"),
-            (&mut *refs.settings_accent, "settings"),
-            (&mut *refs.clipboard_accent, "clipboard"),
-            (&mut *refs.notes_accent, "notes"),
-            (&mut *refs.calendar_accent, "calendar"),
-            (&mut *refs.minuteur_accent, "minuteur"),
-            (&mut *refs.surveillance_accent, "surveillance"),
-            (&mut *refs.calculatrice_accent, "calculatrice"),
-            (&mut *refs.ssh_accent, "ssh"),
-            (&mut *refs.terminal_accent, "terminal"),
-            (&mut *refs.dossier_accent, "dossier"),
-            (&mut *refs.visionneuse_accent, "visionneuse"),
-            (&mut *refs.couleurs_accent, "couleurs"),
-            (&mut *refs.editeur_accent, "editeur"),
-            (&mut *refs.scanner_accent, "scanner"),
-            (&mut *refs.shaders_accent, "shaders"),
-            (&mut *refs.lueurs_accent, "lueurs"),
-            (&mut *refs.textures_accent, "textures"),
-            (&mut *refs.moniteur_accent, "moniteur"),
-            (&mut *refs.recherche_accent, "recherche"),
-            (&mut *refs.automatisations_accent, "automatisations"),
-            (&mut *refs.meteo_accent, "meteo"),
-            (&mut *refs.aide_accent, "aide"),
-        ]
-    {
+    for (window, target) in accents_du_panneau(refs) {
         target.background = rgb;
         config::save_window_accent(window, rgb, target.icon_bg);
         target.palette = None;
@@ -4117,31 +4098,7 @@ fn apply_famille(refs: &mut SettingsRefs, id: &str, light: bool) {
     }
     apply_theme(refs, surface);
     let accent = accent_de(&famille);
-    for (target, window) in [
-        (&mut *refs.dash_accent, "dash"),
-        (&mut *refs.settings_accent, "settings"),
-        (&mut *refs.clipboard_accent, "clipboard"),
-        (&mut *refs.notes_accent, "notes"),
-        (&mut *refs.calendar_accent, "calendar"),
-        (&mut *refs.minuteur_accent, "minuteur"),
-        (&mut *refs.surveillance_accent, "surveillance"),
-        (&mut *refs.calculatrice_accent, "calculatrice"),
-        (&mut *refs.ssh_accent, "ssh"),
-        (&mut *refs.terminal_accent, "terminal"),
-            (&mut *refs.dossier_accent, "dossier"),
-            (&mut *refs.visionneuse_accent, "visionneuse"),
-            (&mut *refs.couleurs_accent, "couleurs"),
-            (&mut *refs.editeur_accent, "editeur"),
-            (&mut *refs.scanner_accent, "scanner"),
-            (&mut *refs.shaders_accent, "shaders"),
-            (&mut *refs.lueurs_accent, "lueurs"),
-            (&mut *refs.textures_accent, "textures"),
-            (&mut *refs.moniteur_accent, "moniteur"),
-            (&mut *refs.recherche_accent, "recherche"),
-            (&mut *refs.automatisations_accent, "automatisations"),
-            (&mut *refs.meteo_accent, "meteo"),
-            (&mut *refs.aide_accent, "aide"),
-    ] {
+    for (window, target) in accents_du_panneau(refs) {
         target.palette = Some(accent);
         config::save_window_palette_accent(window, accent);
     }
@@ -4240,7 +4197,7 @@ fn set_light_mode(light: bool) {
 /// secondaires, des 13 cibles FIXES ci-dessous. Contrairement à elles,
 /// `device_name` n'est pas connu à la compilation (dépend des moniteurs
 /// branchés), d'où une chaîne construite dynamiquement plutôt qu'une entrée
-/// de plus dans `leak_known_target` — voir `secondaryScreenColorTarget` côté
+/// de plus dans `pour_chaque_panneau` — voir `secondaryScreenColorTarget` côté
 /// JS (`assets/popups/settings.html`), seul émetteur. DEMANDE EXPLICITE
 /// ("mêmes possibilités de réglages... choix des couleurs... sélecteur de
 /// couleur" pour les écrans secondaires, comme pour la barre primaire).
@@ -4271,17 +4228,6 @@ fn apply_secondary_color_target(rest: &str, rgb: [f32; 3], refs: &mut SettingsRe
     *refs.secondary_screens_dirty = true;
 }
 
-/// Les 23 cibles d'accent « panneau / applet » (mêmes clés que `ACCENT_TARGETS`
-/// dans `settings.html`) — énumérées pour le bouton « Tout en aléatoire »
-/// (action `color-random-all`), qui tire une couleur par élément. Les menus
-/// (`menu::MENU_COLOR_KEYS`) et les quatre barres sont ajoutés à côté, dans
-/// l'action.
-const PANNEAUX_ACCENT: [&str; 23] = [
-    "dash", "settings", "clipboard", "notes", "calendar", "minuteur", "surveillance", "calculatrice", "ssh",
-    "terminal", "dossier", "visionneuse", "couleurs", "editeur", "scanner", "shaders", "lueurs", "textures",
-    "moniteur", "recherche", "automatisations", "meteo", "aide",
-];
-
 fn apply_color_to_target(target: &str, rgb: [f32; 3], refs: &mut SettingsRefs) {
     if let Some(rest) = target.strip_prefix("secondary:") {
         apply_secondary_color_target(rest, rgb, refs);
@@ -4302,6 +4248,32 @@ fn apply_color_to_target(target: &str, rgb: [f32; 3], refs: &mut SettingsRefs) {
         if crate::gfx::degrade::set_couleur(i, rgb) {
             crate::gfx::degrade::sauver_couleurs();
         }
+        return;
+    }
+    // ⭐ COULEUR PROPRE D'UN PANNEAU/APPLET — UN SEUL routage pour TOUTES les
+    // clés de `pour_chaque_panneau`, fond et palette. Avant, chaque panneau
+    // avait ses deux bras de `match` ici ; un panneau absent tombait en
+    // SILENCE sur le fichier du Dash (`window_static`), c'était le défaut
+    // « pas accès au réglage de la couleur » de certains dashs. Le préfixe
+    // `_palette` est retiré AVANT la recherche : `accent_target` ne connaît
+    // que les noms nus.
+    if let Some(base) = target.strip_suffix("_palette") {
+        if let Some((cle, accent)) = accent_target(refs, base) {
+            accent.palette = Some(rgb);
+            config::save_window_palette_accent(cle, rgb);
+            // ⛔ SURTOUT PAS DE `return` SANS ÇA : c'est la base dont repartent
+            // les curseurs saturation/luminosité (`reappliquer_forces`) ; sans
+            // elle, le prochain geste de curseur efface la personnalisation
+            // qu'on vient de choisir (défaut 2026-11-07).
+            enregistrer_base_manuelle(target);
+            return;
+        }
+    } else if let Some((cle, accent)) = accent_target(refs, target) {
+        let icon_bg = accent.icon_bg;
+        accent.background = rgb;
+        config::save_window_accent(cle, rgb, icon_bg);
+        // Voir ci-dessus — même base, pour le fond.
+        enregistrer_base_manuelle(target);
         return;
     }
     match target {
@@ -4340,7 +4312,7 @@ fn apply_color_to_target(target: &str, rgb: [f32; 3], refs: &mut SettingsRefs) {
         }
         // ⭐ **LE FOND AU SURVOL DES ICÔNES FERMÉES** (voir
         // `ui::dock::survol_fond`) — cible DÉDIÉE, sans préfixe : elle
-        // n'appartient à aucun panneau, donc `leak_known_target` n'a pas à la
+        // n'appartient à aucun panneau, donc `accent_target` n'a pas à la
         // connaître. On enregistre l'état COMPLET (actif + couleur), comme les
         // deux verbes de `dispatch_actions` (voir `config::load_survol_fond`).
         "survol" => {
@@ -4353,190 +4325,6 @@ fn apply_color_to_target(target: &str, rgb: [f32; 3], refs: &mut SettingsRefs) {
         "popup" => {
             menu::set_menu_accent_rgb(rgb);
             config::save_window_accent("popup", rgb, false);
-        }
-        "dash" => {
-            refs.dash_accent.background = rgb;
-            config::save_window_accent("dash", rgb, refs.dash_accent.icon_bg);
-        }
-        "settings" => {
-            refs.settings_accent.background = rgb;
-            config::save_window_accent("settings", rgb, refs.settings_accent.icon_bg);
-        }
-        "clipboard" => {
-            refs.clipboard_accent.background = rgb;
-            config::save_window_accent("clipboard", rgb, refs.clipboard_accent.icon_bg);
-        }
-        "notes" => {
-            refs.notes_accent.background = rgb;
-            config::save_window_accent("notes", rgb, refs.notes_accent.icon_bg);
-        }
-        "calendar" => {
-            refs.calendar_accent.background = rgb;
-            config::save_window_accent("calendar", rgb, refs.calendar_accent.icon_bg);
-        }
-        "minuteur" => {
-            refs.minuteur_accent.background = rgb;
-            config::save_window_accent("minuteur", rgb, refs.minuteur_accent.icon_bg);
-        }
-        "surveillance" => {
-            refs.surveillance_accent.background = rgb;
-            config::save_window_accent("surveillance", rgb, refs.surveillance_accent.icon_bg);
-        }
-        "calculatrice" => {
-            refs.calculatrice_accent.background = rgb;
-            config::save_window_accent("calculatrice", rgb, refs.calculatrice_accent.icon_bg);
-        }
-        "ssh" => {
-            refs.ssh_accent.background = rgb;
-            config::save_window_accent("ssh", rgb, refs.ssh_accent.icon_bg);
-        }
-        "terminal" => {
-            refs.terminal_accent.background = rgb;
-            config::save_window_accent("terminal", rgb, refs.terminal_accent.icon_bg);
-        }
-        "dossier" => {
-            refs.dossier_accent.background = rgb;
-            config::save_window_accent("dossier", rgb, refs.dossier_accent.icon_bg);
-        }
-        "visionneuse" => {
-            refs.visionneuse_accent.background = rgb;
-            config::save_window_accent("visionneuse", rgb, refs.visionneuse_accent.icon_bg);
-        }
-        "couleurs" => {
-            refs.couleurs_accent.background = rgb;
-            config::save_window_accent("couleurs", rgb, refs.couleurs_accent.icon_bg);
-        }
-        "editeur" => {
-            refs.editeur_accent.background = rgb;
-            config::save_window_accent("editeur", rgb, refs.editeur_accent.icon_bg);
-        }
-        "scanner" => {
-            refs.scanner_accent.background = rgb;
-            config::save_window_accent("scanner", rgb, refs.scanner_accent.icon_bg);
-        }
-        "shaders" => {
-            refs.shaders_accent.background = rgb;
-            config::save_window_accent("shaders", rgb, refs.shaders_accent.icon_bg);
-        }
-        "lueurs" => {
-            refs.lueurs_accent.background = rgb;
-            config::save_window_accent("lueurs", rgb, refs.lueurs_accent.icon_bg);
-        }
-        "textures" => {
-            refs.textures_accent.background = rgb;
-            config::save_window_accent("textures", rgb, refs.textures_accent.icon_bg);
-        }
-        "moniteur" => {
-            refs.moniteur_accent.background = rgb;
-            config::save_window_accent("moniteur", rgb, refs.moniteur_accent.icon_bg);
-        }
-        "recherche" => {
-            refs.recherche_accent.background = rgb;
-            config::save_window_accent("recherche", rgb, refs.recherche_accent.icon_bg);
-        }
-        "automatisations" => {
-            refs.automatisations_accent.background = rgb;
-            config::save_window_accent("automatisations", rgb, refs.automatisations_accent.icon_bg);
-        }
-        "meteo" => {
-            refs.meteo_accent.background = rgb;
-            config::save_window_accent("meteo", rgb, refs.meteo_accent.icon_bg);
-        }
-        "aide" => {
-            refs.aide_accent.background = rgb;
-            config::save_window_accent("aide", rgb, refs.aide_accent.icon_bg);
-        }
-        "dash_palette" => {
-            refs.dash_accent.palette = Some(rgb);
-            config::save_window_palette_accent("dash", rgb);
-        }
-        "settings_palette" => {
-            refs.settings_accent.palette = Some(rgb);
-            config::save_window_palette_accent("settings", rgb);
-        }
-        "clipboard_palette" => {
-            refs.clipboard_accent.palette = Some(rgb);
-            config::save_window_palette_accent("clipboard", rgb);
-        }
-        "notes_palette" => {
-            refs.notes_accent.palette = Some(rgb);
-            config::save_window_palette_accent("notes", rgb);
-        }
-        "calendar_palette" => {
-            refs.calendar_accent.palette = Some(rgb);
-            config::save_window_palette_accent("calendar", rgb);
-        }
-        "minuteur_palette" => {
-            refs.minuteur_accent.palette = Some(rgb);
-            config::save_window_palette_accent("minuteur", rgb);
-        }
-        "surveillance_palette" => {
-            refs.surveillance_accent.palette = Some(rgb);
-            config::save_window_palette_accent("surveillance", rgb);
-        }
-        "calculatrice_palette" => {
-            refs.calculatrice_accent.palette = Some(rgb);
-            config::save_window_palette_accent("calculatrice", rgb);
-        }
-        "ssh_palette" => {
-            refs.ssh_accent.palette = Some(rgb);
-            config::save_window_palette_accent("ssh", rgb);
-        }
-        "terminal_palette" => {
-            refs.terminal_accent.palette = Some(rgb);
-            config::save_window_palette_accent("terminal", rgb);
-        }
-        "dossier_palette" => {
-            refs.dossier_accent.palette = Some(rgb);
-            config::save_window_palette_accent("dossier", rgb);
-        }
-        "visionneuse_palette" => {
-            refs.visionneuse_accent.palette = Some(rgb);
-            config::save_window_palette_accent("visionneuse", rgb);
-        }
-        "couleurs_palette" => {
-            refs.couleurs_accent.palette = Some(rgb);
-            config::save_window_palette_accent("couleurs", rgb);
-        }
-        "editeur_palette" => {
-            refs.editeur_accent.palette = Some(rgb);
-            config::save_window_palette_accent("editeur", rgb);
-        }
-        "scanner_palette" => {
-            refs.scanner_accent.palette = Some(rgb);
-            config::save_window_palette_accent("scanner", rgb);
-        }
-        "shaders_palette" => {
-            refs.shaders_accent.palette = Some(rgb);
-            config::save_window_palette_accent("shaders", rgb);
-        }
-        "lueurs_palette" => {
-            refs.lueurs_accent.palette = Some(rgb);
-            config::save_window_palette_accent("lueurs", rgb);
-        }
-        "textures_palette" => {
-            refs.textures_accent.palette = Some(rgb);
-            config::save_window_palette_accent("textures", rgb);
-        }
-        "moniteur_palette" => {
-            refs.moniteur_accent.palette = Some(rgb);
-            config::save_window_palette_accent("moniteur", rgb);
-        }
-        "recherche_palette" => {
-            refs.recherche_accent.palette = Some(rgb);
-            config::save_window_palette_accent("recherche", rgb);
-        }
-        "automatisations_palette" => {
-            refs.automatisations_accent.palette = Some(rgb);
-            config::save_window_palette_accent("automatisations", rgb);
-        }
-        "meteo_palette" => {
-            refs.meteo_accent.palette = Some(rgb);
-            config::save_window_palette_accent("meteo", rgb);
-        }
-        "aide_palette" => {
-            refs.aide_accent.palette = Some(rgb);
-            config::save_window_palette_accent("aide", rgb);
         }
         "theme_base_color" => {
             with_data(|d| d.theme_base_color = rgb);
@@ -4861,7 +4649,7 @@ fn ecouter_son(index: &str) {
     }
 }
 
-fn push_state(refs: &SettingsRefs) {
+fn push_state(refs: &mut SettingsRefs) {
     // Catalogues STATIQUES (120 thèmes, 48 préréglages Windows) — voir la
     // doc de `toggle`, ancien emplacement de cet envoi (BUG RÉEL : pouvait
     // arriver AVANT la fin du chargement de la page, silencieusement
@@ -5092,6 +4880,17 @@ fn push_state(refs: &SettingsRefs) {
         let [s, l, t] = crate::ui::dock::indicateur_reglages();
         json!({ "saturation": (s * 100.0).round() as i32, "luminosite": (l * 100.0).round() as i32, "transparence": (t * 100.0).round() as i32 })
     };
+    // ⭐ **LES ACCENTS DE CHAQUE PANNEAU, DEPUIS LA MÊME TABLE QUE LE ROUTAGE**
+    // (`accents_du_panneau`, engendrée par `pour_chaque_panneau`) : un panneau
+    // ajouté là apparaît ici sans autre geste — c'est ce qui manquait aux
+    // applets qui n'avaient AUCUNE entrée (`state.accents["jeu2048"]` était
+    // `undefined`, donc le sélecteur mort). Construit AVANT le `json!` : la
+    // table emprunte `refs` en `&mut`, et ce `json!` est déjà à la limite de
+    // récursion de la macro.
+    let accents: serde_json::Map<String, serde_json::Value> = accents_du_panneau(refs)
+        .into_iter()
+        .map(|(cle, accent)| (cle.to_string(), accent_json(accent)))
+        .collect();
     let payload = json!({
         "autoColorScheme": *refs.auto_color_scheme,
         "captureVisible": crate::gfx::capture_visibility::is_enabled(),
@@ -5675,31 +5474,7 @@ fn push_state(refs: &SettingsRefs) {
         // écran à échelle manuelle, le panneau s'y affiche à cette échelle-là.
         // Champ SÉPARÉ du précédent à dessein — les confondre ÉTAIT le défaut.
         "settingsContentScaleEffectivePercent": echelle_effective_pourcent,
-        "accents": {
-            "dash": accent_json(refs.dash_accent),
-            "settings": accent_json(refs.settings_accent),
-            "clipboard": accent_json(refs.clipboard_accent),
-            "notes": accent_json(refs.notes_accent),
-            "calendar": accent_json(refs.calendar_accent),
-            "minuteur": accent_json(refs.minuteur_accent),
-            "surveillance": accent_json(refs.surveillance_accent),
-            "calculatrice": accent_json(refs.calculatrice_accent),
-            "ssh": accent_json(refs.ssh_accent),
-            "terminal": accent_json(refs.terminal_accent),
-            "dossier": accent_json(refs.dossier_accent),
-            "visionneuse": accent_json(refs.visionneuse_accent),
-            "couleurs": accent_json(refs.couleurs_accent),
-            "editeur": accent_json(refs.editeur_accent),
-            "scanner": accent_json(refs.scanner_accent),
-            "shaders": accent_json(refs.shaders_accent),
-            "lueurs": accent_json(refs.lueurs_accent),
-            "textures": accent_json(refs.textures_accent),
-            "moniteur": accent_json(refs.moniteur_accent),
-            "recherche": accent_json(refs.recherche_accent),
-            "automatisations": accent_json(refs.automatisations_accent),
-            "meteo": accent_json(refs.meteo_accent),
-            "aide": accent_json(refs.aide_accent),
-        },
+        "accents": accents,
         // Réglage du rappel des jours fériés (voir `win32::fetes::rappel_feries`)
         // — poussé à chaque frame comme le reste, donc la case reflète l'état
         // réel même si le réglage a été changé ailleurs.
@@ -5859,6 +5634,15 @@ fn push_state(refs: &SettingsRefs) {
         );
         objet.insert("insecteTailleMin".into(), json!(crate::win32::mascotte::INSECTE_TAILLE_MIN));
         objet.insert("insecteTailleMax".into(), json!(crate::win32::mascotte::INSECTE_TAILLE_MAX));
+        // Le défilement de la barre de droite de l'éditeur d'image — AJOUTÉ ICI
+        // pour la raison habituelle : le `json!` ci-dessus est à la limite de
+        // récursion de la macro (voir le commentaire d'`etat_ajoute`).
+        objet.insert("editeurDefilementSection".into(), json!(crate::win32::cef_image_editor::defilement_par_section()));
+        // Le MODE de défilement à la molette des barres latérales (voir
+        // `ui::dock::scroll_par_zone`) — « par zone » au lieu de la vitesse
+        // réglée. Même raison d'être ici.
+        objet.insert("scrollParZoneLeft".into(), json!(crate::ui::dock::scroll_par_zone(crate::ui::dock::Side::Left)));
+        objet.insert("scrollParZoneRight".into(), json!(crate::ui::dock::scroll_par_zone(crate::ui::dock::Side::Right)));
     }
     // Lit le dock : hors d'`etat_ajoute`, qui n'a pas `refs`.
     if let Some(objet) = payload.as_object_mut() {
@@ -6085,21 +5869,24 @@ mod tests {
     /// prise en compte et sa valeur ne se sauvegarde pas ». `parse_bar` ne
     /// connaît pas « bottom », et c'est voulu (voir sa doc) : c'est
     /// `parse_barre_principale` qui l'ajoute, pour la barre principale seule.
-    /// Chaque panneau de `ACCENT_TARGETS` (la page) est une cible connue, avec
-    /// sa palette : sinon `window_static` retombe sur « dash » et la couleur
-    /// s'écrit EN SILENCE dans le fichier du Dash (défaut déjà payé).
+    /// Parité page ↔ Rust des PANNEAUX : chaque cible de `ACCENT_TARGETS` (la
+    /// page) doit exister dans `FENETRES_ACCENT` (engendrée par
+    /// `pour_chaque_panneau`, qui pilote AUSSI `accent_target`, les tableaux
+    /// de thème et `state.accents`) — et réciproquement, aucun panneau
+    /// réglable en Rust ne doit manquer de la page. Avant, un panneau absent
+    /// retombait sur la couleur du Dash EN SILENCE : c'était exactement le
+    /// défaut « je n'ai pas accès au réglage de la couleur pour certains
+    /// dashs ».
     #[test]
     fn chaque_couleur_de_panneau_de_la_page_a_sa_cible() {
         let page = include_str!("../../assets/popups/settings.html");
         let debut = page.find("const ACCENT_TARGETS = [").expect("ACCENT_TARGETS");
         let liste = &page[debut..debut + page[debut..].find("];").expect("fin")];
         let cles: Vec<&str> = liste.split("\", \"").skip(1).map(|s| s.split('"').next().unwrap_or("")).collect();
-        assert!(cles.len() >= 23, "{cles:?}");
-        for cle in cles {
-            assert_eq!(leak_known_target(cle), Some(cle), "{cle}");
-            let palette = format!("{cle}_palette");
-            assert!(leak_known_target(&palette).is_some(), "{palette}");
+        for cle in &cles {
+            assert!(FENETRES_ACCENT.contains(cle), "clé {cle} absente de FENETRES_ACCENT");
         }
+        assert_eq!(cles.len(), FENETRES_ACCENT.len(), "page {cles:?} / Rust {FENETRES_ACCENT:?}");
     }
 
     /// Parité page ↔ Rust des MENUS réglables : chaque clé de la page
@@ -6196,7 +5983,7 @@ mod tests {
                 "la rangée « {cle} » n'est jamais rafraîchie par `updateSegmented`"
             );
         }
-        assert_eq!(vues, 17, "nombre de rangées de boutons dans la page (le STYLE des super-héros, puis leur ANIMATION, le 2026-11-23 ; la LANGUE, le 2026-11-15 ; la texture de l'interface, puis celle des terminaux, le 2026-10-15 ; la couleur des ombres, le 2026-10-19 ; les coins du centre de la barre du haut, le 2026-10-31 ; les quatre formes des effets de fenêtres RETIRÉES le 2026-11-22 ; le PROFIL de performances, le 2026-11-11 ; la CARTE GRAPHIQUE, le 2026-11-14)");
+        assert_eq!(vues, 20, "nombre de rangées de boutons dans la page (le MODE de défilement de l'éditeur, puis celui des barres gauche et droite, le 2026-11-25 ; le STYLE des super-héros, puis leur ANIMATION, le 2026-11-23 ; la LANGUE, le 2026-11-15 ; la texture de l'interface, puis celle des terminaux, le 2026-10-15 ; la couleur des ombres, le 2026-10-19 ; les coins du centre de la barre du haut, le 2026-10-31 ; les quatre formes des effets de fenêtres RETIRÉES le 2026-11-22 ; le PROFIL de performances, le 2026-11-11 ; la CARTE GRAPHIQUE, le 2026-11-14)");
     }
 
     #[test]

@@ -123,10 +123,14 @@ thread_local! {
 /// Les menus contextuels réglables INDIVIDUELLEMENT en couleur. Chaque clé est
 /// à la fois le nom de fichier de config (`{clé}_menu_color.txt`, voir
 /// `config::load_menu_color`) et la cible côté page de réglages (`MENU_TARGETS`
-/// dans `settings.html`). ⛔ `test_window` est EXCLU : fenêtre de débogage, pas
-/// un élément de l'app.
-pub const MENU_COLOR_KEYS: [&str; 9] = [
+/// dans `settings.html`). ⛔ `test_window` est EXCLU comme NOM DE MODULE, mais
+/// cette fenêtre sert le VRAI menu « Alimentation » (voir `app::run`) : sa clé
+/// est `power`, en fin de liste — sans elle, ce menu n'avait pas de réglage
+/// propre (2026-11-25 : « des menus pour lesquels je n'ai pas accès au réglage
+/// de la couleur »).
+pub const MENU_COLOR_KEYS: [&str; 10] = [
     "context", "calendar", "dossier_menu", "network", "sound", "voicemeeter", "spacer_size", "bar_size", "confirm",
+    "power",
 ];
 
 /// Couleur de fond individuelle d'un menu si elle a été personnalisée, sinon

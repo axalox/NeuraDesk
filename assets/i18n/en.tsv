@@ -1148,6 +1148,10 @@ Archive d'apparence	Appearance archive
 Arrondi des menus	Menu rounding
 Arrondir les coins de la zone principale (suivent le style)	Round the main zone's corners (follow the style)
 Arrondir les coins sous la barre du haut	Round the corners under the top bar
+À propos	About
+Dash fenêtres	Windows dash
+Enregistrement d'écran	Screen recording
+Réglages réseau	Network settings
 Arrondis	Rounding
 Attente entre deux zooms	Delay between zooms
 Au hasard	Random
@@ -4357,3 +4361,32 @@ Anophèle	Anopheles
 Moustique annelé	Banded mosquito
 Aedes vexans	Aedes vexans
 Activez un insecte pour régler sa taille.	Turn on an insect to set its size.
+Contour	Outline
+Contour du texte, dans la couleur opposée	Text outline in the opposite color
+Fond de couleur derrière le texte — le surligneur de texte	Color background behind the text — the text highlighter
+Ombre portée sous le texte	Drop shadow under the text
+Aligner les lignes à gauche	Align lines left
+Centrer les lignes	Center the lines
+Aligner les lignes à droite	Align lines right
+Recadrage	Crop
+Aucun ratio imposé	No ratio enforced
+Les proportions de l'image	The image's proportions
+Imposer ce ratio au recadrage	Enforce this ratio while cropping
+Outil Recadrer (C), puis glissez sur l'image : la grille des tiers apparaît. Maj force un carré.	Crop tool (C), then drag on the image: the rule-of-thirds grid appears. Shift forces a square.
+Couleurs et effets	Colors and effects
+Chaud	Warm
+Froid	Cool
+Éclatant	Vivid
+Estompé	Faded
+Filtre prédéfini — recliquez pour l'enlever	Preset filter — click again to remove
+Vignette	Vignette
+Netteté	Sharpness
+Appliquer couleurs et effets à l'image (annulable)	Apply colors and effects to the image (undoable)
+Tout remettre à zéro : curseurs, filtres et effets	Reset everything: sliders, filters and effects
+Défilement de la barre de droite (éditeur)	Right bar scrolling (image editor)
+Par zone	By zone
+Normalement	Normally
+Par zone : la molette passe d'une zone à l'autre (Pivoter, Taille, Recadrage, Couleurs et effets) — le panneau s'arrête aussi sur une zone au glissement de la barre. Normalement : défilement libre.	By zone: the wheel moves from one zone to the next (Rotate, Size, Crop, Colors and effects) — the panel also stops on a zone when dragging the scrollbar. Normally: free scrolling.
+Mode — barre de gauche	Mode — left bar
+Mode — barre de droite	Mode — right bar
+Normalement : un cran déplace la vitesse choisie ci-dessus. Par zone : un cran parcourt la hauteur visible de la zone sous le curseur — la molette avance de zone en zone, dans une zone comme entre les zones. La barre du haut ne défile pas.	Normally: one notch moves by the speed chosen above. By zone: one notch covers the visible height of the zone under the cursor — the wheel moves from zone to zone, within a zone as well as between zones. The top bar does not scroll.

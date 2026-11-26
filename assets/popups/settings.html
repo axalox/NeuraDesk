@@ -4146,6 +4146,25 @@
           ]),
         );
         voirAussi(box, ["Transparence et flou", "Lueurs"]);
+        // LE MODE DE DÉFILEMENT de la barre de droite de l'éditeur — DEMANDE
+        // EXPLICITE (2026-11-25) : « un réglage pour choisir le mode de
+        // défilement », puis « à la molette par zone ou normalement ». Le
+        // défaut (Rust : `true`) fait sauter la molette d'une zone à l'autre.
+        segmented(box, {
+          label: "Défilement de la barre de droite (éditeur)",
+          options: [
+            { value: "1", label: "Par zone" },
+            { value: "0", label: "Normalement" },
+          ],
+          value: state.editeurDefilementSection === false ? "0" : "1",
+          dataKey: "editeur-defilement",
+          onSelect: (v) => go("editeur-defilement", v),
+        });
+        box.appendChild(
+          el("p", { class: "hint" }, [
+            "Par zone : la molette passe d'une zone à l'autre (Pivoter, Taille, Recadrage, Couleurs et effets) — le panneau s'arrête aussi sur une zone au glissement de la barre. Normalement : défilement libre.",
+          ]),
+        );
         const envoi = state.envoi;
         if (!envoi) return;
         box.appendChild(
@@ -5562,7 +5581,10 @@
         box.appendChild(el("p", { class: "hint" }, [
           "La couleur de fond de chaque menu, individuellement. Le contenu des menus reste neutre : seule la teinte du fond change. Un menu jamais réglé suit la couleur partagée ci-dessus.",
         ]));
-        const MENU_TARGETS = [["Menu clic droit", "context"], ["Horloge / calendrier", "calendar"], ["Menu dossier", "dossier_menu"], ["Réseau", "network"], ["Son", "sound"], ["Voicemeeter", "voicemeeter"], ["Taille d'espace", "spacer_size"], ["Taille de barre", "bar_size"], ["Confirmation", "confirm"]];
+        // « Alimentation » AJOUTÉ (2026-11-25) : ce menu suivait la couleur
+        // PARTAGÉE faute d'entrée ici (voir `menu::MENU_COLOR_KEYS`, clé
+        // `power` — le module qui le sert s'appelle `cef_test_window`).
+        const MENU_TARGETS = [["Menu clic droit", "context"], ["Horloge / calendrier", "calendar"], ["Menu dossier", "dossier_menu"], ["Réseau", "network"], ["Son", "sound"], ["Voicemeeter", "voicemeeter"], ["Taille d'espace", "spacer_size"], ["Taille de barre", "bar_size"], ["Confirmation", "confirm"], ["Alimentation", "power"]];
         if (!MENU_TARGETS.some(([, k]) => k === activeMenuTarget)) activeMenuTarget = MENU_TARGETS[0][1];
         const choix = el("div", { class: "panel-choices" });
         for (const [label, key] of MENU_TARGETS) {
@@ -6001,11 +6023,37 @@
       // PAR BARRE. Les bornes (16 à 160 px par cran) sont celles de
       // ui::dock (MIN/MAX_SCROLL_STEP_PX) : le curseur ne peut pas promettre une
       // vitesse que le défilement refuserait.
+      //
+      // Et le MODE de chaque barre — DEMANDE EXPLICITE (2026-11-25) : « faire
+      // défiler les zones de la barre de droite à la molette par zone ou
+      // normalement ». « Par zone » fait d'un cran une PAGE de la zone sous le
+      // curseur (voir `ui::dock::scroll_par_zone`) ; « Normalement » garde la
+      // vitesse du curseur.
       section(scroll, (box) => {
         box.appendChild(el("h2", {}, ["Défilement à la molette"]));
         slider(box, { label: "Barre de gauche", min: 16, max: 160, step: 8, value: state.scrollStepLeftPx, valueLabel: (v) => v + " px", dataKey: "scroll-step-left", onInput: (v) => go("scroll-step", "left", v) });
+        segmented(box, {
+          label: "Mode — barre de gauche",
+          options: [
+            { value: "0", label: "Normalement" },
+            { value: "1", label: "Par zone" },
+          ],
+          value: state.scrollParZoneLeft ? "1" : "0",
+          dataKey: "scroll-zone-left",
+          onSelect: (v) => go("scroll-zone-mode", "left", v),
+        });
         slider(box, { label: "Barre de droite", min: 16, max: 160, step: 8, value: state.scrollStepRightPx, valueLabel: (v) => v + " px", dataKey: "scroll-step-right", onInput: (v) => go("scroll-step", "right", v) });
-        box.appendChild(el("p", { class: "hint" }, ["Ce qu'un cran de molette déplace. Vaut aussi pour le défilement À L'INTÉRIEUR d'une zone, qui suit la vitesse de sa barre. La barre du haut ne défile pas."]));
+        segmented(box, {
+          label: "Mode — barre de droite",
+          options: [
+            { value: "0", label: "Normalement" },
+            { value: "1", label: "Par zone" },
+          ],
+          value: state.scrollParZoneRight ? "1" : "0",
+          dataKey: "scroll-zone-right",
+          onSelect: (v) => go("scroll-zone-mode", "right", v),
+        });
+        box.appendChild(el("p", { class: "hint" }, ["Normalement : un cran déplace la vitesse choisie ci-dessus. Par zone : un cran parcourt la hauteur visible de la zone sous le curseur — la molette avance de zone en zone, dans une zone comme entre les zones. La barre du haut ne défile pas."]));
       });
 
       // ⭐ L'empilement des icônes — DEMANDE EXPLICITE (2026-10-31) : « effet
@@ -6234,7 +6282,12 @@
       // Minuteur, Surveillance, Calculatrice, Serveurs SSH AJOUTÉS — DEMANDE
       // EXPLICITE (2026-09-26) : « on a ajouté des choses mais les possibilités
       // de réglages n'ont pas été mises à jour ».
-      const ACCENT_TARGETS = [["Dash", "dash"], ["Réglages", "settings"], ["Presse-papiers", "clipboard"], ["Notes", "notes"], ["Calendrier", "calendar"], ["Minuteur", "minuteur"], ["Surveillance", "surveillance"], ["Calculatrice", "calculatrice"], ["Serveurs SSH", "ssh"], ["Terminal", "terminal"], ["Dash dossier", "dossier"], ["Visionneuse", "visionneuse"], ["Sélecteur de couleurs", "couleurs"], ["Éditeur d'image", "editeur"], ["Scanner", "scanner"], ["Dégradé animé", "shaders"], ["Lueurs", "lueurs"], ["Textures", "textures"], ["Moniteur système", "moniteur"], ["Recherche", "recherche"], ["Automatisations", "automatisations"], ["Météo", "meteo"], ["Aide", "aide"]];
+      // ⭐ Les applets de la fin suivaient EN SILENCE la couleur du Dash, sans
+      // entrée ici — DEMANDE EXPLICITE (2026-11-25) : « il y a des dashs et des
+      // menus pour lesquels je n'ai pas accès au réglage de la couleur ». La
+      // liste doit rester IDENTIQUE à `FENETRES_ACCENT` (test de parité côté
+      // `win32::cef_settings`).
+      const ACCENT_TARGETS = [["Dash", "dash"], ["Réglages", "settings"], ["Presse-papiers", "clipboard"], ["Notes", "notes"], ["Calendrier", "calendar"], ["Minuteur", "minuteur"], ["Surveillance", "surveillance"], ["Calculatrice", "calculatrice"], ["Serveurs SSH", "ssh"], ["Terminal", "terminal"], ["Dash dossier", "dossier"], ["Visionneuse", "visionneuse"], ["Sélecteur de couleurs", "couleurs"], ["Éditeur d'image", "editeur"], ["Scanner", "scanner"], ["Dégradé animé", "shaders"], ["Lueurs", "lueurs"], ["Textures", "textures"], ["Moniteur système", "moniteur"], ["Recherche", "recherche"], ["Automatisations", "automatisations"], ["Météo", "meteo"], ["Aide", "aide"], ["Caractères", "caracteres"], ["Kaomojis", "kaomoji"], ["Symboles phonétiques", "phonetique"], ["Mathématiques", "maths"], ["Enregistrement d'écran", "enregistrer"], ["2048", "jeu2048"], ["Cinq ou plus", "cinq_ou_plus"], ["Quadrapassel", "quadrapassel"], ["Lights Off", "lightsoff"], ["Reversi", "reversi"], ["Bovo", "bovo"], ["Patience", "patience"], ["Réglages réseau", "dns"], ["À propos", "apropos"], ["Capture d'écran", "capture"], ["Dash fenêtres", "fenetres"]];
       // Seuls ces panneaux ont une icône de dock qui sait prendre leur fond
       // (voir `app::run`, `*_accent.icon_bg`) — ailleurs la case serait MORTE.
       const ICON_BG_TARGETS = ["dash", "settings", "clipboard", "notes"];
@@ -6509,6 +6562,9 @@
       updateSlider("left-icon-scale", state.leftIconScale, (v) => v + "%");
       if (state.coinsEcran) updateSlider("coins-ecran-rayon", state.coinsEcranRayon, (v) => v + "px");
       updateSegmented("running-dot-shape", state.runningDotShape);
+      // Le choix « Par section / Continu » du défilement de l'éditeur : sans
+      // cette ligne, la voie rapide laisserait l'ancien bouton allumé.
+      updateSegmented("editeur-defilement", state.editeurDefilementSection === false ? "0" : "1");
       updateSegmented("langue", state.langue || "auto");
       updateSegmented("ombre-couleur-affichee", state.ombreCouleurAffichee ? "affichee" : "reglee");
       if (state.ombreCentreHaut) {
@@ -6614,6 +6670,10 @@
       updateSlider("tooltip-delay", state.tooltipDelaySecs, (v) => v + " s");
       updateSlider("scroll-step-left", state.scrollStepLeftPx, (v) => v + " px");
       updateSlider("scroll-step-right", state.scrollStepRightPx, (v) => v + " px");
+      // Le mode « par zone » des deux barres : sans ces lignes, la voie rapide
+      // laisserait l'ancien bouton allumé (défaut déjà payé sur les segmentés).
+      updateSegmented("scroll-zone-left", state.scrollParZoneLeft ? "1" : "0");
+      updateSegmented("scroll-zone-right", state.scrollParZoneRight ? "1" : "0");
       if (state.empilement) {
         updateSlider("empilement-duree", state.empilement.duree, (v) => v + " ms");
       }

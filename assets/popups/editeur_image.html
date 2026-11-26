@@ -126,6 +126,9 @@
     border-right: 1px solid rgba(var(--popup-fg-rgb, 255, 255, 255), calc(0.08 * var(--popup-fond-alpha, 1)));
   }
   #boite .groupe { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; }
+  #boite .groupe[hidden] { display: none; }
+  #boite .rangee { display: flex; gap: 3px; }
+  #boite .rangee button { flex: 1; }
   #boite .groupe.teintes { grid-template-columns: repeat(4, 1fr); }
   #boite .groupe.epaisseur { grid-template-columns: auto 1fr auto; align-items: center; }
   #boite .groupe.une-colonne { grid-template-columns: 1fr; }
@@ -197,12 +200,27 @@
   #geometrie label span:first-child { width: 64px; flex: none; }
   #g-couleurs { display: flex; flex-direction: column; gap: 4px; }
   #g-couleurs label { display: grid; grid-template-columns: 64px 1fr 30px; align-items: center; gap: 6px; }
+  #g-filtres { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; }
+  #g-ratios { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
   #geometrie input[type="range"] { min-width: 0; padding: 0; background: none; border: none; }
   .valeur-couleur { text-align: right; font-variant-numeric: tabular-nums; opacity: calc(0.8 * max(1, var(--popup-alpha, 1))); }
   .ancres { display: grid; grid-template-columns: repeat(3, 22px); gap: 2px; flex: none; }
   #cote .ancres button { width: 22px; height: 22px; padding: 0; border-radius: var(--nd-rayon-petit); }
   .titre-calques { font-weight: 600; opacity: calc(0.8 * max(1, var(--popup-alpha, 1))); }
-  #geometrie .titre-calques:not(:first-child) { margin-top: 6px; }
+  /* DÉFILER PAR SECTION (demande 2026-11-25) : le panneau de droite s'arrête
+     sur une section, jamais au milieu. Chaque titre ouvre un `.section-panneau`. */
+  #geometrie, #fond {
+    scroll-snap-type: y mandatory; scroll-behavior: smooth;
+    scroll-padding-top: 4px; overscroll-behavior: contain;
+  }
+  .section-panneau { flex: none; display: flex; flex-direction: column; gap: 6px; scroll-snap-align: start; }
+  /* Panneau bas : une section peut être plus haute que la vue — le défilement
+     obligatoire y cacherait son bas. On n'aimante plus qu'à l'approche. */
+  @media (max-height: 620px) { #geometrie, #fond { scroll-snap-type: y proximity; } }
+  /* Réglage des Réglages → « Continu » : plus d'aimantation du tout. */
+  body.defilement-continu #geometrie, body.defilement-continu #fond {
+    scroll-snap-type: none; scroll-behavior: auto;
+  }
   .reglage-calque { display: flex; align-items: center; gap: 6px; }
   .reglage-calque input { flex: 1; min-width: 0; }
   #k-mode { flex: 1; text-align: left; }
@@ -355,46 +373,64 @@
         <button id="b-ouvrir-calques" title="Ajouter les calques d'un fichier au-dessus du calque actif (Ctrl+Alt+O)" disabled>Ajouter un fichier en calques…</button>
       </div>
       <div id="geometrie" hidden>
-        <div class="titre-calques">Pivoter et retourner</div>
-        <div class="rangee">
-          <button id="g-gauche" title="Pivoter d'un quart de tour à gauche" disabled><span class="ico ico-arrow-counter-clockwise"></span></button>
-          <button id="g-droite" title="Pivoter d'un quart de tour à droite" disabled><span class="ico ico-arrow-clockwise"></span></button>
-          <button id="g-miroir-h" title="Retourner gauche-droite" disabled><span class="ico ico-flip-horizontal"></span></button>
-          <button id="g-miroir-v" title="Retourner haut-bas" disabled><span class="ico ico-flip-vertical"></span></button>
+        <!-- Chaque SECTION est une étape de défilement : le panneau s'arrête
+             sur une section, jamais au milieu (demande 2026-11-25). -->
+        <div class="section-panneau">
+          <div class="titre-calques">Pivoter et retourner</div>
+          <div class="rangee">
+            <button id="g-gauche" title="Pivoter d'un quart de tour à gauche" disabled><span class="ico ico-arrow-counter-clockwise"></span></button>
+            <button id="g-droite" title="Pivoter d'un quart de tour à droite" disabled><span class="ico ico-arrow-clockwise"></span></button>
+            <button id="g-miroir-h" title="Retourner gauche-droite" disabled><span class="ico ico-flip-horizontal"></span></button>
+            <button id="g-miroir-v" title="Retourner haut-bas" disabled><span class="ico ico-flip-vertical"></span></button>
+          </div>
+          <label class="reglage-calque" title="Angle en degrés, sens horaire (négatif : sens inverse)"><span>Angle (°)</span><input id="g-angle" type="number" min="-360" max="360" step="1" value="0" disabled></label>
+          <div class="rangee">
+            <button id="g-pivoter-angle" title="Pivoter l'image de cet angle (Entrée) — les coins deviennent transparents" disabled>Pivoter de l'angle</button>
+          </div>
         </div>
-        <label class="reglage-calque" title="Angle en degrés, sens horaire (négatif : sens inverse)"><span>Angle (°)</span><input id="g-angle" type="number" min="-360" max="360" step="1" value="0" disabled></label>
-        <div class="rangee">
-          <button id="g-pivoter-angle" title="Pivoter l'image de cet angle (Entrée) — les coins deviennent transparents" disabled>Pivoter de l'angle</button>
+        <div class="section-panneau">
+          <div class="titre-calques">Taille</div>
+          <label class="reglage-calque"><span>Largeur</span><input id="g-largeur" type="number" min="1" max="16384" disabled></label>
+          <label class="reglage-calque"><span>Hauteur</span><input id="g-hauteur" type="number" min="1" max="16384" disabled></label>
+          <div class="rangee">
+            <button id="g-lier" class="actif" title="Garder les proportions" disabled>Proportions</button>
+            <button id="g-redim" title="Redimensionner l'image à cette taille (Entrée)" disabled>Redimensionner</button>
+          </div>
+          <div class="rangee">
+            <span id="g-ancres" class="ancres" title="Où poser l'image dans le nouveau canevas"></span>
+            <button id="g-canevas" title="Changer la taille du canevas sans étirer l'image" disabled>Taille du canevas</button>
+          </div>
         </div>
-        <div class="titre-calques">Taille</div>
-        <label class="reglage-calque"><span>Largeur</span><input id="g-largeur" type="number" min="1" max="16384" disabled></label>
-        <label class="reglage-calque"><span>Hauteur</span><input id="g-hauteur" type="number" min="1" max="16384" disabled></label>
-        <div class="rangee">
-          <button id="g-lier" class="actif" title="Garder les proportions" disabled>Proportions</button>
-          <button id="g-redim" title="Redimensionner l'image à cette taille (Entrée)" disabled>Redimensionner</button>
+        <div class="section-panneau">
+          <div class="titre-calques">Recadrage</div>
+          <div id="g-ratios"></div>
+          <p class="aide-fond">Outil Recadrer (C), puis glissez sur l'image : la grille des tiers apparaît. Maj force un carré.</p>
         </div>
-        <div class="rangee">
-          <span id="g-ancres" class="ancres" title="Où poser l'image dans le nouveau canevas"></span>
-          <button id="g-canevas" title="Changer la taille du canevas sans étirer l'image" disabled>Taille du canevas</button>
-        </div>
-        <div class="titre-calques">Couleurs</div>
-        <div id="g-couleurs"></div>
-        <div class="rangee">
-          <button id="g-couleurs-appliquer" title="Appliquer luminosité, contraste et saturation à l'image (annulable)" disabled>Appliquer</button>
-          <button id="g-couleurs-zero" title="Remettre les trois curseurs à 0" disabled>Réinitialiser</button>
+        <div class="section-panneau">
+          <div class="titre-calques">Couleurs et effets</div>
+          <div id="g-filtres"></div>
+          <div id="g-couleurs"></div>
+          <div class="rangee">
+            <button id="g-couleurs-appliquer" title="Appliquer couleurs et effets à l'image (annulable)" disabled>Appliquer</button>
+            <button id="g-couleurs-zero" title="Tout remettre à zéro : curseurs, filtres et effets" disabled>Réinitialiser</button>
+          </div>
         </div>
       </div>
       <!-- LE FOND DE PRÉSENTATION (editeur_fond.js) : rempli par le script. -->
       <div id="fond" hidden>
-        <div class="titre-calques">Fond de présentation</div>
-        <div class="rangee" id="f-genres"></div>
-        <div class="grille-fond" id="f-teintes"></div>
-        <label class="reglage-calque" title="L'espace autour de l'image"><span>Marge</span><input id="f-marge" type="range" min="0" max="100" disabled><span id="f-marge-valeur"></span></label>
-        <label class="reglage-calque" title="L'arrondi des coins de l'image"><span>Coins</span><input id="f-coins" type="range" min="0" max="100" disabled><span id="f-coins-valeur"></span></label>
-        <label class="reglage-calque" title="L'ombre portée de l'image sur le fond"><span>Ombre</span><input id="f-ombre" type="range" min="0" max="100" disabled><span id="f-ombre-valeur"></span></label>
-        <div class="titre-calques">Format</div>
-        <div class="rangee" id="f-formats"></div>
-        <p class="aide-fond">Le fond aplatit l'image en deux calques, « Fond » et « Capture ». Les réglages se retouchent tant qu'on ne modifie rien d'autre ; Ctrl+Z retire le fond.</p>
+        <div class="section-panneau">
+          <div class="titre-calques">Fond de présentation</div>
+          <div class="rangee" id="f-genres"></div>
+          <div class="grille-fond" id="f-teintes"></div>
+          <label class="reglage-calque" title="L'espace autour de l'image"><span>Marge</span><input id="f-marge" type="range" min="0" max="100" disabled><span id="f-marge-valeur"></span></label>
+          <label class="reglage-calque" title="L'arrondi des coins de l'image"><span>Coins</span><input id="f-coins" type="range" min="0" max="100" disabled><span id="f-coins-valeur"></span></label>
+          <label class="reglage-calque" title="L'ombre portée de l'image sur le fond"><span>Ombre</span><input id="f-ombre" type="range" min="0" max="100" disabled><span id="f-ombre-valeur"></span></label>
+        </div>
+        <div class="section-panneau">
+          <div class="titre-calques">Format</div>
+          <div class="rangee" id="f-formats"></div>
+          <p class="aide-fond">Le fond aplatit l'image en deux calques, « Fond » et « Capture ». Les réglages se retouchent tant qu'on ne modifie rien d'autre ; Ctrl+Z retire le fond.</p>
+        </div>
       </div>
     </aside>
   </div>
@@ -430,12 +466,18 @@
   let hauteur = 0;
   let zoom = 1;
   let chargee = false;
+  // Le réglage du défilement de la barre de droite (Réglages → Captures
+  // d'écran et éditeur) : la molette passe d'une zone à l'autre, ou défile
+  // normalement. Poussé par `window.editeurDefilement` à chaque ouverture.
+  let defilementParZone = true;
 
   // ── État des annotations ────────────────────────────────────────────────
   let outil = "selection";
   let couleur = COULEURS[0][1];
   let emoji = EMOTICONES[0];
   let niveau = NIVEAU_DEFAUT;
+  // Le style des textes À VENIR ; un texte choisi a le sien dans `o.style`.
+  let styleTexte = { ...STYLE_TEXTE_DEFAUT };
   // Les annotations du calque ACTIF — `choisi` est un index dans cette liste.
   const objets = () => (calques[actif] ? calques[actif].objets : []);
   let choisi = -1;
@@ -498,6 +540,14 @@
     envoyer("png", "envoyer-en-ligne");
   }
 
+  // Réglage « Réglages → Captures d'écran et éditeur » : « Par zone » (la
+  // molette saute d'une zone à l'autre) ou « Normalement » (molette libre).
+  // Poussé à chaque ouverture avec le service.
+  window.editeurDefilement = (parZone) => {
+    defilementParZone = parZone !== false;
+    document.body.classList.toggle("defilement-continu", !defilementParZone);
+  };
+
   // ── Composition ─────────────────────────────────────────────────────────
   // Un cadre en tirets noir et blanc, lisible sur toute image.
   function cadreTirets(c, r) {
@@ -525,6 +575,9 @@
     const options = ecran
       ? {
         filtre: filtreCouleurs(couleurs),
+        // La vignette s'aperçoit aussi (dégradé sur les pixels du calque) ; la
+        // netteté, non : c'est une convolution, elle attend « Appliquer ».
+        vignette: couleurs.vignette || 0,
         trace: trace && !TRACES_GEOMETRIE.has(trace.type) ? trace : null,
         cache: edition ? edition.index : undefined,
       }
@@ -553,6 +606,7 @@
       composer(ctx, true);
       panneau.afficher();
       afficherEmoticones();
+      afficherStyleTexte();
     });
   }
 
@@ -884,7 +938,12 @@
   // Ouvre le champ au point `p` de l'image — sur le texte `index`, ou neuf (-1).
   function ouvrirChamp(p, index) {
     const existant = index >= 0 ? objets()[index] : null;
-    edition = { p, index, couleur: existant ? existant.couleur : couleur, niveau: existant ? existant.niveau : niveau };
+    edition = {
+      p, index,
+      couleur: existant ? existant.couleur : couleur,
+      niveau: existant ? existant.niveau : niveau,
+      style: existant ? styleDeTexte(existant) : styleTexte,
+    };
     const r = toile.getBoundingClientRect();
     const s = scene.getBoundingClientRect();
     const k = r.width / toile.width;
@@ -908,7 +967,7 @@
 
   function validerTexte() {
     if (!edition) return;
-    const { p, index, couleur: teinte, niveau: taille } = edition;
+    const { p, index, couleur: teinte, niveau: taille, style } = edition;
     const texte = champ.value.replace(/\s+$/, "");
     fermerChamp();
     if (index >= 0) {
@@ -916,7 +975,7 @@
       if (!texte) changer(objets().filter((_, i) => i !== index));
       else if (texte !== objets()[index].texte) changer(objets().map((o, i) => (i === index ? { ...o, texte } : o)));
     } else if (texte) {
-      ajouter({ type: "texte", points: [p], texte, couleur: teinte, niveau: taille });
+      ajouter({ type: "texte", points: [p], texte, couleur: teinte, niveau: taille, style });
     }
   }
 
@@ -999,6 +1058,33 @@
     return b;
   });
   trait();
+  // LE STYLE DU TEXTE — DEMANDE (2026-11-25, options de Telegram). Le groupe
+  // n'apparaît qu'avec l'outil Texte ou un texte choisi (`afficherStyleTexte`).
+  const groupeTexte = groupe("une-colonne");
+  groupeTexte.id = "groupe-texte";
+  groupeTexte.hidden = true;
+  const boutonsStyleTexte = [
+    ["fond", "Fond", "Fond de couleur derrière le texte — le surligneur de texte"],
+    ["contour", "Contour", "Contour du texte, dans la couleur opposée"],
+    ["ombre", "Ombre", "Ombre portée sous le texte"],
+  ].map(([cle, texte, titre]) => {
+    const b = bouton(groupeTexte, texte, titre, () => basculerStyleTexte(cle));
+    b.dataset.style = cle;
+    return b;
+  });
+  const rangeeAlign = document.createElement("div");
+  rangeeAlign.className = "rangee";
+  groupeTexte.appendChild(rangeeAlign);
+  const boutonsAlign = [
+    ["gauche", "⇤", "Aligner les lignes à gauche"],
+    ["centre", "↔", "Centrer les lignes"],
+    ["droite", "⇥", "Aligner les lignes à droite"],
+  ].map(([align, glyphe, titre]) => {
+    const b = bouton(rangeeAlign, glyphe, titre, () => appliquerStyleTexte({ align }));
+    b.dataset.align = align;
+    return b;
+  });
+  trait();
   bouton(groupe("une-colonne"), "Supprimer", "Supprimer l'objet choisi (Suppr)", supprimerChoisi);
   $("b-annuler").addEventListener("click", annuler);
   $("b-retablir").addEventListener("click", retablir);
@@ -1038,6 +1124,58 @@
     }
   }
   for (const b of boutonsOnglets) b.addEventListener("click", () => montrerOnglet(b.dataset.onglet));
+
+  // ── La molette, une ZONE à la fois ──────────────────────────────────────
+  // DEMANDE (2026-11-25) : « donner le choix de faire défiler les zones de la
+  // barre de droite à la molette par zone ou normalement ». En mode « Par
+  // zone », un cran accumulé fait passer à la zone suivante ; le seuil et le
+  // repos de 250 ms empêchent un pavé tactile de traverser toutes les zones
+  // d'un seul geste. En mode « Normalement », on ne touche à rien.
+  const SEUIL_MOLETTE = 40;
+  const REPOS_MOLETTE_MS = 250;
+  const etatMolette = new WeakMap();
+
+  function hautsDesZones(panneau) {
+    const zones = [...panneau.querySelectorAll(":scope > .section-panneau")];
+    const base = panneau.getBoundingClientRect().top;
+    return zones.map((z) => z.getBoundingClientRect().top - base + panneau.scrollTop);
+  }
+
+  function defilerDUneZone(panneau, sens) {
+    const hauts = hautsDesZones(panneau);
+    if (hauts.length < 2) return;
+    // La zone COURANTE est la plus proche du haut visible — pas la dernière
+    // touchée : le défilement peut aussi venir de la barre de défilement.
+    let courant = 0;
+    hauts.forEach((h, i) => {
+      if (Math.abs(h - panneau.scrollTop) < Math.abs(hauts[courant] - panneau.scrollTop)) courant = i;
+    });
+    const cible = Math.max(0, Math.min(hauts.length - 1, courant + sens));
+    panneau.scrollTo({ top: hauts[cible], behavior: "smooth" });
+  }
+
+  for (const panneau of [$("geometrie"), $("fond")]) {
+    panneau.addEventListener("wheel", (e) => {
+      if (!defilementParZone || e.ctrlKey || e.shiftKey || e.deltaY === 0) return;
+      // Rien à faire défiler : ne pas avaler le geste.
+      if (panneau.scrollHeight <= panneau.clientHeight) return;
+      // Tout le geste est consommé, même sous le seuil : sinon la molette
+      // ferait en plus le défilement libre, et l'aimantation le déferait.
+      e.preventDefault();
+      // `deltaMode` : certains mulots envoient des LIGNES (1) et non des
+      // pixels (0) — sans conversion, un cran vaudrait 3, jamais 40.
+      const etat = etatMolette.get(panneau) || { delta: 0, dernier: -REPOS_MOLETTE_MS };
+      etatMolette.set(panneau, etat);
+      const cran = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? panneau.clientHeight : 1;
+      etat.delta += e.deltaY * cran;
+      const maintenant = performance.now();
+      if (Math.abs(etat.delta) < SEUIL_MOLETTE || maintenant - etat.dernier < REPOS_MOLETTE_MS) return;
+      const sens = Math.sign(etat.delta);
+      etat.delta = 0;
+      etat.dernier = maintenant;
+      defilerDUneZone(panneau, sens);
+    }, { passive: false });
+  }
 
   // ── Fond de présentation (editeur_fond.js) ──────────────────────────────
   let reglagesFond = { ...REGLAGES_FOND_DEFAUT };
@@ -1146,6 +1284,7 @@
     affichageNiveau.textContent = `${NIVEAUX[niveau].trait} px`;
     scene.classList.toggle("trace", outil !== "selection" && outil !== "calque");
     scene.classList.toggle("calque", outil === "calque");
+    afficherStyleTexte();
   }
 
   function choisirOutil(nom) {
@@ -1168,6 +1307,37 @@
     niveau = i;
     remplacerChoisi((o) => ({ ...o, niveau: i }));
     marquer();
+  }
+
+  // ── Style du texte ──────────────────────────────────────────────────────
+  function texteChoisi() {
+    return choisi >= 0 && objets()[choisi] && objets()[choisi].type === "texte";
+  }
+
+  // Ce que montrent les boutons : le style du texte choisi, sinon celui des
+  // textes à venir.
+  function styleCourant() {
+    return texteChoisi() ? styleDeTexte(objets()[choisi]) : styleTexte;
+  }
+
+  // Un style réglé sur un texte choisi s'applique AUSSI aux textes à venir.
+  function appliquerStyleTexte(modif) {
+    styleTexte = { ...styleCourant(), ...modif };
+    if (texteChoisi()) remplacerChoisi((o) => ({ ...o, style: { ...styleDeTexte(o), ...modif } }));
+    if (edition && edition.index < 0) edition = { ...edition, style: styleTexte };
+    afficherStyleTexte();
+    rendre();
+  }
+
+  function basculerStyleTexte(cle) {
+    appliquerStyleTexte({ [cle]: !styleCourant()[cle] });
+  }
+
+  function afficherStyleTexte() {
+    groupeTexte.hidden = !(chargee && (outil === "texte" || texteChoisi() || edition !== null));
+    const st = styleCourant();
+    for (const b of boutonsStyleTexte) b.classList.toggle("actif", !!st[b.dataset.style]);
+    for (const b of boutonsAlign) b.classList.toggle("actif", st.align === b.dataset.align);
   }
 
   marquer();
@@ -1307,21 +1477,56 @@
   $("g-redim").addEventListener("click", redimensionnerA);
   $("g-canevas").addEventListener("click", canevasA);
 
-  // ── Luminosité, contraste, saturation ───────────────────────────────────
+  // ── Ratios du recadrage ─────────────────────────────────────────────────
+  // DEMANDE (2026-11-25, options de Telegram). Le ratio contraint le glisser
+  // de l'outil Recadrer ; « Image » reprend les proportions de l'image, et
+  // Maj force le carré quel que soit le choix.
+  let ratioRecadrage = "libre";
+  const boutonsRatios = RATIOS_RECADRAGE.map(([cle, nom]) => {
+    const b = document.createElement("button");
+    b.textContent = nom;
+    b.title = cle === "libre" ? "Aucun ratio imposé"
+      : cle === "image" ? "Les proportions de l'image"
+        : "Imposer ce ratio au recadrage";
+    b.disabled = true;
+    b.dataset.ratio = cle;
+    b.addEventListener("click", () => {
+      ratioRecadrage = cle;
+      marquerRatios();
+    });
+    $("g-ratios").appendChild(b);
+    return b;
+  });
+
+  function marquerRatios() {
+    for (const b of boutonsRatios) b.classList.toggle("actif", b.dataset.ratio === ratioRecadrage);
+  }
+
+  // 0 = aucune contrainte (Libre et Image ne portent pas de valeur fixe).
+  function ratioDuCadre() {
+    const choix = RATIOS_RECADRAGE.find(([cle]) => cle === ratioRecadrage);
+    if (!choix) return 0;
+    if (ratioRecadrage === "image") return hauteur ? largeur / hauteur : 0;
+    return choix[2] || 0;
+  }
+
+  marquerRatios();
+
+  // ── Luminosité, contraste, saturation, filtres et effets ───────────────
   // Les curseurs restent EN ATTENTE : l'aperçu ne touche que l'écran
   // (`composer`), et « Appliquer » pose une nouvelle toile au calque ACTIF,
   // annulable comme une géométrie. Tout ce qui lit les calques — export,
   // copie, géométrie, changement de calque — applique
   // d'abord (`appliquerCouleurs`) : ce qu'on voit est ce qu'on obtient.
-  const curseursCouleur = Object.fromEntries(REGLAGES_COULEUR.map(([cle, libelle]) => {
+  function creerCurseur(cle, libelle, min, max, note = "") {
     const etiquette = document.createElement("label");
     const entree = document.createElement("input");
     entree.type = "range";
-    entree.min = String(-BORNE_REGLAGE_COULEUR);
-    entree.max = String(BORNE_REGLAGE_COULEUR);
+    entree.min = String(min);
+    entree.max = String(max);
     entree.value = "0";
     entree.disabled = true;
-    entree.title = `${libelle} (double-clic : 0)`;
+    entree.title = `${libelle}${note} (double-clic : 0)`;
     const valeur = document.createElement("span");
     valeur.className = "valeur-couleur";
     etiquette.append(libelle, entree, valeur);
@@ -1336,19 +1541,48 @@
       e.stopPropagation();
       if (e.key === "Escape") entree.blur();
     });
-    return [cle, { entree, valeur }];
-  }));
+    return { entree, valeur };
+  }
+
+  const CLE_EFFET = new Set(EFFETS.map(([cle]) => cle));
+  const curseursCouleur = Object.fromEntries([
+    ...REGLAGES_COULEUR.map(([cle, libelle]) => [cle, creerCurseur(cle, libelle, -BORNE_REGLAGE_COULEUR, BORNE_REGLAGE_COULEUR)]),
+    ...EFFETS.map(([cle, libelle, note]) => [cle, creerCurseur(cle, libelle, 0, BORNE_EFFET, note)]),
+  ]);
+
+  // Les filtres prédéfinis : des boutons qui se COMBINENT avec les curseurs et
+  // se retirent en recliquant dessus.
+  const boutonsFiltres = FILTRES_PREDEFINIS.map(([cle, nom]) => {
+    const b = document.createElement("button");
+    b.textContent = nom;
+    b.title = "Filtre prédéfini — recliquez pour l'enlever";
+    b.disabled = true;
+    b.dataset.filtre = cle;
+    b.addEventListener("click", () => choisirFiltre(cle));
+    $("g-filtres").appendChild(b);
+    return b;
+  });
+
+  function choisirFiltre(cle) {
+    couleurs = { ...couleurs, filtre: couleurs.filtre === cle ? "" : cle };
+    afficherCouleurs();
+    rendre();
+  }
 
   function couleursNeutres() {
-    return REGLAGES_COULEUR.every(([cle]) => !couleurs[cle]);
+    return !couleurs.filtre
+      && REGLAGES_COULEUR.every(([cle]) => !couleurs[cle])
+      && EFFETS.every(([cle]) => !couleurs[cle]);
   }
 
   function afficherCouleurs() {
     for (const [cle, { entree, valeur }] of Object.entries(curseursCouleur)) {
       const v = couleurs[cle] || 0;
       entree.value = String(v);
-      valeur.textContent = (v > 0 ? "+" : "") + v;
+      // Un effet va de 0 à 100 : pas de signe. Un réglage de couleur, si.
+      valeur.textContent = (v > 0 && !CLE_EFFET.has(cle) ? "+" : "") + v;
     }
+    for (const b of boutonsFiltres) b.classList.toggle("actif", b.dataset.filtre === couleurs.filtre);
   }
 
   function changerCouleur(cle, v) {
@@ -1509,7 +1743,17 @@
     if (outil === "calque") geste = { genre: "calque", depart: p, origine: calques[actif], note: false };
     else if (outil === "texte") ouvrirChamp(p, -1);
     else if (outil === "emoji") ajouter({ type: "emoji", points: [p], emoji, couleur, niveau });
-    else geste = { genre: "trace", objet: { type: outil, points: outil === "main" ? [p] : [p, p], couleur, niveau } };
+    else geste = {
+      genre: "trace",
+      objet: {
+        type: outil,
+        points: LIBRES.has(outil) ? [p] : [p, p],
+        couleur,
+        niveau,
+        // Le ratio ne vaut que le temps du geste : il n'est jamais ajouté à l'image.
+        ratio: outil === "recadrer" ? ratioDuCadre() : 0,
+      },
+    };
     rendre();
   });
 
@@ -1549,9 +1793,10 @@
       poserObjets(objets().map((o, i) => (i === choisi ? moved : o)));
     } else {
       const o = geste.objet;
-      const points = o.type === "main"
-        ? [...o.points, p]
-        : [o.points[0], e.shiftKey ? contraindre(o.type, o.points[0], p) : p];
+      let fin = e.shiftKey ? contraindre(o.type, o.points[0], p) : p;
+      // Le recadrage suit le ratio choisi — sauf Maj, qui impose le carré.
+      if (o.type === "recadrer" && o.ratio && !e.shiftKey) fin = ajusterAuRatio(o.points[0], fin, o.ratio, largeur, hauteur);
+      const points = LIBRES.has(o.type) ? [...o.points, p] : [o.points[0], fin];
       geste.objet = finaliser({ ...o, points });
     }
     rendre();
@@ -1574,7 +1819,7 @@
       const [a, b] = o.points;
       // Un clic sans glisser ne laisse pas une forme invisible — sauf l'étape,
       // dont le clic pose la pastille (glisser ajoute la pointe).
-      const assez = o.type === "main" || o.type === "etape" || Math.hypot(b.x - a.x, b.y - a.y) >= TOLERANCE_ECRAN * pixelsParEcran() / 2;
+      const assez = LIBRES.has(o.type) || o.type === "etape" || Math.hypot(b.x - a.x, b.y - a.y) >= TOLERANCE_ECRAN * pixelsParEcran() / 2;
       geste = null;
       if (assez && TRACES_GEOMETRIE.has(o.type)) appliquerTrace(o);
       else if (assez) ajouter(o);
@@ -1602,8 +1847,9 @@
       { type: "ligne", points: [p(0.65, 0.05), p(0.95, 0.20)] },
       { type: "fleche", points: [p(0.05, 0.30), p(0.30, 0.45)] },
       { type: "main", points: [0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => p(0.35 + i * 0.03, 0.30 + (i % 2) * 0.1)) },
-      { type: "surligneur", points: [p(0.65, 0.30), p(0.95, 0.40)] },
+      { type: "surligneur", points: [0, 1, 2, 3, 4, 5].map((i) => p(0.63 + i * 0.06, 0.30 + (i % 2) * 0.09)) },
       { type: "texte", points: [p(0.05, 0.55)], texte: "Texte\nsur deux lignes" },
+      { type: "texte", points: [p(0.30, 0.47)], texte: "Texte surligné", style: { fond: true } },
       { type: "etape", points: [p(0.45, 0.60)] },
       { type: "etape", points: [p(0.55, 0.60)] },
       { type: "etape", points: [p(0.65, 0.60), p(0.72, 0.48)] },

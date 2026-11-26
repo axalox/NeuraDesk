@@ -52,7 +52,7 @@ const OUTILS = [
   ["fleche", "➚", "a", "Flèche"],
   ["main", "✎", "f", "Main levée"],
   ["texte", "T", "t", "Texte"],
-  ["surligneur", "▮", "h", "Surligneur"],
+  ["surligneur", "▮", "h", "Surligneur (glisser : feutre transparent)"],
   ["etape", "①", "n", "Étape numérotée (glisser : avec une pointe)"],
   ["emoji", "☺", "j", "Émoticône (choisie dans le panneau de droite)"],
   ["flou", "≋", "b", "Flou"],
@@ -70,9 +70,15 @@ const OMBRE_PROJECTEUR = "rgba(0, 0, 0, 0.6)";
 
 // Les formes tracées d'un point à un autre (glisser).
 const A_DEUX_POINTS = new Set([
-  "rectangle", "pave", "ellipse", "ligne", "fleche", "surligneur",
+  "rectangle", "pave", "ellipse", "ligne", "fleche",
   "flou", "pixeliser", "gomme", "projecteur", "loupe", "inverser",
 ]);
+
+// Les outils LIBRES : le tracé suit la souris point par point, sans forme
+// géométrique. Le surligneur était un rectangle le 2026-09-25 ; DEMANDE
+// (2026-11-25, options de Telegram) : c'est un FEUTRE qu'on glisse, comme la
+// main levée, mais large et transparent (voir `dessinerObjet`).
+const LIBRES = new Set(["main", "surligneur"]);
 
 // Les émoticônes proposées — DEMANDE EXPLICITE (2026-09-26) : « ajouter des
 // émoticônes ». Une émoticône est un CARACTÈRE, dessiné avec la police couleur
@@ -122,6 +128,70 @@ function estClaire(hex) {
 
 function lignesDe(o) {
   return o.texte.split("\n");
+}
+
+// LE STYLE DU TEXTE — DEMANDE (2026-11-25, options de Telegram) : fond de
+// couleur derrière les lignes (le « surligneur de texte »), contour, ombre,
+// alignement. Un objet sans `style` garde le rendu d'avant : rien d'allumé.
+const STYLE_TEXTE_DEFAUT = { fond: false, contour: false, ombre: false, align: "gauche" };
+const styleDeTexte = (o) => ({ ...STYLE_TEXTE_DEFAUT, ...(o.style || {}) });
+// La marge du fond autour du texte, en pixels de l'image.
+const MARGE_TEXTE = (n) => Math.round(n.police * 0.16);
+
+// Les lignes mesurées à la police de l'objet : chacune sa largeur, et celle du
+// bloc (la plus longue). Sert au dessin ET à la boîte de sélection.
+function mesuresTexte(c, o, n) {
+  c.save();
+  c.font = policeDe(n.police);
+  const lignes = lignesDe(o).map((texte) => ({ texte, largeur: c.measureText(texte).width }));
+  c.restore();
+  return { lignes, largeur: Math.max(...lignes.map((l) => l.largeur)) };
+}
+
+// Le texte et son style. L'alignement décale chaque ligne dans la largeur du
+// bloc, donc ne se VOIT qu'aligné ou avec un fond (une ligne seule n'a pas de
+// place à elle).
+function dessinerTexte(c, o, n) {
+  const a = o.points[0];
+  const st = styleDeTexte(o);
+  const { lignes, largeur } = mesuresTexte(c, o, n);
+  const marge = st.fond ? MARGE_TEXTE(n) : 0;
+  c.font = policeDe(n.police);
+  c.textBaseline = "top";
+  c.textAlign = "left";
+  lignes.forEach(({ texte, largeur: lw }, i) => {
+    const y = a.y + i * n.police * INTERLIGNE;
+    const decalage = st.align === "centre" ? (largeur - lw) / 2 : st.align === "droite" ? largeur - lw : 0;
+    const x = a.x + decalage;
+    if (st.fond) {
+      // Le fond prend la couleur de l'objet ; le texte passe en noir ou blanc
+      // pour rester lisible dessus — le feutre d'un surligneur de texte.
+      c.fillStyle = o.couleur;
+      c.fillRect(x - marge, y - marge, lw + 2 * marge, n.police + 2 * marge);
+      c.fillStyle = estClaire(o.couleur) ? "#000" : "#fff";
+    }
+    const peindre = () => {
+      // Un contour sur un fond ne se verrait pas : il ne sert que sur l'image.
+      if (st.contour && !st.fond) {
+        c.strokeStyle = estClaire(o.couleur) ? "rgba(0,0,0,0.9)" : "rgba(255,255,255,0.95)";
+        c.lineWidth = Math.max(1, n.police * 0.12);
+        c.lineJoin = "round";
+        c.strokeText(texte, x + marge, y);
+      }
+      c.fillText(texte, x + marge, y);
+    };
+    if (st.ombre) {
+      c.save();
+      c.shadowColor = "rgba(0,0,0,0.6)";
+      c.shadowBlur = n.police * 0.18;
+      c.shadowOffsetX = n.police * 0.04;
+      c.shadowOffsetY = n.police * 0.07;
+      peindre();
+      c.restore();
+    } else {
+      peindre();
+    }
+  });
 }
 
 function dessinerFleche(c, a, b, trait) {
@@ -344,17 +414,21 @@ function dessinerObjet(c, o, numero) {
       if (o.points.length === 1) c.lineTo(a.x + 0.01, a.y);
       c.stroke();
       break;
-    case "surligneur": {
-      // « Produit » : le texte sombre dessous reste lisible, comme un vrai feutre.
-      const r = cadreDe(a, b);
+    case "surligneur":
+      // Le FEUTRE : un trait large et transparent qui multiplie la couleur de
+      // l'image — le texte sombre dessous reste lisible, comme un vrai
+      // surligneur. Il se glisse comme la main levée (LIBRES).
       c.globalCompositeOperation = "multiply";
-      c.fillRect(r.x, r.y, r.l, r.h);
+      c.globalAlpha = 0.35;
+      c.lineWidth = n.trait * 4;
+      c.beginPath();
+      c.moveTo(a.x, a.y);
+      for (const p of o.points.slice(1)) c.lineTo(p.x, p.y);
+      if (o.points.length === 1) c.lineTo(a.x + 0.01, a.y);
+      c.stroke();
       break;
-    }
     case "texte":
-      c.font = policeDe(n.police);
-      c.textBaseline = "top";
-      lignesDe(o).forEach((ligne, i) => c.fillText(ligne, a.x, a.y + i * n.police * INTERLIGNE));
+      dessinerTexte(c, o, n);
       break;
     case "etape":
       dessinerEtape(c, o, n, numero);
@@ -395,17 +469,20 @@ function boiteDe(o, c) {
   if (A_DEUX_POINTS.has(o.type)) {
     return elargir(cadreDe(a, b), o.type === "fleche" ? longueurPointe(n.trait) / 2 : n.trait / 2);
   }
-  if (o.type === "main") {
+  if (LIBRES.has(o.type)) {
+    const marge = o.type === "surligneur" ? n.trait * 2 : n.trait / 2;
     const xs = o.points.map((p) => p.x), ys = o.points.map((p) => p.y);
     const x = Math.min(...xs), y = Math.min(...ys);
-    return elargir({ x, y, l: Math.max(...xs) - x, h: Math.max(...ys) - y }, n.trait / 2);
+    return elargir({ x, y, l: Math.max(...xs) - x, h: Math.max(...ys) - y }, marge);
   }
   if (o.type === "texte") {
-    c.save();
-    c.font = policeDe(n.police);
-    const l = Math.max(...lignesDe(o).map((ligne) => c.measureText(ligne).width));
-    c.restore();
-    return { x: a.x, y: a.y, l, h: lignesDe(o).length * n.police * INTERLIGNE };
+    const st = styleDeTexte(o);
+    const { largeur } = mesuresTexte(c, o, n);
+    const marge = st.fond ? MARGE_TEXTE(n) : 0;
+    const contour = st.contour && !st.fond ? n.police * 0.08 : 0;
+    const ombre = st.ombre ? n.police * 0.12 : 0;
+    const g = marge + contour;
+    return { x: a.x - g, y: a.y - g, l: largeur + 2 * g + ombre, h: lignesDe(o).length * n.police * INTERLIGNE + 2 * g + ombre };
   }
   if (o.type === "emoji") {
     const cote = tailleEmoji(n);
@@ -419,13 +496,16 @@ function boiteDe(o, c) {
 
 // `p` touche-t-il `o` ? `tol` en pixels de l'image (quelques pixels d'écran).
 function touche(o, p, tol, c) {
-  const marge = tol + NIVEAUX[o.niveau].trait / 2;
+  const n = NIVEAUX[o.niveau];
+  // Le trait du surligneur est quatre fois plus large que l'épaisseur réglée.
+  const marge = tol + (o.type === "surligneur" ? n.trait * 2 : n.trait / 2);
   const [a, b] = o.points;
   switch (o.type) {
     case "ligne":
     case "fleche":
       return distanceAuSegment(p, a, b) <= marge;
     case "main":
+    case "surligneur":
       if (o.points.length === 1) return Math.hypot(p.x - a.x, p.y - a.y) <= marge;
       return o.points.slice(1).some((q, i) => distanceAuSegment(p, o.points[i], q) <= marge);
     case "ellipse": {
