@@ -4475,6 +4475,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         crate::ui::performances::set_cadence(cadence);
         crate::ui::performances::set_economie(economie);
     }
+    // « Sans transparence » (voir `ui::performances::sans_transparence`) : jamais
+    // réglé = faux, le rendu d'avant.
+    crate::ui::performances::set_sans_transparence(config::load_bool_setting_or("sans_transparence", false));
     // Taille/arrondi des menus contextuels natifs (voir `win32::menu::
     // set_menu_scale`/`set_menu_corner_radius`, réglables dans le panneau de
     // réglages) — repris directement au démarrage, PAS de valeur par défaut

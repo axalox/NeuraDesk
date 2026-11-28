@@ -152,6 +152,10 @@
       <li><b>PawnIO</b> — la température et la puissance du processeur, dans le
       Moniteur système (voir « La température du processeur » plus bas).<br><span
       class="adresse">pawnio.eu — ou winget install namazso.PawnIO</span></li>
+      <li><b>Unbound</b> et <b>AdGuard</b> — un vrai serveur DNS et le filtrage des
+      publicités, pour l'applet Modifier réglages réseau (voir « Un vrai serveur DNS
+      et du filtrage » plus bas).<br><span
+      class="adresse">nlnetlabs.nl/projects/unbound/download — adguard.com</span></li>
     </ul>
     <div class="note"><b>Le français pour l'OCR de NAPS2</b> — ouvrir NAPS2, puis
     <b>OCR</b>, et choisir <b>Français</b> : NAPS2 télécharge alors la langue. Sans
@@ -336,6 +340,32 @@
       Firefox, LibreWolf, Waterfox, Zen :<br><span
       class="adresse">addons.mozilla.org/firefox/addon/windowed/</span></li>
     </ul>
+
+    <h2 id="dns-local">Un vrai serveur DNS et du filtrage : Unbound et AdGuard</h2>
+    <p>Les réglages DNS de NeuraDesk (applet <b>Modifier réglages réseau</b>) disent
+    à Windows <b>quel serveur interroger</b> : Cloudflare, Google, Quad9, ou une
+    adresse de votre choix. Ils ne sont pas eux-mêmes un serveur DNS, et ne filtrent
+    rien. Pour cela, deux programmes à installer à part :</p>
+    <ul>
+      <li><b>Unbound pour Windows</b> — un vrai serveur DNS qui tourne sur votre
+      machine : il résout lui-même les noms, garde les réponses en cache et peut
+      valider DNSSEC. Il écoute à l'adresse <kbd>127.0.0.1</kbd>.<br><span
+      class="adresse">nlnetlabs.nl/projects/unbound/download</span></li>
+      <li><b>AdGuard pour Windows</b> — bloque les publicités, les traceurs et les
+      sites dangereux pour tous les programmes, par filtrage DNS. C'est une
+      application payante, avec une période d'essai ; son équivalent libre et
+      gratuit, côté serveur, s'appelle <b>AdGuard Home</b>.<br><span
+      class="adresse">adguard.com/fr/adguard-windows/overview.html</span></li>
+    </ul>
+    <div class="note"><b>Les brancher</b> — avec Unbound, ouvrir l'onglet <b>DNS</b>
+    de <b>Modifier réglages réseau</b>, saisir <kbd>127.0.0.1</kbd> dans
+    <b>Adresses personnalisées</b>, puis <b>Appliquer</b> : Windows interroge alors
+    Unbound. AdGuard, lui, se place de lui-même entre les programmes et le réseau :
+    rien à régler dans NeuraDesk.</div>
+    <div class="note"><b>Chiffrement</b> — NeuraDesk ne chiffre (DNS over HTTPS) que
+    les serveurs des préréglages ; une adresse personnalisée comme <kbd>127.0.0.1</kbd>
+    reste en clair entre Windows et Unbound. Le chiffrement vers l'extérieur se
+    règle alors dans Unbound lui-même.</div>
 
     <h2 id="windhawk">Animer les fenêtres des applications : Windhawk</h2>
     <p>NeuraDesk anime ses <b>propres</b> panneaux et fenêtres (le réglage

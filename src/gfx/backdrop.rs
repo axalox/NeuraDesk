@@ -122,6 +122,14 @@ const DOWNSCALE: u32 = 4;
 /// pour le choix entre chemin GPU (Desktop Duplication + flou multi-passes,
 /// le cas normal) et repli GDI (par rectangle, en cas d'échec du premier).
 pub fn capture_blurred_batch(device: &ID3D11Device, rects: &[[i32; 4]]) -> Vec<Result<Texture>> {
+    // ⭐ **SANS TRANSPARENCE** (voir `ui::performances::sans_transparence`) : ni
+    // capture, ni flou, ni Desktop Duplication — c'est tout le coût de ce module.
+    // Une texture neutre, créée une fois et partagée, que le shader ignore (il
+    // peint la teinte pleine et opaque). Elle doit être oubliée avec le device
+    // (voir `release_cache`).
+    if crate::ui::performances::sans_transparence() {
+        return rects.iter().map(|_| texture_neutre(device)).collect();
+    }
     // Mode « visible dans les captures d'écran » (voir `gfx::capture_visibility`,
     // doc de module) : nos fenêtres sont en `WDA_NONE`, donc notre Desktop
     // Duplication LES VOIT et leur surface DWM se relit en BLANC (bug réel
@@ -210,8 +218,31 @@ pub fn capture_blurred_batch(device: &ID3D11Device, rects: &[[i32; 4]]) -> Vec<R
 /// qu'on détruit, l'exception « objets DXGI encore vivants » que le garde
 /// existe pour éteindre (même défaut que `gfx::duplication::release`).
 pub fn release_cache() {
+    TEXTURE_NEUTRE.with(|t| t.borrow_mut().clear());
     MAG_CACHE.with(|cache| cache.borrow_mut().clear());
     GDI_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
+thread_local! {
+    /// La texture neutre du réglage « sans transparence » : UNE par device, pour
+    /// tous les rectangles, jamais recréée à chaque image. ⚠️ Une texture ne vaut
+    /// que pour le device qui l'a créée (les popups et le dock peuvent en avoir
+    /// chacun un) : la clé est l'adresse du device.
+    static TEXTURE_NEUTRE: RefCell<Vec<(usize, Texture)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// La texture 1×1 grise que le shader ignore (voir `capture_blurred_batch`).
+fn texture_neutre(device: &ID3D11Device) -> Result<Texture> {
+    use windows::core::Interface;
+    let cle = device.as_raw() as usize;
+    TEXTURE_NEUTRE.with(|cache| {
+        if let Some((_, texture)) = cache.borrow().iter().find(|(c, _)| *c == cle) {
+            return Ok(texture.clone());
+        }
+        let texture = Texture::from_rgba(device, 1, 1, &[128, 128, 128, 255])?;
+        cache.borrow_mut().push((cle, texture.clone()));
+        Ok(texture)
+    })
 }
 
 /// Âge à partir duquel un fond GDI est redemandé au fil de capture (voir

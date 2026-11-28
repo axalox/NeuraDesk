@@ -169,6 +169,8 @@ fn etat_json() -> String {
     });
     serde_json::json!({
         "epingle": crate::config::load_bool_setting_or(PREMIER_PLAN, false),
+        // La langue de la session : la page masque Quad9 en français.
+        "langue": crate::ui::langue::courante().code(),
         "cartes": cartes,
         "proxy": PROXY.with(|p| p.borrow().as_ref().map(reseau_proxy::Proxy::en_json)),
         "enCours": EN_COURS.load(Ordering::SeqCst),
@@ -266,6 +268,9 @@ fn refuser(quoi: &str) {
     push_state();
 }
 
+/// L'`id` de la section d'`aide.html` (et `aide.en.html`) que « Voir l'aide » ouvre.
+const AIDE_ANCRE: &str = "dns-local";
+
 /// **CE QUE LA PAGE DEMANDE** : les trois gestes de la fenêtre, plus
 /// `appliquer/<cartes>/<auto|adresses>/<0|1>`, `ip/…`, `ip6/…`, `connexion/…`,
 /// `mac/…`, `proxy/<json>`, `vider` et `actualiser`.
@@ -303,6 +308,8 @@ pub fn dispatch_actions() {
                 push_state();
             }
             "vider" => lancer(dns::Demande::ViderCache),
+            // « Voir l'aide » : la section d'`aide.html` sur Unbound et AdGuard.
+            "aide" => crate::win32::cef_aide::demander(AIDE_ANCRE),
             "appliquer" => {
                 let cartes = morceaux.next().unwrap_or("");
                 // `<quoi>/<0|1>` : l'adresse encodée ne contient jamais de `/`.
@@ -471,8 +478,8 @@ fn code_pour_point(rect: [i32; 4], (x, y): (i32, i32)) -> i32 {
 mod tests {
     use super::*;
 
-    fn verbes_connus() -> [&'static str; 12] {
-        ["deplacer", "epingler", "fermer", "ready", "actualiser", "vider", "appliquer", "ip", "ip6", "connexion", "mac", "proxy"]
+    fn verbes_connus() -> [&'static str; 13] {
+        ["deplacer", "epingler", "fermer", "ready", "actualiser", "vider", "aide", "appliquer", "ip", "ip6", "connexion", "mac", "proxy"]
     }
 
     #[test]
@@ -488,6 +495,32 @@ mod tests {
             assert!(vus.contains(&attendu), "la page n'appelle jamais `{attendu}`");
         }
         assert!(page.contains("neuradesk://dns/"), "la page ne parle pas à `dns/`");
+    }
+
+    /// Le renvoi de la page DNS tombe sur une section qui existe, dans les DEUX langues.
+    #[test]
+    fn le_renvoi_vers_l_aide_vise_une_section_existante() {
+        let cible = format!("id=\"{AIDE_ANCRE}\"");
+        for (nom, aide) in [
+            ("aide.html", include_str!("../../assets/popups/aide.html")),
+            ("aide.en.html", include_str!("../../assets/popups/aide.en.html")),
+        ] {
+            assert!(aide.contains(&cible), "{nom} n'a pas de section {cible}");
+            for mot in ["Unbound", "AdGuard"] {
+                assert!(aide.contains(mot), "{nom} ne parle pas de {mot}");
+            }
+        }
+    }
+
+    /// Quad9 n'est plus disponible en France : la page le masque en français, et
+    /// ne peut le faire que si Rust lui envoie la langue.
+    #[test]
+    fn quad9_est_masque_en_francais() {
+        let page = include_str!("../../assets/popups/dns.html");
+        assert!(page.contains(r#"p.id === "quad9" && etat.langue === "fr""#), "le filtre de Quad9 a disparu de la page");
+        assert!(include_str!("cef_dns.rs").contains(r#""langue": crate::ui::langue::courante().code()"#), "Rust n'envoie plus la langue");
+        // Les adresses restent connues de Rust : une saisie à la main reste chiffrable.
+        assert!(page.contains("id: \"quad9\""));
     }
 
     #[test]

@@ -4410,3 +4410,7 @@ Par zone : la molette passe d'une zone à l'autre (Pivoter, Taille, Recadrage, C
 Mode — barre de gauche	Mode — left bar
 Mode — barre de droite	Mode — right bar
 Normalement : un cran déplace la vitesse choisie ci-dessus. Par zone : un cran parcourt la hauteur visible de la zone sous le curseur — la molette avance de zone en zone, dans une zone comme entre les zones. La barre du haut ne défile pas.	Normally: one notch moves by the speed chosen above. By zone: one notch covers the visible height of the zone under the cursor — the wheel moves from zone to zone, within a zone as well as between zones. The top bar does not scroll.
+Un vrai serveur DNS, du filtrage	A real DNS server, filtering
+Unbound (serveur DNS local) et AdGuard (filtrage des publicités et des traceurs) s'installent sur Windows.	Unbound (local DNS server) and AdGuard (ad and tracker filtering) can be installed on Windows.
+Sans transparence ni flou (plus léger pour le processeur)	No transparency or blur (lighter on the CPU)
+Les barres, panneaux et menus deviennent opaques, et le bureau n'est plus capturé ni flouté : c'est ce qui coûte du processeur. Les ombres, le relief, les textures et le dégradé restent. Les curseurs ci-dessous n'ont plus d'effet tant que la case est cochée.	Bars, panels and menus become opaque, and the desktop is no longer captured or blurred: that is what costs CPU. Shadows, relief, textures and the gradient stay. The sliders below have no effect while the box is checked.

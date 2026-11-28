@@ -258,6 +258,13 @@
         </div>
         <div id="doh-note" class="note">Seuls les serveurs des préréglages peuvent être chiffrés.</div>
       </section>
+      <section>
+        <h2>Un vrai serveur DNS, du filtrage</h2>
+        <div class="note">Unbound (serveur DNS local) et AdGuard (filtrage des publicités et des traceurs) s'installent sur Windows.</div>
+        <div class="actions" style="margin-top: 8px">
+          <button id="aide-dns" class="action">Voir l'aide</button>
+        </div>
+      </section>
     </div>
 
     <!-- ── Adresse IP ── -->
@@ -512,7 +519,11 @@
   function dessinerPrereglages() {
     const boite = $("prereglages");
     boite.textContent = "";
-    for (const p of PREREGLAGES) {
+    // Quad9 n'est plus joignable en France : absent de la liste en français.
+    // `etat.langue` vient de Rust (la langue de la session) ; avant le premier
+    // état poussé, la liste est complète, puis `setState` la redessine.
+    const visibles = PREREGLAGES.filter(function (p) { return !(p.id === "quad9" && etat.langue === "fr"); });
+    for (const p of visibles) {
       const detail = p.adresses ? p.adresses.slice(0, 2).join(", ") : p.detail;
       const b = el("button", { class: "prereglage", "aria-pressed": String(prereglageChoisi === p.id) }, [
         el("span", { class: "p-nom", texte: p.nom }),
@@ -730,6 +741,7 @@
   $("lim-non").addEventListener("click", function () { connexion("limitee/non", "limitee", "lim-non"); });
   $("renouveler").addEventListener("click", function () { connexion("renouveler", "renouveler", "renouveler"); });
   $("vider").addEventListener("click", function () { if (etat.enCours === false) { derniereAction = "vider"; go("vider"); } });
+  $("aide-dns").addEventListener("click", function () { go("aide"); });
 
   // ── Onglet Proxy ──
   let proxy = { detection: false, manuel: false, local: false };
@@ -906,6 +918,7 @@
     // Après une application réussie, les champs reprennent la carte relue —
     // une fois, quand le message ARRIVE (pas à chaque envoi qui suit).
     const relue = etat.message === "reussi" && messageAvant !== "reussi";
+    dessinerPrereglages();
     dessinerCartes();
     remplir(relue);
     if (onglet === "proxy" || proxyRempli === false) remplirProxy(relue && derniereAction === "proxy");

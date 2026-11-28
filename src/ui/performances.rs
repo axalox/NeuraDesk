@@ -58,6 +58,25 @@ pub const PRESETS: [(&str, u32, bool); 3] =
 thread_local! {
     static CADENCE: Cell<u32> = const { Cell::new(CADENCE_ECRAN) };
     static ECONOMIE: Cell<bool> = const { Cell::new(false) };
+    static SANS_TRANSPARENCE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// ⭐ **SANS TRANSPARENCE NI FLOU** — DEMANDE EXPLICITE (2026-11-28) : « retirer
+/// toutes les transparences et rendre l'application plus légère en CPU », en
+/// **gardant les ombrages**. Quand il est vrai, `gfx::backdrop` ne capture ni ne
+/// floute plus le bureau (plus de Desktop Duplication, plus de flou GPU, plus de
+/// repli GDI) et rend une texture neutre ; le shader peint alors la teinte
+/// PLEINE et OPAQUE (voir `gfx::quad_renderer`, drapeau `Ombres.y` = 2). Les
+/// ombres, le relief, les textures et le dégradé sont d'autres calques : ils
+/// restent. `false` par défaut : le comportement d'avant.
+pub fn sans_transparence() -> bool {
+    SANS_TRANSPARENCE.with(Cell::get)
+}
+
+/// Pose `sans_transparence` et rend l'état d'avant (même contrat que
+/// `set_economie`).
+pub fn set_sans_transparence(actif: bool) -> bool {
+    SANS_TRANSPARENCE.with(|c| c.replace(actif))
 }
 
 /// La cadence maximale en images par seconde, `CADENCE_ECRAN` (0) valant
@@ -201,5 +220,44 @@ mod tests {
         assert!(economie());
         assert!(set_economie(false), "et la retombée rend `true`");
         set_economie(avant);
+    }
+
+    #[test]
+    fn sans_transparence_est_coupe_par_defaut_et_rend_son_ancien_etat() {
+        let avant = set_sans_transparence(false);
+        assert!(!sans_transparence(), "coupé par défaut : le rendu d'avant");
+        assert!(!set_sans_transparence(true));
+        assert!(sans_transparence());
+        assert!(set_sans_transparence(false));
+        set_sans_transparence(avant);
+    }
+
+    /// ⭐ **LE RÉGLAGE EST CÂBLÉ DE BOUT EN BOUT**, et chaque maillon seul donne un
+    /// réglage qui a l'air de marcher sans rien alléger : la capture est court-
+    /// circuitée, le shader reçoit le drapeau « opaque », la page envoie le verbe
+    /// et Rust l'accepte, l'état est relu au lancement. Les sources sont coupées
+    /// avant leurs propres tests pour ne pas se lire elles-mêmes.
+    #[test]
+    fn sans_transparence_est_cable_de_bout_en_bout() {
+        let avant_tests = |source: &'static str| source.split("#[cfg(test)]").next().unwrap_or("");
+        let backdrop = avant_tests(include_str!("../gfx/backdrop.rs"));
+        let debut = backdrop.find("pub fn capture_blurred_batch").expect("la capture existe");
+        let corps = &backdrop[debut..];
+        let (garde, capture) = (
+            corps.find("sans_transparence()").expect("la capture ne regarde pas le réglage"),
+            corps.find("duplication::ensure_frame").expect("la duplication a changé de nom"),
+        );
+        assert!(garde < capture, "le court-circuit doit passer AVANT la duplication du bureau");
+
+        let quad = avant_tests(include_str!("../gfx/quad_renderer.rs"));
+        assert!(quad.contains("Ombres.y > 1.5"), "le shader ne connaît plus le drapeau opaque");
+        assert!(quad.contains("ui::performances::sans_transparence()"), "le drapeau n'est plus posé");
+
+        let page = include_str!("../../assets/popups/settings.html");
+        assert!(page.contains(r#"go("sans-transparence""#), "la page n'envoie plus le verbe");
+        let reglages = avant_tests(include_str!("../win32/cef_settings.rs"));
+        assert!(reglages.contains(r#"["sans-transparence", flag]"#), "le dispatch ne reçoit plus le verbe");
+        assert!(reglages.contains(r#""sansTransparence""#), "l'état n'est plus poussé à la page");
+        assert!(include_str!("../app.rs").contains(r#"load_bool_setting_or("sans_transparence""#), "non relu au lancement");
     }
 }

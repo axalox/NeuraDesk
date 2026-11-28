@@ -3182,7 +3182,10 @@ float4 PSMain(PSInput input) : SV_TARGET {
             rgb += delta + abs(delta) * TexChroma;
         }
 
-        baseColor = float4(saturate(rgb), sans_fond ? tint : 1.0);
+        // Ombres.y = 2 : réglage « sans transparence » (`ui::performances`) —
+        // la teinte est prise pleine ET opaque, quelle que soit la transparence réglée.
+        bool opaque = Ombres.y > 1.5;
+        baseColor = float4(saturate(rgb), (sans_fond && !opaque) ? tint : 1.0);
 
         // 7. Dithering (voir `DitherHash`) — TOUJOURS en dernier, sur le
         //    résultat DÉJÀ mélangé/composé ci-dessus, PAS avant : BUG RÉEL
@@ -3938,7 +3941,10 @@ unsafe fn update_constant_buffer(
         // l'utilisateur au lieu d'un aplat opaque (voir sa doc).
         ombre: [
             ombre[0],
-            if crate::gfx::capture_visibility::est_capturable() && !crate::gfx::mag_capture::disponible() {
+            if crate::ui::performances::sans_transparence() {
+                // Pas de fond capturé, teinte pleine et OPAQUE (voir le shader).
+                2.0
+            } else if crate::gfx::capture_visibility::est_capturable() && !crate::gfx::mag_capture::disponible() {
                 1.0
             } else {
                 0.0

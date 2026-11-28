@@ -2965,6 +2965,14 @@ fn dispatch_actions(refs: &mut SettingsRefs) {
                     );
                 }
             }
+            // ⭐ « Sans transparence » : ni flou ni fond du bureau, teinte pleine ;
+            // les ombres restent. Global, relu à chaque image (voir
+            // `ui::performances::sans_transparence`).
+            ["sans-transparence", flag] => {
+                let actif = *flag == "1";
+                crate::ui::performances::set_sans_transparence(actif);
+                config::save_bool_setting("sans_transparence", actif);
+            }
             ["performances-economie", flag] => {
                 crate::ui::performances::set_economie(*flag == "1");
                 config::save_performances(
@@ -5567,6 +5575,7 @@ fn push_state(refs: &mut SettingsRefs) {
         objet.insert("performancesCadence".into(), json!(crate::ui::performances::cadence()));
         objet.insert("performancesEconomie".into(), json!(crate::ui::performances::economie()));
         objet.insert("performancesPreset".into(), json!(crate::ui::performances::preset_courant()));
+        objet.insert("sansTransparence".into(), json!(crate::ui::performances::sans_transparence()));
         // ⭐ **LA CARTE GRAPHIQUE** (voir `gfx::carte_graphique`) : la liste,
         // le choix ENREGISTRÉ (relu du disque : il peut différer de celui du
         // lancement, d'où `carteGraphiqueAuLancement`), et la carte qui tourne

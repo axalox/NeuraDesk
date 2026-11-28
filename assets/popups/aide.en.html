@@ -152,6 +152,10 @@
       <li><b>PawnIO</b> — CPU temperature and power, in the
       System Monitor (see "CPU temperature" below).<br><span
       class="adresse">pawnio.eu — or winget install namazso.PawnIO</span></li>
+      <li><b>Unbound</b> and <b>AdGuard</b> — a real DNS server and ad filtering, for
+      the Edit network settings applet (see "A real DNS server and filtering"
+      below).<br><span
+      class="adresse">nlnetlabs.nl/projects/unbound/download — adguard.com</span></li>
     </ul>
     <div class="note"><b>Your language for NAPS2 OCR</b> — open NAPS2, then
     <b>OCR</b>, and choose your language (e.g. <b>English</b>): NAPS2 then downloads it. Without
@@ -335,6 +339,30 @@
       Firefox, LibreWolf, Waterfox, Zen:<br><span
       class="adresse">addons.mozilla.org/firefox/addon/windowed/</span></li>
     </ul>
+
+    <h2 id="dns-local">A real DNS server and filtering: Unbound and AdGuard</h2>
+    <p>NeuraDesk's DNS settings (the <b>Edit network settings</b> applet) tell Windows
+    <b>which server to ask</b>: Cloudflare, Google, Quad9, or an address of your
+    choice. They are not a DNS server themselves, and they filter nothing. For that,
+    install one of these separately:</p>
+    <ul>
+      <li><b>Unbound for Windows</b> — a real DNS server running on your machine: it
+      resolves names itself, caches the answers and can validate DNSSEC. It listens
+      on <kbd>127.0.0.1</kbd>.<br><span
+      class="adresse">nlnetlabs.nl/projects/unbound/download</span></li>
+      <li><b>AdGuard for Windows</b> — blocks ads, trackers and dangerous sites for
+      every program, through DNS filtering. It is a paid application with a trial
+      period; its free, open-source server counterpart is <b>AdGuard Home</b>.<br><span
+      class="adresse">adguard.com/en/adguard-windows/overview.html</span></li>
+    </ul>
+    <div class="note"><b>Connecting them</b> — with Unbound, open the <b>DNS</b> tab of
+    <b>Edit network settings</b>, enter <kbd>127.0.0.1</kbd> under
+    <b>Custom addresses</b>, then <b>Apply</b>: Windows then asks Unbound. AdGuard puts
+    itself between the programs and the network: nothing to set in NeuraDesk.</div>
+    <div class="note"><b>Encryption</b> — NeuraDesk only encrypts (DNS over HTTPS) the
+    servers of the presets; a custom address such as <kbd>127.0.0.1</kbd> stays
+    unencrypted between Windows and Unbound. Encryption towards the outside is then
+    set in Unbound itself.</div>
 
     <h2 id="windhawk">Animating application windows: Windhawk</h2>
     <p>NeuraDesk animates its <b>own</b> panels and windows (the <b>NeuraDesk

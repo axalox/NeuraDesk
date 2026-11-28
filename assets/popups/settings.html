@@ -3995,6 +3995,10 @@
       const BARS = [["top", "du haut"], ["left", "de gauche"], ["right", "de droite"], ["bottom", "du bas"]];
       section(scroll, (box) => {
         box.appendChild(el("h2", {}, ["Transparence et flou"]));
+        // « Sans transparence » — DEMANDE EXPLICITE (2026-11-28) : retirer toutes
+        // les transparences pour alléger le processeur, en gardant les ombres.
+        checkboxRow(box, state.sansTransparence, "Sans transparence ni flou (plus léger pour le processeur)", (checked) => go("sans-transparence", checked ? "1" : "0"));
+        box.appendChild(el("p", { class: "hint" }, ["Les barres, panneaux et menus deviennent opaques, et le bureau n'est plus capturé ni flouté : c'est ce qui coûte du processeur. Les ombres, le relief, les textures et le dégradé restent. Les curseurs ci-dessous n'ont plus d'effet tant que la case est cochée."]));
         box.appendChild(el("div", { class: "small-label" }, ["Flou"]));
         slider(box, { label: "Intensité du flou", min: 1, max: 8, value: state.blurPasses, valueLabel: (v) => String(v), dataKey: "blur-passes", onInput: (v) => go("blur-passes", v) });
         box.appendChild(el("div", { class: "small-label" }, ["Matériau"]));
